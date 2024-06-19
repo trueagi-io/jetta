@@ -89,4 +89,28 @@ class ApplicationTest {
             assertEquals(2, result.messages.size)
         }
     }
+
+    @Test
+    fun evalFactorial() = testApplication {
+        val client = setup()
+        val contextId = client.post("/contexts").let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            it.bodyAsText()
+        }
+        client.post("/contexts/$contextId") {
+            setBody(
+                """
+                (= (factorial _n)
+                (if (== _n 0) 1
+                   (* _n (factorial (- _n 1)))))
+                (factorial 6)
+                """.trimIndent().replace('_', '$')
+            )
+        }.let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            val result = it.body<ResultDto>()
+            assertTrue(result.isSuccess)
+            assertEquals("720", result.result)
+        }
+    }
 }
