@@ -59,4 +59,21 @@ class ResolveTest : BaseFrontendTest() {
             val message = messageCollector.list()[0] as CannotResolveSymbolMessage
             assertEquals("foo", message.symbol)
         }
+
+    @Test
+    fun factorial() =
+        resolve(
+            "Factorial.metta",
+            """
+            (: factorial (-> Int Int))
+            (= (factorial _n)
+                (if (== _n 0) 1
+                   (* _n (factorial (- _n 1)))))
+            """.trimIndent().replace('_', '$')
+        ).let { (_, messageCollector) ->
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertEquals(0, messageCollector.list().size)
+        }
 }

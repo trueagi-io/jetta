@@ -238,6 +238,7 @@ class Context(private val messageCollector: MessageCollector) {
 
     private fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
         val typedVariables = mutableMapOf<String, Atom>()
+        if (functionDefinition.returnType != null) addResolvedFunction(owner, functionDefinition)
         functionDefinition.typedParameters?.forEach {
             typedVariables[it.name] = it.type!!
         }
@@ -246,7 +247,6 @@ class Context(private val messageCollector: MessageCollector) {
             TypeInfo(typedVariables, functionDefinition)
         )
         definedFunctions[functionDefinition.name] = SymbolDef(owner, functionDefinition)
-        if (functionDefinition.returnType != null) addResolvedFunction(owner, functionDefinition)
     }
 
     private fun resolveAtom(atom: Atom, typeInfo: TypeInfo) {
