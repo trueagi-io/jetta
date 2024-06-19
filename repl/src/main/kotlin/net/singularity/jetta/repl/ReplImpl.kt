@@ -1,6 +1,6 @@
 package net.singularity.jetta.repl
 
-import net.singularity.jetta.compiler.FunctionRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.backend.CompilationResult
 import net.singularity.jetta.compiler.backend.Generator
 import net.singularity.jetta.compiler.frontend.Message
@@ -8,6 +8,7 @@ import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import java.io.File
 
@@ -42,9 +43,13 @@ class ReplImpl : Repl {
 
     private fun compile(filename: String, code: String): CompilationResult? {
         val parser = createParserFacade()
-        val rewriter = FunctionRewriter()
+        val rewriter = FunctionRewriter(messageCollector)
         val parsed = parser.parse(Source(filename, code), messageCollector)
-        val result = rewriter.rewrite(parsed)
+        val result = try {
+            rewriter.rewrite(parsed)
+        } catch (_: RewriteException) {
+            return null
+        }
         context.resolve(result)
         if (messageCollector.list().isNotEmpty()) return null
         val generator = Generator()

@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.frontend.resolve
 
-import net.singularity.jetta.compiler.FunctionRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.*

@@ -9,6 +9,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.testing.*
+import junit.framework.TestCase.assertFalse
 import net.singularity.jetta.server.models.ContextId
 import net.singularity.jetta.server.models.ResultDto
 import net.singularity.jetta.server.plugins.configureRouting
@@ -63,6 +64,29 @@ class ApplicationTest {
             val result = it.body<ResultDto>()
             assertTrue(result.isSuccess)
             assertEquals("4", result.result)
+        }
+    }
+
+    @Test
+    fun evalWithError() = testApplication {
+        val client = setup()
+        val contextId = client.post("/contexts").let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            it.bodyAsText()
+        }
+        client.post("/contexts/$contextId") {
+            setBody(
+                """
+                (: foo (-> Int Int Int))
+                (= (foo _x _y) (+ _x _y 1))
+                (foo 1 2)
+                """.trimIndent()
+            )
+        }.let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            val result = it.body<ResultDto>()
+            assertFalse(result.isSuccess)
+            assertEquals(2, result.messages.size)
         }
     }
 }

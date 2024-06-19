@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.frontend
 
-import net.singularity.jetta.compiler.FunctionRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
@@ -23,7 +23,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter()
+        val rewriter = FunctionRewriter(messageCollector)
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)

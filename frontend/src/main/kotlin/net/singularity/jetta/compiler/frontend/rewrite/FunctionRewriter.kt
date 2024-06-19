@@ -1,9 +1,11 @@
-package net.singularity.jetta.compiler
+package net.singularity.jetta.compiler.frontend.rewrite
 
+import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.*
+import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOrConstantButFoundMessage
 
-class FunctionRewriter {
+class FunctionRewriter(val messageCollector: MessageCollector) {
     private val typeInfo = mutableMapOf<String, Atom>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val main = mutableListOf<Atom>()
@@ -21,12 +23,19 @@ class FunctionRewriter {
         return ParsedSource(source.filename, mkFunctions() + mainPart)
     }
 
-    private fun extractFormalParams(expression: Expression): List<Variable> =
-        expression.atoms.drop(1).map {
+    private fun extractFormalParams(expression: Expression): List<Variable> {
+        val list = expression.atoms.drop(1).mapNotNull {
             // FIXME: it might be a value
-            println(it)
-            it as Variable
+            if (it is Variable) {
+                it
+            } else {
+                messageCollector.add(ExpectVariableOrConstantButFoundMessage(expression))
+                null
+            }
         }
+        if (list.size != expression.atoms.size - 1) throw RewriteException()
+        return list
+    }
 
     private fun mkFunctions(): List<Atom> =
         patterns.map { (name, list) ->
