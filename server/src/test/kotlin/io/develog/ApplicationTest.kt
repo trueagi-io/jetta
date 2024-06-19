@@ -113,4 +113,38 @@ class ApplicationTest {
             assertEquals("720", result.result)
         }
     }
+
+    @Test
+    fun evalExpressionAndDefine() = testApplication {
+        val client = setup()
+        val contextId = client.post("/contexts").let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            it.bodyAsText()
+        }
+        client.post("/contexts/$contextId") {
+            setBody(
+                """
+                (+ 1 2)
+                """.trimIndent().replace('_', '$')
+            )
+        }.let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            val result = it.body<ResultDto>()
+            assertTrue(result.isSuccess)
+            assertEquals("3", result.result)
+        }
+        client.post("/contexts/$contextId") {
+            setBody(
+                """
+                (: foo (-> Int Int Int))
+                (= (foo _x _y) (+ _x _y 1))
+                """.trimIndent().replace('_', '$')
+            )
+        }.let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            val result = it.body<ResultDto>()
+            assertTrue(result.isSuccess)
+        }
+
+    }
 }

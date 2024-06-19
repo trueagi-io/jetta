@@ -44,7 +44,7 @@ class Context(private val messageCollector: MessageCollector) {
         main?.let {
             val lastCall = it.body.atoms.last()
             if (lastCall is Expression &&
-                (lastCall.atoms[0] as Symbol).name == func.name) {
+                (lastCall.atoms[0] as? Symbol)?.name == func.name) {
                 it.arrowType = ArrowType(listOf(func.returnType!!))
                 lastCall.resolved = resolve(func.name)
             }

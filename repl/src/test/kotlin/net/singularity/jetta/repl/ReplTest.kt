@@ -38,6 +38,33 @@ class ReplTest {
     }
 
     @Test
+    fun evalExpression() {
+        val repl = createRepl()
+        repl.eval("""
+            (+ 1 2)
+        """.trimIndent().replace('_', '$')).let {
+            assertTrue(it.isSuccess)
+            assertEquals(3, it.result)
+        }
+    }
+
+    @Test
+    fun expressionBeforeDefinition() {
+        val repl = createRepl()
+        repl.eval("""
+            (+ 1 2)
+        """.trimIndent().replace('_', '$')).let {
+            assertTrue(it.isSuccess)
+        }
+        repl.eval("""
+            (: foo (-> Int Int Int))
+            (= (foo _x _y) (+ _x _y 1))
+        """.trimIndent().replace('_', '$')).let {
+            assertTrue(it.isSuccess)
+        }
+    }
+
+    @Test
     fun redefine() {
         val repl = createRepl()
         repl.eval("""
