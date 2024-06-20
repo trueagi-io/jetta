@@ -17,6 +17,7 @@ class AntlrParserFacadeImpl : ParserFacade {
         val lex = JettaLexer(inputStream)
         val stream = CommonTokenStream(lex)
         val parser = JettaParser(stream)
+        parser.addErrorListener(SyntaxErrorListener(source.filename, messageCollector))
         val tree: ParseTree = parser.program()
         val visitor = JettaVisitorImpl(source.filename)
         visitor.visit(tree)
