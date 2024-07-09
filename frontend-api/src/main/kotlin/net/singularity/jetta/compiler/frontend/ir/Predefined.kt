@@ -22,6 +22,7 @@ object Predefined {
     val NOT = Special("not")
     val XOR = Special("xor")
     val RUN_SEQ = Special("run-seq!")
+    val LAMBDA = Special("\\")
 }
 
 fun Atom.isBooleanExpression(): Boolean =

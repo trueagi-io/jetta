@@ -76,4 +76,20 @@ class ResolveTest : BaseFrontendTest() {
             }
             assertEquals(0, messageCollector.list().size)
         }
+
+    @Test
+    fun lambda() =
+        resolve(
+            "Lambda.metta",
+            """
+                (: foo (-> Int Int (-> Int Int Int) Int))
+                (= (foo _x _y _f) (_f _x _y))
+                (foo 10 20 (\ (_x _y) (+ _x _y)))
+                """.trimIndent().replace('_', '$')
+        ).let { (_, messageCollector) ->
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertEquals(0, messageCollector.list().size)
+        }
 }

@@ -5,14 +5,14 @@ import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOrConstantButFoundMessage
 
-class FunctionRewriter(val messageCollector: MessageCollector) {
+class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val main = mutableListOf<Atom>()
 
     private data class Pattern(val pattern: Expression, val value: Expression)
 
-    fun rewrite(source: ParsedSource): ParsedSource {
+    override fun rewrite(source: ParsedSource): ParsedSource {
        source.code.forEach {
             when (it) {
                 is Expression -> rewriteTopLevelExpression(it)

@@ -53,7 +53,7 @@ class ReplImpl : Repl {
         context.resolve(result)
         if (messageCollector.list().isNotEmpty()) return null
         val generator = Generator()
-        return generator.generate(result)
+        return generator.generate(result)[0]
     }
 
     private fun createFilename(): String = "Line_${++counter}"
