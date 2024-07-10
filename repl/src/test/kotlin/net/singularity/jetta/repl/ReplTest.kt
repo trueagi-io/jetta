@@ -129,5 +129,18 @@ class ReplTest {
         }
     }
 
+    @Test
+    fun lambdas() {
+        val repl = createRepl()
+        repl.eval("""
+            (: foo (-> Int Int (-> Int Int Int) Int))
+            (= (foo _x _y _f) (_f _x _y))
+            (foo 10 20 (\ (_x _y) (+ _x _y)))
+        """.trimIndent().replace('_', '$')).let {
+            assertTrue(it.isSuccess)
+            assertTrue(it.messages.isEmpty())
+            assertEquals(30, it.result)
+        }
+    }
     private fun createRepl(): Repl = ReplImpl()
 }
