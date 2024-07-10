@@ -53,7 +53,7 @@ class LambdaGenerator(private val className: String, private val lambda: Lambda)
             cw.visitField(
                 Opcodes.ACC_PRIVATE,
                 it.name,
-                it.toJvmType(),
+                it.type!!.toJvmType(),
                 null,
                 null
             )
@@ -71,15 +71,15 @@ class LambdaGenerator(private val className: String, private val lambda: Lambda)
         )
         capturedVariables.forEach {
             mv.visitVarInsn(Opcodes.ALOAD, 0)
-            generateLoadVar(mv, it, lambda, false)
-            mv.visitFieldInsn(Opcodes.PUTFIELD, className, it.name, it.toJvmType())
+            generateLoadVar(mv, it, capturedVariables, false, null)
+            mv.visitFieldInsn(Opcodes.PUTFIELD, className, it.name, it.type!!.toJvmType())
         }
         mv.visitInsn(Opcodes.RETURN)
         mv.visitMaxs(1, 1)
     }
 
     private fun generateApply(mv: MethodVisitor) {
-        val generator = FunctionGenerator(mv, lambda, false)
+        val generator = FunctionGenerator(mv, lambda, false, className)
         generator.generate()
     }
 

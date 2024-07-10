@@ -10,7 +10,8 @@ import org.objectweb.asm.Opcodes
 open class FunctionGenerator(
     private val mv: MethodVisitor,
     private val function: FunctionLike,
-    private val isStatic: Boolean
+    private val isStatic: Boolean,
+    private val className: String?
 ) {
     fun generate() {
         generateAtom(mv, function.body, null, true)
@@ -72,7 +73,7 @@ open class FunctionGenerator(
             }
 
             is Variable -> {
-                generateLoadVar(mv, atom, function, isStatic)
+                generateLoadVar(mv, atom, function.params, isStatic, className)
             }
 
             is Lambda -> {
@@ -80,7 +81,7 @@ open class FunctionGenerator(
                 mv.visitInsn(Opcodes.DUP)
                 val capturedVariables = atom.capturedVariables()
                 capturedVariables.forEach {
-                    generateLoadVar(mv, it, function, false)
+                    generateLoadVar(mv, it, function.params, isStatic, className)
                 }
                 mv.visitMethodInsn(
                     Opcodes.INVOKESPECIAL,
@@ -149,6 +150,7 @@ open class FunctionGenerator(
 
     private fun generateLambdaCall(mv: MethodVisitor, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
+        if (index < 0) throw IllegalArgumentException(variable.toString())
         mv.visitVarInsn(Opcodes.ALOAD, index)
         arguments.forEach {
             generateAtom(mv, it, null, false)

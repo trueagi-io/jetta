@@ -57,16 +57,30 @@ class RewriteTest : BaseFrontendTest() {
         println(result)
     }
 
-    // signature (ILkotlin/jvm/functions/Function5<-Ljava/lang/Integer;-Ljava/lang/Integer;-Ljava/lang/Integer;-Ljava/lang/Integer;-Ljava/lang/Integer;Ljava/lang/Integer;>;)V
-    // declaration: void foo(int, kotlin.jvm.functions.Function5<? super java.lang.Integer, ? super java.lang.Integer, ? super java.lang.Integer, ? super java.lang.Integer, ? super java.lang.Integer, java.lang.Integer>)
-
-    fun foo(x: Int, f: (Int, Int) -> Int) {
-        println(f(x, x))
+    @Test
+    fun nestedLambdas() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val program = parser.parse(
+            Source(
+                "NestedLambdas.metta",
+                """
+                (: foo (-> Int Int (-> Int Int Int) Int))
+                (= (foo _x _y _f) (_f _x _y))
+                (: bar (-> Int Int))
+                (= (bar _z)
+                   (foo 10 20 (\ (_x _y) (+ _x _y _z (foo 10 20 (\ (_x _y) (+ _x _y _z)))
+                   )))
+                )
+                """.trimIndent().replace('_', '$')
+            ),
+            messageCollector
+        )
+        val rewriter = CompositeRewriter()
+        rewriter.add(FunctionRewriter(messageCollector))
+        rewriter.add(LambdaRewriter(messageCollector))
+        val result = rewriter.rewrite(program)
+        println(result)
     }
 
-    fun bar(x: Int) {
-        foo(5) { x1, x2 ->
-            x1 + x2 + x
-        }
-    }
 }

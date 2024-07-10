@@ -17,16 +17,45 @@ fun List<Variable>.getParameterIndex(variable: Variable): Int {
             else -> TODO("type=" + it.type + " (" + it + ")")
         }
     }
-    throw IllegalArgumentException(variable.toString())
+    return -1
 }
 
-fun generateLoadVar(mv: MethodVisitor, variable: Variable, function: FunctionLike, isStatic: Boolean) {
+fun generateLoadVar(
+    mv: MethodVisitor,
+    variable: Variable,
+    params: List<Variable>,
+    isStatic: Boolean,
+    className: String?
+) {
+    fun generateField() {
+        mv.visitVarInsn(Opcodes.ALOAD, 0)
+        mv.visitFieldInsn(
+            Opcodes.GETFIELD,
+            className ?: throw IllegalArgumentException(variable.toString()),
+            variable.name,
+            variable.type!!.toJvmType()
+        )
+    }
+
     val offset = if (isStatic) 0 else 1
     when (variable.type) {
         GroundedType.INT,
-        GroundedType.BOOLEAN -> mv.visitVarInsn(Opcodes.ILOAD, function.getParameterIndex(variable) + offset)
+        GroundedType.BOOLEAN -> {
+            val index = params.getParameterIndex(variable)
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.ILOAD, index + offset)
+        }
 
-        GroundedType.DOUBLE -> mv.visitVarInsn(Opcodes.DLOAD, function.getParameterIndex(variable) + offset)
+        GroundedType.DOUBLE -> {
+            val index = params.getParameterIndex(variable)
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.DLOAD, index + offset)
+        }
+
         else -> TODO("Not implemented yet " + variable)
     }
 }
@@ -43,7 +72,8 @@ fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
                 false
             )
         }
-        null -> { }
+
+        null -> {}
         else -> TODO()
     }
 }
@@ -57,29 +87,38 @@ fun boxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             "(I)Ljava/lang/Integer;",
             false
         )
-        null -> { }
+
+        null -> {}
         else -> TODO()
     }
 }
 
 fun Lambda.capturedVariables(): List<Variable> {
     val result = mutableListOf<Variable>()
-    fun collect(atom: Atom) {
+    fun collect(params: List<Variable>, atom: Atom) {
         when (atom) {
             is Variable -> {
                 val found = params.find { it.name == atom.name }
                 if (found == null) result.add(atom)
             }
+
             is Expression -> {
                 atom.atoms.forEach {
-                    collect(it)
+                    collect(params, it)
                 }
             }
-            else -> { }
+
+            is Lambda -> {
+                atom.body.atoms.forEach {
+                    collect(params + atom.params, it)
+                }
+            }
+
+            else -> {}
         }
     }
     body.atoms.forEach {
-        collect(it)
+        collect(params, it)
     }
     return result
 }
@@ -88,7 +127,7 @@ fun mkLambdaInitDescriptor(capturedVariables: List<Variable>): String {
     val sb = StringBuilder()
     sb.append('(')
     capturedVariables.forEach {
-        sb.append(it.toJvmType())
+        sb.append(it.type!!.toJvmType())
     }
     sb.append(")V")
     return sb.toString()

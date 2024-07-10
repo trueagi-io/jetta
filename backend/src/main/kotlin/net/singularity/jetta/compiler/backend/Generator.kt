@@ -28,7 +28,11 @@ class Generator {
             null
         )
         // FIXME: sort it carefully by level
-        val result = findLambdas(source).toList().map { (name, lambda) ->
+        val result = findLambdas(source).toList().sortedBy {
+            it.first.mapNotNull { ch ->
+                if (ch == '$') null else ch
+            }.joinToString(separator = "")
+        }.reversed().map { (name, lambda) ->
             lambda.resolvedClassName = name
             val lambdaGenerator = LambdaGenerator(name, lambda)
             lambdaGenerator.generate()
@@ -43,8 +47,9 @@ class Generator {
                         node.getSignature(),
                         null
                     )
-                    FunctionGenerator(mv, node, true).generate()
+                    FunctionGenerator(mv, node, true, null).generate()
                 }
+
                 else -> TODO("Not implemented yet")
             }
         }
@@ -69,14 +74,21 @@ class Generator {
         val result = mutableMapOf<String, Lambda>()
         if (body.atoms.first() == Predefined.RUN_SEQ) {
             body.atoms.drop(1).forEach {
-               result.putAll(findLambdas(name, it as Expression))
+                result.putAll(findLambdas(name, it as Expression))
             }
         }
         body.atoms.forEach {
-            if (it is Lambda) {
-                val lambdaName = "$name$${counter++}"
-                result[lambdaName] = it
-                result.putAll(findLambdas(lambdaName, it.body))
+            when (it) {
+                is Lambda -> {
+                    val lambdaName = "$name$${counter++}"
+                    result[lambdaName] = it
+                    result.putAll(findLambdas(lambdaName, it.body))
+                }
+
+                is Expression -> {
+                    result.putAll(findLambdas(name, it))
+                }
+                else -> { }
             }
         }
         return result
