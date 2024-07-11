@@ -82,6 +82,7 @@ variable
 
 identifier
     : IDENT
+    | IDENT_WITH_ID
     ;
 
 symbol
@@ -96,13 +97,22 @@ COMMENT
     : ';' .*? '\n' -> skip
     ;
 
-INTEGER
+fragment NON_NEGATIVE_INTEGER
     : ZERO
     | NON_ZERO_DIGIT DIGIT*
     ;
 
+IDENT_WITH_ID
+    : IDENT '#' NON_NEGATIVE_INTEGER
+    ;
+
+INTEGER
+    : ZERO
+    | ('-' | '+')? NON_ZERO_DIGIT DIGIT*
+    ;
+
 DOUBLE
-    : DIGIT+ (('.' DIGIT+ EXPONENT?)? | EXPONENT)
+    : ('-' | '+')? DIGIT+ (('.' DIGIT+ EXPONENT?)? | EXPONENT)
     ;
 
 fragment EXPONENT
@@ -170,5 +180,5 @@ RPAREN
     ;
 
 IDENT
-    : [a-zA-Z_] [a-zA-Z0-9_]*
+    : [a-zA-Z_] [a-zA-Z0-9_\-]*
     ;

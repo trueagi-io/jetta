@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.frontend
 
 import net.singularity.jetta.compiler.parser.messages.ParseErrorMessage
 import org.junit.jupiter.api.Test
+import kotlin.test.Ignore
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -60,5 +61,37 @@ class ParserTest : BaseFrontendTest() {
         )
         assertEquals(1, messageCollector.list().size)
         assertTrue(messageCollector.list()[0] is ParseErrorMessage)
+    }
+
+    @Test
+    fun variablesWithId() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        parser.parse(
+            Source(
+                "VariablesWithId.metta",
+                """
+                (: foo (Int Int))
+                (= (foo _x#52) (+ _x#52 1))
+                """.trimIndent().replace('_', '$')
+            ),
+            messageCollector
+        )
+        assertEquals(0, messageCollector.list().size)
+    }
+    @Test
+    fun dashInIdent() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val program = parser.parse(
+            Source(
+                "DashInIdent.metta",
+                """
+                (hello-world)
+                """.trimIndent()
+            ),
+            messageCollector
+        )
+        assertEquals("[(hello-world)]", program.code.toString())
     }
 }
