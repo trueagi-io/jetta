@@ -38,6 +38,11 @@ special
     | times
     | if
     | eq
+    | lambda
+    ;
+
+lambda
+    : LAMBDA
     ;
 
 eq
@@ -150,6 +155,10 @@ IF
 
 EQ
     : '=='
+    ;
+    
+LAMBDA
+    : '\\'
     ;
 
 LPAREN

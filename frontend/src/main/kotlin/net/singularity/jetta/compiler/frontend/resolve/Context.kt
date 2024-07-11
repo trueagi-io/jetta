@@ -35,16 +35,18 @@ class Context(private val messageCollector: MessageCollector) {
     private fun SymbolDef.toJvm() = JvmMethod(
         owner = owner,
         name = func.name,
-        descriptor = func.getJvmDescriptor()
+        descriptor = func.getJvmDescriptor(),
+        signature = func.getSignature()
     )
 
-    fun addResolvedFunction(owner: String, func: FunctionDefinition) {
+    private fun addResolvedFunction(owner: String, func: FunctionDefinition) {
         logger.debug("Add function ${func.name}")
         resolvedFunctions[func.name] = SymbolDef(owner, func)
         main?.let {
             val lastCall = it.body.atoms.last()
             if (lastCall is Expression &&
-                (lastCall.atoms[0] as? Symbol)?.name == func.name) {
+                (lastCall.atoms[0] as? Symbol)?.name == func.name
+            ) {
                 it.arrowType = ArrowType(listOf(func.returnType!!))
                 lastCall.resolved = resolve(func.name)
             }
@@ -193,7 +195,8 @@ class Context(private val messageCollector: MessageCollector) {
                 }
                 updated.forEach { postponedFunctions.remove(it) }
             } while (unresolvedElements.isNotEmpty() || unresolvedElements.size != numElements)
-        } catch (_: UndefinedSymbolException) { }
+        } catch (_: UndefinedSymbolException) {
+        }
         if (unresolvedElements.isNotEmpty()) {
             unresolvedElements.forEach { (_, data) ->
                 messageCollector.add(CannotInferTypeMessage(data.atom, data.info.functionDefinition))
@@ -228,10 +231,11 @@ class Context(private val messageCollector: MessageCollector) {
     }
 
     private fun resolveSource(source: ParsedSource) {
+        println(source)
         source.code.map {
             when (it) {
                 is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)
-                else -> TODO()
+                else -> TODO("it=$it")
             }
         }
     }
@@ -241,6 +245,7 @@ class Context(private val messageCollector: MessageCollector) {
         if (functionDefinition.returnType != null) addResolvedFunction(owner, functionDefinition)
         functionDefinition.typedParameters?.forEach {
             typedVariables[it.name] = it.type!!
+            functionDefinition.params.find { v -> v.name == it.name }?.type = it.type
         }
         resolveExpression(
             functionDefinition.body,
@@ -249,7 +254,7 @@ class Context(private val messageCollector: MessageCollector) {
         definedFunctions[functionDefinition.name] = SymbolDef(owner, functionDefinition)
     }
 
-    private fun resolveAtom(atom: Atom, typeInfo: TypeInfo) {
+    private fun resolveAtom(atom: Atom, typeInfo: TypeInfo, suggestedType: Atom? = null) {
         logger.debug("Resolving atom: $atom")
         when (atom) {
             is Expression -> resolveExpression(atom, typeInfo)
@@ -258,8 +263,29 @@ class Context(private val messageCollector: MessageCollector) {
             }
 
             is Grounded<*> -> {}
-            else -> TODO("atom=$atom")
+            is Lambda -> {
+                atom.arrowType = suggestedType as ArrowType
+                atom.type = suggestedType
+                atom.params.forEachIndexed { index, variable ->
+                    variable.type = atom.arrowType!!.types[index]
+                }
+                val lambdaTypeInfo = createLambdaTypeInfo(typeInfo, atom)
+                resolveExpression(atom.body, lambdaTypeInfo)
+            }
+            else -> TODO("atom=$atom -> $typeInfo")
         }
+    }
+
+    private fun createLambdaTypeInfo(parentTypeInfo: TypeInfo, lambda: Lambda): TypeInfo {
+        val data = mutableMapOf<String, Atom>()
+        data.putAll(parentTypeInfo.data)
+        lambda.params.forEach {
+            data[it.name] = it.type!!
+        }
+        return TypeInfo(
+            data,
+            parentTypeInfo.functionDefinition
+        )
     }
 
     private fun resolveExpression(expression: Expression, typeInfo: TypeInfo) {
@@ -273,7 +299,10 @@ class Context(private val messageCollector: MessageCollector) {
             is Symbol -> {
                 val resolved = resolve(atom.name)
                 if (resolved != null) {
-                    expression.arguments().map { resolveAtom(it, typeInfo) }
+                    val arrowType = resolved.arrowType()
+                    expression.arguments().mapIndexed { index, arg ->
+                        resolveAtom(arg, typeInfo, arrowType.types[index])
+                    }
                     expression.resolved = resolved
                     expression.type = resolved.arrowType().types.last()
                 } else {
@@ -310,11 +339,19 @@ class Context(private val messageCollector: MessageCollector) {
                     resolveAtom(it, typeInfo)
                 }
                 expression.type = expression.atoms.last().type
-                println(">>>> " + expression.atoms.last())
                 typeInfo.functionDefinition.arrowType = expression.type?.let {
                     ArrowType(listOf(it))
                 }
             }
+
+            is Variable -> {
+                resolveAtom(atom, typeInfo)
+                expression.arguments().forEach {
+                    resolveAtom(it, typeInfo)
+                }
+            }
+
+
             else -> TODO("atom=$atom")
         }
     }

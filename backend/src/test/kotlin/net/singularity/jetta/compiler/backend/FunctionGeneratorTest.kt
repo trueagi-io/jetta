@@ -34,7 +34,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("Example1.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name).invoke(null)
@@ -53,7 +53,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("Example2.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Int::class.java).invoke(null, 3)
@@ -66,7 +66,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         // (= (example3 $x $y) (+ $x $y 1))
         val function = FunctionDefinition(
             name = "example3",
-            params = listOf(Variable("x"), Variable("y")),
+            params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.INT)),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
             body = Expression(
                 PLUS,
@@ -78,7 +78,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("Example3.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Int::class.java, Int::class.java).invoke(null, 3, 2)
@@ -91,7 +91,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         // (= (example4 $x $y) (+ $x $y 10 20))
         val function = FunctionDefinition(
             name = "example4",
-            params = listOf(Variable("x"), Variable("y")),
+            params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.INT)),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
             body = Expression(
                 PLUS,
@@ -104,7 +104,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("Example4.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Int::class.java, Int::class.java).invoke(null, 30, 40)
@@ -142,7 +142,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("Factorial.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Int::class.java).invoke(null, 3)
@@ -170,7 +170,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("ExternalStaticCall.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name).invoke(null)
@@ -221,7 +221,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("ShortCircuitAnd.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val method = clazz.getMethod(function.name, Int::class.java)
@@ -279,7 +279,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("ShortCircuitAnd.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val method = clazz.getMethod(function.name, Int::class.java)
@@ -492,7 +492,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val generator = Generator()
         val source = ParsedSource("NestedIf.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val method = clazz.getMethod(function.name, Int::class.java, Int::class.java)
@@ -527,7 +527,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         val function = createBooleanFunc(expr, GroundedType.BOOLEAN)
         val generator = Generator()
         val source = ParsedSource("BooleanParams.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val method = clazz.getMethod(function.name, Boolean::class.java, Boolean::class.java)
@@ -541,7 +541,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         val function = createBooleanFunc(expr, GroundedType.INT)
         val generator = Generator()
         val source = ParsedSource("BooleanExample.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         (1..10).flatMap { x ->
@@ -568,7 +568,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     private fun createBooleanFunc(expr: Expression, paramType: GroundedType): FunctionDefinition =
         FunctionDefinition(
             name = "booleanFunc",
-            params = listOf(Variable("x"), Variable("y")),
+            params = listOf(Variable("x", paramType), Variable("y", paramType)),
             arrowType = ArrowType(types = listOf(paramType, paramType, GroundedType.BOOLEAN)),
             body = expr
         )

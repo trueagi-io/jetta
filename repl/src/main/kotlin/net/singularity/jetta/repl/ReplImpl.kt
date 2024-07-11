@@ -8,6 +8,8 @@ import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import java.io.File
@@ -27,10 +29,11 @@ class ReplImpl : Repl {
         if (messageCollector.hasErrors()) {
             return EvalResult(null, messages, false)
         }
-        classLoader.add(result!!)
+        result.forEach(classLoader::add)
+        val main = result.find { it.className == filename }!!
         println("$filename.class")
-        File("/tmp/$filename.class").writeBytes(result.bytecode)
-        val clazz = classLoader.loadClass(result.className)
+        File("/tmp/$filename.class").writeBytes(main.bytecode)
+        val clazz = classLoader.loadClass(main.className)
         clazz.methods.forEach {
             println(it.name)
         }
@@ -41,17 +44,19 @@ class ReplImpl : Repl {
         return EvalResult(null, messages, true)
     }
 
-    private fun compile(filename: String, code: String): CompilationResult? {
+    private fun compile(filename: String, code: String): List<CompilationResult> {
         val parser = createParserFacade()
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = CompositeRewriter()
+        rewriter.add(FunctionRewriter(messageCollector))
+        rewriter.add(LambdaRewriter(messageCollector))
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = try {
             rewriter.rewrite(parsed)
         } catch (_: RewriteException) {
-            return null
+            return listOf()
         }
         context.resolve(result)
-        if (messageCollector.list().isNotEmpty()) return null
+        if (messageCollector.list().isNotEmpty()) return listOf()
         val generator = Generator()
         return generator.generate(result)
     }

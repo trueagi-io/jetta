@@ -17,7 +17,7 @@ class FloatingPointTest : GeneratorTestBase() {
         val function = createFunc(expr)
         val generator = Generator()
         val source = ParsedSource("AddDouble.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Double::class.java, Double::class.java).invoke(null, 1.0, 2.0)
@@ -35,7 +35,7 @@ class FloatingPointTest : GeneratorTestBase() {
         val function = createFunc(expr)
         val generator = Generator()
         val source = ParsedSource("AddDouble.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Double::class.java).invoke(null, 10.0)
@@ -52,13 +52,13 @@ class FloatingPointTest : GeneratorTestBase() {
         )
         val function = FunctionDefinition(
             name = "floatingPointFunc",
-            params = listOf(Variable("x"), Variable("y")),
+            params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.DOUBLE)),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.DOUBLE, GroundedType.DOUBLE)),
             body = expr
         )
         val generator = Generator()
         val source = ParsedSource("IntDoubleImplicitCast.metta", listOf(function))
-        val result = generator.generate(source)
+        val result = generator.generate(source)[0]
         writeResult(result)
         val clazz = result.getClass()
         val r = clazz.getMethod(function.name, Int::class.java, Double::class.java).invoke(null, 1, 2.0)

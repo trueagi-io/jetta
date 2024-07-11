@@ -81,6 +81,9 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
         ctx.eq()?.let {
             return Predefined.COND_EQ
         }
+        ctx.lambda()?.let {
+            return Predefined.LAMBDA
+        }
         TODO()
     }
 
