@@ -146,4 +146,23 @@ class LambdaTest : GeneratorTestBase() {
                 .invoke(null, 5)
             assertEquals(65, value)
         }
+
+    @Test
+    fun lambda3() =
+        compile(
+            "Lambda.metta",
+            """
+                (: foo (-> Int Int (-> Int Int Int Int) Int))
+                (= (foo _x _y _f) (_f _x _y _x))
+                (foo 10 20 (\ (_x _y _z) (+ _x _y _z)))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            val value = classes["Lambda"]!!.getMethod("__main").invoke(null)
+            assertEquals(40, value)
+        }
 }
