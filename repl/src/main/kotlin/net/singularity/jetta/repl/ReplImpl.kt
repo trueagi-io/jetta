@@ -23,7 +23,11 @@ class ReplImpl : Repl {
 
     override fun eval(code: String): EvalResult {
         val filename = createFilename()
-        val result = compile(filename, code)
+        val result = try {
+            compile(filename, code)
+        } catch (e: Exception) {
+            return EvalResult(null, listOf(e.stackTraceToString()), false)
+        }
         val renderer = createMessageRenderer()
         val messages = messageCollector.list().map { renderer.render(it) }
         if (messageCollector.hasErrors()) {
