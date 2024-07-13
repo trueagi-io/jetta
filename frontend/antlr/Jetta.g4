@@ -38,6 +38,12 @@ special
     | times
     | if
     | eq
+    | neq
+    | lt
+    | gt
+    | le
+    | ge
+    | divide
     | lambda
     ;
 
@@ -48,6 +54,31 @@ lambda
 eq
     : EQ
     ;
+
+neq
+    : NEQ
+    ;
+
+lt
+    : LT
+    ;
+
+gt
+    : GT
+    ;
+
+le
+    : LE
+    ;
+
+ge
+    : GE
+    ;
+
+divide
+    : DIVIDE
+    ;
+
 plus
     : PLUS
     ;
@@ -165,6 +196,30 @@ IF
 
 EQ
     : '=='
+    ;
+
+NEQ
+    : '!='
+    ;
+
+LT
+    : '<'
+    ;
+
+GT
+    : '>'
+    ;
+
+LE
+    : '<='
+    ;
+
+GE
+    : '>='
+    ;
+
+DIVIDE
+    : '/'
     ;
     
 LAMBDA

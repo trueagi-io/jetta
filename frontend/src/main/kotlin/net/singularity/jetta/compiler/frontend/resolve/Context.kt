@@ -272,6 +272,7 @@ class Context(private val messageCollector: MessageCollector) {
                 val lambdaTypeInfo = createLambdaTypeInfo(typeInfo, atom)
                 resolveExpression(atom.body, lambdaTypeInfo)
             }
+
             else -> TODO("atom=$atom -> $typeInfo")
         }
     }
@@ -319,10 +320,16 @@ class Context(private val messageCollector: MessageCollector) {
                 resolveAtom(elseBranch, typeInfo)
             }
 
-            Predefined.COND_EQ -> {
+            Predefined.COND_EQ,
+            Predefined.COND_NEQ,
+            Predefined.COND_LT,
+            Predefined.COND_GT,
+            Predefined.COND_LE,
+            Predefined.COND_GE -> {
                 val (_, lhs, rhs) = expression.atoms
                 resolveAtom(lhs, typeInfo)
                 resolveAtom(rhs, typeInfo)
+                expression.type = GroundedType.BOOLEAN
             }
 
             Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
@@ -332,6 +339,13 @@ class Context(private val messageCollector: MessageCollector) {
                     if (it.type == GroundedType.DOUBLE) hasDouble = true
                 }
                 expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
+            }
+
+            Predefined.DIVIDE -> {
+                val (_, lhs, rhs) = expression.atoms
+                resolveAtom(lhs, typeInfo)
+                resolveAtom(rhs, typeInfo)
+                expression.type = GroundedType.DOUBLE
             }
 
             Predefined.RUN_SEQ -> {

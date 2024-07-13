@@ -8,6 +8,7 @@ object Predefined {
     val PLUS = Special("+")
     val MINUS = Special("-")
     val TIMES = Special("*")
+    val DIVIDE = Special("/")
     val COND_EQ = Special("==")
     val COND_NEQ = Special("!=")
     val COND_GT = Special(">")

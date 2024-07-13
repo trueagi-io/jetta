@@ -52,6 +52,8 @@ open class FunctionGenerator(
                         doReturn
                     )
 
+                    Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
+
                     Predefined.IF -> generateIf(mv, arguments, exit, doReturn)
                     Predefined.RUN_SEQ -> {
                         arguments.forEach {
@@ -255,6 +257,19 @@ open class FunctionGenerator(
             return
         }
         TODO()
+    }
+
+    private fun generateDivide(
+        mv: MethodVisitor,
+        arguments: List<Atom>,
+        doReturn: Boolean
+    ) {
+        generateAtom(mv, arguments[0], null, false)
+        castIfNeeded(mv, arguments[0].type(), GroundedType.DOUBLE)
+        generateAtom(mv, arguments[1], null, false)
+        castIfNeeded(mv, arguments[1].type(), GroundedType.DOUBLE)
+        mv.visitInsn(Opcodes.DDIV)
+        if (doReturn) generateReturn(mv)
     }
 
     private fun generateArithmetics(
