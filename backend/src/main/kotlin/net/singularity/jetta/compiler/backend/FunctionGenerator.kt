@@ -122,32 +122,6 @@ open class FunctionGenerator(
         )
     }
 
-    /*
-
-   public final foo(ILkotlin/jvm/functions/Function2;)V
-  // annotable parameter count: 2 (invisible)
-  @Lorg/jetbrains/annotations/NotNull;() // invisible, parameter 1
-   L0
-  ALOAD 2
-  LDC "f"
-  INVOKESTATIC kotlin/jvm/internal/Intrinsics.checkNotNullParameter (Ljava/lang/Object;Ljava/lang/String;)V
- L1
-  LINENUMBER 64 L1
-  ALOAD 2
-  ILOAD 1
-  INVOKESTATIC java/lang/Integer.valueOf (I)Ljava/lang/Integer;
-  ILOAD 1
-  INVOKESTATIC java/lang/Integer.valueOf (I)Ljava/lang/Integer;
-  INVOKEINTERFACE kotlin/jvm/functions/Function2.invoke (Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object; (itf)
-  CHECKCAST java/lang/Number
-  INVOKEVIRTUAL java/lang/Number.intValue ()I
-  ISTORE 3
-  GETSTATIC java/lang/System.out : Ljava/io/PrintStream;
-  ILOAD 3
-  INVOKEVIRTUAL java/io/PrintStream.println (I)V
- L2
-   */
-
     private fun generateLambdaCall(mv: MethodVisitor, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
         if (index < 0) throw IllegalArgumentException(variable.toString())

@@ -2,7 +2,6 @@ package net.singularity.jetta.compiler.frontend
 
 import net.singularity.jetta.compiler.parser.messages.ParseErrorMessage
 import org.junit.jupiter.api.Test
-import kotlin.test.Ignore
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
