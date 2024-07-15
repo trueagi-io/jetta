@@ -353,6 +353,13 @@ class Context(private val messageCollector: MessageCollector) {
                     expression.type = GroundedType.DOUBLE
                 }
 
+                Predefined.DIV, Predefined.MOD -> {
+                    val (_, lhs, rhs) = expression.atoms
+                    resolveAtom(lhs, typeInfo)
+                    resolveAtom(rhs, typeInfo)
+                    expression.type = GroundedType.INT
+                }
+
                 Predefined.RUN_SEQ -> {
                     expression.arguments().forEach {
                         resolveAtom(it, typeInfo)

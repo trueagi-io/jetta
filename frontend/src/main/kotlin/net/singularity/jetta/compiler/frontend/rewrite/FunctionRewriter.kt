@@ -72,12 +72,27 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
             }
         })
 
-    private fun rewriteExpression(expression: Expression): Atom =
-        when ((expression.atoms[0] as? Special)?.value) {
-            Predefined.ARROW -> mkArrow(expression)
-            else -> expression
+    private fun rewriteExpression(expression: Expression): Atom {
+        val func = expression.atoms[0]
+        return if (func is Special && func.value == Predefined.ARROW) {
+            mkArrow(expression)
+        } else if (func is Symbol && (func.name == Predefined.DIV || func.name == Predefined.MOD)) {
+            mkSpecialFromSymbol(expression)
+        } else {
+            expression
         }
+    }
 
+    private fun mkSpecialFromSymbol(expression: Expression): Expression {
+        val atoms = expression.atoms.mapIndexed { index, atom ->
+            if (index == 0) {
+                Special((atom as Symbol).name)
+            } else {
+                atom
+            }
+        }
+        return expression.copy(atoms = atoms)
+    }
 
     private fun rewriteTopLevelExpression(expression: Expression) {
         when ((expression.atoms[0] as? Special)?.value) {
@@ -85,7 +100,8 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 val pattern = expression.atoms[1] as Expression
                 val symbol = pattern.atoms[0] as Symbol
                 val list = patterns.getOrPut(symbol.name) { mutableListOf() }
-                list.add(Pattern(pattern, expression.atoms[2] as Expression))
+                // FIXME: it's better to separate rewrite rules
+                list.add(Pattern(pattern, rewriteAtom(expression.atoms[2]) as Expression))
             }
 
             Predefined.TYPE -> {

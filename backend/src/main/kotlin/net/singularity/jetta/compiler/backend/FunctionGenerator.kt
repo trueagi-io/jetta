@@ -54,6 +54,8 @@ open class FunctionGenerator(
                         )
 
                         Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
+                        Predefined.DIV -> generateDiv(mv, arguments, doReturn)
+                        Predefined.MOD -> generateMod(mv, arguments, doReturn)
 
                         Predefined.IF -> generateIf(mv, arguments, exit, doReturn)
                         Predefined.RUN_SEQ -> {
@@ -273,6 +275,28 @@ open class FunctionGenerator(
         generateAtom(mv, arguments[1], null, false)
         castIfNeeded(mv, arguments[1].type(), GroundedType.DOUBLE)
         mv.visitInsn(Opcodes.DDIV)
+        if (doReturn) generateReturn(mv)
+    }
+
+    private fun generateDiv(
+        mv: MethodVisitor,
+        arguments: List<Atom>,
+        doReturn: Boolean
+    ) {
+        generateAtom(mv, arguments[0], null, false)
+        generateAtom(mv, arguments[1], null, false)
+        mv.visitInsn(Opcodes.IDIV)
+        if (doReturn) generateReturn(mv)
+    }
+
+    private fun generateMod(
+        mv: MethodVisitor,
+        arguments: List<Atom>,
+        doReturn: Boolean
+    ) {
+        generateAtom(mv, arguments[0], null, false)
+        generateAtom(mv, arguments[1], null, false)
+        mv.visitInsn(Opcodes.IREM)
         if (doReturn) generateReturn(mv)
     }
 
