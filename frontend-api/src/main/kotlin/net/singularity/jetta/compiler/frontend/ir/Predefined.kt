@@ -2,41 +2,44 @@ package net.singularity.jetta.compiler.frontend.ir
 
 
 object Predefined {
-    val PATTERN = Special("=")
-    val TYPE = Special(":")
-    val ARROW = Special("->")
-    val PLUS = Special("+")
-    val MINUS = Special("-")
-    val TIMES = Special("*")
-    val DIVIDE = Special("/")
-    val COND_EQ = Special("==")
-    val COND_NEQ = Special("!=")
-    val COND_GT = Special(">")
-    val COND_GE = Special(">=")
-    val COND_LT = Special("<")
-    val COND_LE = Special("<=")
-    val IF = Special("if")
-    val TRUE = Grounded(true)
-    val FALSE = Grounded(false)
-    val AND = Special("and")
-    val OR = Special("or")
-    val NOT = Special("not")
-    val XOR = Special("xor")
-    val RUN_SEQ = Special("run-seq!")
-    val LAMBDA = Special("\\")
+    val PATTERN = "="
+    val TYPE = ":"
+    val ARROW = "->"
+    val PLUS = "+"
+    val MINUS = "-"
+    val TIMES = "*"
+    val DIVIDE = "/"
+    val COND_EQ = "=="
+    val COND_NEQ = "!="
+    val COND_GT = ">"
+    val COND_GE = ">="
+    val COND_LT = "<"
+    val COND_LE = "<="
+    val IF = "if"
+    val TRUE = "true"
+    val FALSE = "false"
+    val AND = "and"
+    val OR = "or"
+    val NOT = "not"
+    val XOR = "xor"
+    val RUN_SEQ = "run-seq!"
+    val LAMBDA = "\\"
 }
 
 fun Atom.isBooleanExpression(): Boolean =
-    when (this) {
-        Predefined.COND_EQ,
-        Predefined.COND_NEQ,
-        Predefined.COND_GT,
-        Predefined.COND_GE,
-        Predefined.COND_LT,
-        Predefined.COND_LE,
-        Predefined.AND,
-        Predefined.OR,
-        Predefined.NOT,
-        Predefined.XOR -> true
-        else -> false
-    }
+    if (this is Special) {
+        when (this.value) {
+            Predefined.COND_EQ,
+            Predefined.COND_NEQ,
+            Predefined.COND_GT,
+            Predefined.COND_GE,
+            Predefined.COND_LT,
+            Predefined.COND_LE,
+            Predefined.AND,
+            Predefined.OR,
+            Predefined.NOT,
+            Predefined.XOR -> true
+
+            else -> false
+        }
+    } else false

@@ -9,7 +9,7 @@ class FloatingPointTest : GeneratorTestBase() {
     @Test
     fun addDouble() {
         val expr = Expression(
-            Predefined.PLUS,
+            Special(Predefined.PLUS),
             Variable("x", GroundedType.DOUBLE),
             Variable("y", GroundedType.DOUBLE),
             type = GroundedType.DOUBLE
@@ -27,7 +27,7 @@ class FloatingPointTest : GeneratorTestBase() {
     @Test
     fun addConstant() {
         val expr = Expression(
-            Predefined.PLUS,
+            Special(Predefined.PLUS),
             Variable("x", GroundedType.DOUBLE),
             Grounded(2.0),
             type = GroundedType.DOUBLE
@@ -45,7 +45,7 @@ class FloatingPointTest : GeneratorTestBase() {
     @Test
     fun intToDoubleImplicitCast() {
         val expr = Expression(
-            Predefined.PLUS,
+            Special(Predefined.PLUS),
             Variable("x", GroundedType.INT),
             Variable("y", GroundedType.DOUBLE),
             type = GroundedType.DOUBLE

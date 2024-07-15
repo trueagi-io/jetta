@@ -55,7 +55,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
             MAIN,
             listOf(),
             null,
-            Expression(listOf(Predefined.RUN_SEQ) + main)
+            Expression(listOf(Special(Predefined.RUN_SEQ)) + main)
         )
 
     private fun rewriteAtom(atom: Atom): Atom =
@@ -73,14 +73,14 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         })
 
     private fun rewriteExpression(expression: Expression): Atom =
-        when (expression.atoms[0]) {
+        when ((expression.atoms[0] as? Special)?.value) {
             Predefined.ARROW -> mkArrow(expression)
             else -> expression
         }
 
 
     private fun rewriteTopLevelExpression(expression: Expression) {
-        when (expression.atoms[0]) {
+        when ((expression.atoms[0] as? Special)?.value) {
             Predefined.PATTERN -> {
                 val pattern = expression.atoms[1] as Expression
                 val symbol = pattern.atoms[0] as Symbol

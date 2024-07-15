@@ -113,36 +113,40 @@ class Context(private val messageCollector: MessageCollector) {
                 }
             }
 
-            Predefined.IF -> {
-                val (_, cond, thenBranch, elseBranch) = expression.atoms
-                inferType(cond, typeInfo)
-                inferType(thenBranch, typeInfo)
-                inferType(elseBranch, typeInfo, thenBranch.type)
-                inferType(thenBranch, typeInfo, elseBranch.type)
-                // TODO: check types of then and else
-                // TODO: for simplicity now (should be unified)
-                expression.type = thenBranch.type ?: elseBranch.type
-            }
+            is Special -> when (atom.value) {
+                Predefined.IF -> {
+                    val (_, cond, thenBranch, elseBranch) = expression.atoms
+                    inferType(cond, typeInfo)
+                    inferType(thenBranch, typeInfo)
+                    inferType(elseBranch, typeInfo, thenBranch.type)
+                    inferType(thenBranch, typeInfo, elseBranch.type)
+                    // TODO: check types of then and else
+                    // TODO: for simplicity now (should be unified)
+                    expression.type = thenBranch.type ?: elseBranch.type
+                }
 
-            Predefined.COND_EQ -> {
-                val (_, lhs, rhs) = expression.atoms
-                inferType(lhs, typeInfo)
-                inferType(rhs, typeInfo)
-                if (lhs.type != null && rhs.type == null) {
-                    rhs.type = lhs.type
-                    if (rhs is Variable) typeInfo.data[rhs.name] = lhs.type!!
+                Predefined.COND_EQ -> {
+                    val (_, lhs, rhs) = expression.atoms
+                    inferType(lhs, typeInfo)
+                    inferType(rhs, typeInfo)
+                    if (lhs.type != null && rhs.type == null) {
+                        rhs.type = lhs.type
+                        if (rhs is Variable) typeInfo.data[rhs.name] = lhs.type!!
+                    }
+                    if (lhs.type == null && rhs.type != null) {
+                        lhs.type = rhs.type
+                        if (lhs is Variable) typeInfo.data[lhs.name] = rhs.type!!
+                    }
+                    expression.type = GroundedType.BOOLEAN
                 }
-                if (lhs.type == null && rhs.type != null) {
-                    lhs.type = rhs.type
-                    if (lhs is Variable) typeInfo.data[lhs.name] = rhs.type!!
-                }
-                expression.type = GroundedType.BOOLEAN
-            }
 
-            Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
-                expression.arguments().forEach {
-                    inferType(it, typeInfo)
+                Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
+                    expression.arguments().forEach {
+                        inferType(it, typeInfo)
+                    }
                 }
+
+                else -> TODO("atom=$atom")
             }
 
             else -> TODO("atom=$atom")
@@ -313,49 +317,53 @@ class Context(private val messageCollector: MessageCollector) {
                 }
             }
 
-            Predefined.IF -> {
-                val (_, cond, thenBranch, elseBranch) = expression.atoms
-                resolveAtom(cond, typeInfo)
-                resolveAtom(thenBranch, typeInfo)
-                resolveAtom(elseBranch, typeInfo)
-            }
-
-            Predefined.COND_EQ,
-            Predefined.COND_NEQ,
-            Predefined.COND_LT,
-            Predefined.COND_GT,
-            Predefined.COND_LE,
-            Predefined.COND_GE -> {
-                val (_, lhs, rhs) = expression.atoms
-                resolveAtom(lhs, typeInfo)
-                resolveAtom(rhs, typeInfo)
-                expression.type = GroundedType.BOOLEAN
-            }
-
-            Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
-                var hasDouble = false
-                expression.atoms.drop(1).forEach {
-                    resolveAtom(it, typeInfo)
-                    if (it.type == GroundedType.DOUBLE) hasDouble = true
+            is Special -> when (atom.value) {
+                Predefined.IF -> {
+                    val (_, cond, thenBranch, elseBranch) = expression.atoms
+                    resolveAtom(cond, typeInfo)
+                    resolveAtom(thenBranch, typeInfo)
+                    resolveAtom(elseBranch, typeInfo)
                 }
-                expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
-            }
 
-            Predefined.DIVIDE -> {
-                val (_, lhs, rhs) = expression.atoms
-                resolveAtom(lhs, typeInfo)
-                resolveAtom(rhs, typeInfo)
-                expression.type = GroundedType.DOUBLE
-            }
+                Predefined.COND_EQ,
+                Predefined.COND_NEQ,
+                Predefined.COND_LT,
+                Predefined.COND_GT,
+                Predefined.COND_LE,
+                Predefined.COND_GE -> {
+                    val (_, lhs, rhs) = expression.atoms
+                    resolveAtom(lhs, typeInfo)
+                    resolveAtom(rhs, typeInfo)
+                    expression.type = GroundedType.BOOLEAN
+                }
 
-            Predefined.RUN_SEQ -> {
-                expression.arguments().forEach {
-                    resolveAtom(it, typeInfo)
+                Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
+                    var hasDouble = false
+                    expression.atoms.drop(1).forEach {
+                        resolveAtom(it, typeInfo)
+                        if (it.type == GroundedType.DOUBLE) hasDouble = true
+                    }
+                    expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
                 }
-                expression.type = expression.atoms.last().type
-                typeInfo.functionDefinition.arrowType = expression.type?.let {
-                    ArrowType(listOf(it))
+
+                Predefined.DIVIDE -> {
+                    val (_, lhs, rhs) = expression.atoms
+                    resolveAtom(lhs, typeInfo)
+                    resolveAtom(rhs, typeInfo)
+                    expression.type = GroundedType.DOUBLE
                 }
+
+                Predefined.RUN_SEQ -> {
+                    expression.arguments().forEach {
+                        resolveAtom(it, typeInfo)
+                    }
+                    expression.type = expression.atoms.last().type
+                    typeInfo.functionDefinition.arrowType = expression.type?.let {
+                        ArrowType(listOf(it))
+                    }
+                }
+
+                else -> TODO("atom=$atom")
             }
 
             is Variable -> {

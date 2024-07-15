@@ -1,10 +1,7 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ParsedSource
-import net.singularity.jetta.compiler.frontend.ir.Expression
-import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
-import net.singularity.jetta.compiler.frontend.ir.Lambda
-import net.singularity.jetta.compiler.frontend.ir.Predefined
+import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.frontend.resolve.getJvmDescriptor
 import net.singularity.jetta.compiler.frontend.resolve.getSignature
@@ -72,7 +69,7 @@ class Generator {
     private fun findLambdas(name: String, body: Expression): Map<String, Lambda> {
         var counter = 1
         val result = mutableMapOf<String, Lambda>()
-        if (body.atoms.first() == Predefined.RUN_SEQ) {
+        if ((body.atoms.first() as? Special)?.value == Predefined.RUN_SEQ) {
             body.atoms.drop(1).forEach {
                 result.putAll(findLambdas(name, it as Expression))
             }

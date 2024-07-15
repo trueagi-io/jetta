@@ -30,7 +30,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             name = "example1",
             params = listOf(),
             arrowType = ArrowType(types = listOf(GroundedType.INT)),
-            body = Expression(PLUS, Grounded(1), Grounded(1), type = GroundedType.INT)
+            body = Expression(Special(PLUS), Grounded(1), Grounded(1), type = GroundedType.INT)
         )
         val generator = Generator()
         val source = ParsedSource("Example1.metta", listOf(function))
@@ -49,7 +49,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             name = "example2",
             params = listOf(Variable("x")),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT)),
-            body = Expression(PLUS, Variable("x", GroundedType.INT), Grounded(1), type = GroundedType.INT)
+            body = Expression(Special(PLUS), Variable("x", GroundedType.INT), Grounded(1), type = GroundedType.INT)
         )
         val generator = Generator()
         val source = ParsedSource("Example2.metta", listOf(function))
@@ -69,7 +69,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.INT)),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
             body = Expression(
-                PLUS,
+                Special(PLUS),
                 Variable("x", GroundedType.INT),
                 Variable("y", GroundedType.INT),
                 Grounded(1),
@@ -94,7 +94,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.INT)),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
             body = Expression(
-                PLUS,
+                Special(PLUS),
                 Variable("x", GroundedType.INT),
                 Variable("y", GroundedType.INT),
                 Grounded(10),
@@ -126,13 +126,13 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             params = listOf(n),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT)),
             body = Expression(
-                IF,
-                Expression(COND_EQ, n, Grounded(0), type = GroundedType.INT),
+                Special(IF),
+                Expression(Special(COND_EQ), n, Grounded(0), type = GroundedType.INT),
                 Grounded(1),
                 Expression(
-                    TIMES, n, Expression(
+                    Special(TIMES), n, Expression(
                         Symbol(factorial),
-                        Expression(MINUS, n, Grounded(1), type = GroundedType.INT),
+                        Expression(Special(MINUS), n, Grounded(1), type = GroundedType.INT),
                         type = GroundedType.INT,
                         resolved = resolved
                     ), type = GroundedType.INT
@@ -186,15 +186,15 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val resolved = ResolvedSymbol(undefined, false)
         val cond = Expression(
-            AND,
+            Special(AND),
             Expression(
-                COND_GT,
+                Special(COND_GT),
                 Variable("x", GroundedType.INT),
                 Grounded(5),
                 type = GroundedType.INT
             ),
             Expression(
-                COND_LE,
+                Special(COND_LE),
                 Expression(
                     Symbol(undefined.name),
                     type = GroundedType.INT,
@@ -212,7 +212,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             params = listOf(Variable("x")),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT)),
             body = Expression(
-                IF,
+                Special(IF),
                 cond,
                 Grounded(1),
                 Grounded(0),
@@ -244,15 +244,15 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         )
         val resolved = ResolvedSymbol(undefined, false)
         val cond = Expression(
-            OR,
+            Special(OR),
             Expression(
-                COND_GT,
+                Special(COND_GT),
                 Variable("x", GroundedType.INT),
                 Grounded(5),
                 type = GroundedType.BOOLEAN
             ),
             Expression(
-                COND_LE,
+                Special(COND_LE),
                 Expression(
                     Symbol(undefined.name),
                     type = GroundedType.INT,
@@ -270,7 +270,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             params = listOf(Variable("x")),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT)),
             body = Expression(
-                IF,
+                Special(IF),
                 cond,
                 Grounded(1),
                 Grounded(0),
@@ -295,46 +295,46 @@ class FunctionGeneratorTest : GeneratorTestBase() {
 
     @Test
     fun booleanFuncEq() {
-        testBooleanFunc(COND_EQ) { x, y -> x == y }
+        testBooleanFunc(Special(COND_EQ)) { x, y -> x == y }
     }
 
     @Test
     fun booleanFuncNeq() {
-        testBooleanFunc(COND_NEQ) { x, y -> x != y }
+        testBooleanFunc(Special(COND_NEQ)) { x, y -> x != y }
     }
 
     @Test
     fun booleanFuncGt() {
-        testBooleanFunc(COND_GT) { x, y -> x > y }
+        testBooleanFunc(Special(COND_GT)) { x, y -> x > y }
     }
 
     @Test
     fun booleanFuncLt() {
-        testBooleanFunc(COND_LT) { x, y -> x < y }
+        testBooleanFunc(Special(COND_LT)) { x, y -> x < y }
     }
 
     @Test
     fun booleanFuncGe() {
-        testBooleanFunc(COND_GE) { x, y -> x >= y }
+        testBooleanFunc(Special(COND_GE)) { x, y -> x >= y }
     }
 
     @Test
     fun booleanFuncLe() {
-        testBooleanFunc(COND_LE) { x, y -> x <= y }
+        testBooleanFunc(Special(COND_LE)) { x, y -> x <= y }
     }
 
     @Test
     fun booleanFuncAnd() {
         val expr = Expression(
-            AND,
+            Special(AND),
             Expression(
-                COND_GT,
+                Special(COND_GT),
                 Variable("x", GroundedType.INT),
                 Grounded(5),
                 type = GroundedType.BOOLEAN
             ),
             Expression(
-                COND_LE,
+                Special(COND_LE),
                 Variable("y", GroundedType.INT),
                 Grounded(6),
                 type = GroundedType.BOOLEAN
@@ -347,15 +347,15 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     @Test
     fun booleanFuncOr() {
         val expr = Expression(
-            OR,
+            Special(OR),
             Expression(
-                COND_GT,
+                Special(COND_GT),
                 Variable("x", GroundedType.INT),
                 Grounded(5),
                 type = GroundedType.BOOLEAN
             ),
             Expression(
-                COND_LE,
+                Special(COND_LE),
                 Variable("y", GroundedType.INT),
                 Grounded(6),
                 type = GroundedType.BOOLEAN
@@ -368,15 +368,15 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     @Test
     fun booleanFuncXor() {
         val expr = Expression(
-            XOR,
+            Special(XOR),
             Expression(
-                COND_GT,
+                Special(COND_GT),
                 Variable("x", GroundedType.INT),
                 Grounded(5),
                 type = GroundedType.BOOLEAN
             ),
             Expression(
-                COND_LE,
+                Special(COND_LE),
                 Variable("y", GroundedType.INT),
                 Grounded(6),
                 type = GroundedType.BOOLEAN
@@ -389,7 +389,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     @Test
     fun booleanFuncWithIntLiteral() {
         val expr = Expression(
-            COND_EQ,
+            Special(COND_EQ),
             Variable("x", GroundedType.INT),
             Grounded(1),
             type = GroundedType.BOOLEAN
@@ -400,17 +400,17 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     @Test
     fun booleanFuncWithTrueLiteral() {
         val expr = Expression(
-            COND_EQ,
+            Special(COND_EQ),
             Expression(
-                OR,
+                Special(OR),
                 Expression(
-                    COND_GT,
+                    Special(COND_GT),
                     Variable("x", GroundedType.INT),
                     Grounded(5),
                     type = GroundedType.BOOLEAN
                 ),
                 Expression(
-                    COND_LE,
+                    Special(COND_LE),
                     Variable("y", GroundedType.INT),
                     Grounded(6),
                     type = GroundedType.BOOLEAN
@@ -426,17 +426,17 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     @Test
     fun booleanFuncCompound() {
         val expr = Expression(
-            OR,
+            Special(OR),
             Expression(
-                AND,
+                Special(AND),
                 Expression(
-                    COND_GT,
+                    Special(COND_GT),
                     Variable("x", GroundedType.INT),
                     Grounded(1),
                     type = GroundedType.BOOLEAN
                 ),
                 Expression(
-                    COND_LE,
+                    Special(COND_LE),
                     Variable("x", GroundedType.INT),
                     Grounded(5),
                     type = GroundedType.BOOLEAN
@@ -444,15 +444,15 @@ class FunctionGeneratorTest : GeneratorTestBase() {
                 type = GroundedType.BOOLEAN
             ),
             Expression(
-                AND,
+                Special(AND),
                 Expression(
-                    COND_GE,
+                    Special(COND_GE),
                     Variable("y", GroundedType.INT),
                     Grounded(1),
                     type = GroundedType.BOOLEAN
                 ),
                 Expression(
-                    COND_LT,
+                    Special(COND_LT),
                     Variable("y", GroundedType.INT),
                     Grounded(8),
                     type = GroundedType.BOOLEAN
@@ -477,12 +477,12 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             params = listOf(x, y),
             arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
             body = Expression(
-                IF,
-                Expression(COND_EQ, x, Grounded(0), type = GroundedType.BOOLEAN),
+                Special(IF),
+                Expression(Special(COND_EQ), x, Grounded(0), type = GroundedType.BOOLEAN),
                 Grounded(1),
                 Expression(
-                    IF,
-                    Expression(COND_LT, x, y, type = GroundedType.BOOLEAN),
+                    Special(IF),
+                    Expression(Special(COND_LT), x, y, type = GroundedType.BOOLEAN),
                     Grounded(2),
                     Grounded(3),
                     type = GroundedType.INT
@@ -504,17 +504,17 @@ class FunctionGeneratorTest : GeneratorTestBase() {
     @Test
     fun booleanParams() {
         val expr = Expression(
-            COND_EQ,
+            Special(COND_EQ),
             Expression(
-                OR,
+                Special(OR),
                 Expression(
-                    COND_EQ,
+                    Special(COND_EQ),
                     Variable("x", GroundedType.BOOLEAN),
                     Grounded(true),
                     type = GroundedType.BOOLEAN
                 ),
                 Expression(
-                    COND_EQ,
+                    Special(COND_EQ),
                     Variable("y", GroundedType.BOOLEAN),
                     Grounded(false),
                     type = GroundedType.BOOLEAN

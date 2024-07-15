@@ -58,49 +58,49 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
 
     override fun visitSpecial(ctx: JettaParser.SpecialContext): Atom {
         ctx.type()?.let {
-            return Predefined.TYPE
+            return Special(Predefined.TYPE, mkPosition(ctx.position))
         }
         ctx.pattern()?.let {
-            return Predefined.PATTERN
+            return Special(Predefined.PATTERN, mkPosition(ctx.position))
         }
         ctx.arrow()?.let {
-            return Predefined.ARROW
+            return Special(Predefined.ARROW, mkPosition(ctx.position))
         }
         ctx.plus()?.let {
-            return Predefined.PLUS
+            return Special(Predefined.PLUS, mkPosition(ctx.position))
         }
         ctx.minus()?.let {
-            return Predefined.MINUS
+            return Special(Predefined.MINUS, mkPosition(ctx.position))
         }
         ctx.times()?.let {
-            return Predefined.TIMES
+            return Special(Predefined.TIMES, mkPosition(ctx.position))
         }
         ctx.if_()?.let {
-            return Predefined.IF
+            return Special(Predefined.IF, mkPosition(ctx.position))
         }
         ctx.eq()?.let {
-            return Predefined.COND_EQ
+            return Special(Predefined.COND_EQ, mkPosition(ctx.position))
         }
         ctx.neq()?.let {
-            return Predefined.COND_NEQ
+            return Special(Predefined.COND_NEQ, mkPosition(ctx.position))
         }
         ctx.lt()?.let {
-            return Predefined.COND_LT
+            return Special(Predefined.COND_LT, mkPosition(ctx.position))
         }
         ctx.gt()?.let {
-            return Predefined.COND_GT
+            return Special(Predefined.COND_GT, mkPosition(ctx.position))
         }
         ctx.le()?.let {
-            return Predefined.COND_LE
+            return Special(Predefined.COND_LE, mkPosition(ctx.position))
         }
         ctx.ge()?.let {
-            return Predefined.COND_GE
+            return Special(Predefined.COND_GE, mkPosition(ctx.position))
         }
         ctx.lambda()?.let {
-            return Predefined.LAMBDA
+            return Special(Predefined.LAMBDA, mkPosition(ctx.position))
         }
         ctx.divide()?.let {
-            return Predefined.DIVIDE
+            return Special(Predefined.DIVIDE, mkPosition(ctx.position))
         }
         TODO()
     }

@@ -23,7 +23,7 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
         }
 
     private fun rewriteExpression(expression: Expression): Atom =
-        when (expression.atoms.first()) {
+        when ((expression.atoms.first() as? Special)?.value) {
             Predefined.LAMBDA -> {
                 val (params, body) = expression.atoms.drop(1)
                 Lambda(

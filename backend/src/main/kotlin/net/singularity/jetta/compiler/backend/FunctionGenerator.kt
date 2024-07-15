@@ -44,26 +44,31 @@ open class FunctionGenerator(
                 val arguments = atom.atoms.drop(1)
 
                 when (func) {
-                    Predefined.PLUS, Predefined.TIMES, Predefined.MINUS -> generateArithmetics(
-                        mv,
-                        func,
-                        arguments,
-                        atom.type as GroundedType,
-                        doReturn
-                    )
+                    is Special -> when (func.value) {
+                        Predefined.PLUS, Predefined.TIMES, Predefined.MINUS -> generateArithmetics(
+                            mv,
+                            func,
+                            arguments,
+                            atom.type as GroundedType,
+                            doReturn
+                        )
 
-                    Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
+                        Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
 
-                    Predefined.IF -> generateIf(mv, arguments, exit, doReturn)
-                    Predefined.RUN_SEQ -> {
-                        arguments.forEach {
-                            generateAtom(mv, it, null, false)
+                        Predefined.IF -> generateIf(mv, arguments, exit, doReturn)
+                        Predefined.RUN_SEQ -> {
+                            arguments.forEach {
+                                generateAtom(mv, it, null, false)
+                            }
                         }
-                    }
 
-                    is Special -> {
-                        if (func.isBooleanExpression()) {
-                            generateIf(mv, listOf(atom, Predefined.TRUE, Predefined.FALSE), exit, doReturn)
+                        else -> if (func.isBooleanExpression()) {
+                            generateIf(
+                                mv,
+                                listOf(atom, Grounded(true), Grounded(false)),
+                                exit,
+                                doReturn
+                            )
                         }
                     }
 
@@ -94,6 +99,7 @@ open class FunctionGenerator(
                 )
                 mv.visitTypeInsn(Opcodes.CHECKCAST, atom.arrowType!!.getJvmInterfaceName())
             }
+
             else -> TODO("Not implemented yet $atom")
         }
         if (doReturn) {
@@ -170,11 +176,9 @@ open class FunctionGenerator(
         }
 
         when (expr) {
-            Predefined.TRUE -> TODO()
-            Predefined.FALSE -> TODO()
             is Expression -> {
                 val (op, left, right) = expr.atoms
-                when (op) {
+                when ((op as? Special)?.value) {
                     Predefined.AND -> {
                         val label = Label()
                         generateBooleanExpr(mv, left, label) // true or false on stack
@@ -280,7 +284,7 @@ open class FunctionGenerator(
         doReturn: Boolean
     ) {
         fun operation() {
-            when (op) {
+            when ((op as? Special)?.value) {
                 Predefined.PLUS -> when (type) {
                     GroundedType.INT -> mv.visitInsn(Opcodes.IADD)
                     GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DADD)
