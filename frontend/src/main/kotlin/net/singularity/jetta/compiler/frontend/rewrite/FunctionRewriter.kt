@@ -61,6 +61,13 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {
             is Expression -> rewriteExpression(atom)
+            is Symbol -> {
+                when (atom.name) {
+                    Predefined.TRUE -> Grounded(true)
+                    Predefined.FALSE -> Grounded(false)
+                    else -> atom
+                }
+            }
             else -> atom
         }
 
@@ -72,16 +79,32 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
             }
         })
 
+    private val specials = listOf(
+        Predefined.DIV,
+        Predefined.MOD,
+        Predefined.NOT,
+        Predefined.AND,
+        Predefined.OR,
+        Predefined.XOR
+    )
+
     private fun rewriteExpression(expression: Expression): Atom {
         val func = expression.atoms[0]
-        return if (func is Special && func.value == Predefined.ARROW) {
-            mkArrow(expression)
-        } else if (func is Symbol && (func.name == Predefined.DIV || func.name == Predefined.MOD)) {
-            mkSpecialFromSymbol(expression)
-        } else {
-            expression
+        return rewriteExpressionArguments(expression).let {
+            if (func is Special && func.value == Predefined.ARROW) {
+                mkArrow(it)
+            } else if (func is Symbol && specials.contains(func.name)) {
+                mkSpecialFromSymbol(it)
+            } else {
+                expression
+            }
         }
     }
+
+    private fun rewriteExpressionArguments(expression: Expression): Expression =
+        expression.copy(atoms = expression.atoms.map {
+            rewriteAtom(it)
+        })
 
     private fun mkSpecialFromSymbol(expression: Expression): Expression {
         val atoms = expression.atoms.mapIndexed { index, atom ->

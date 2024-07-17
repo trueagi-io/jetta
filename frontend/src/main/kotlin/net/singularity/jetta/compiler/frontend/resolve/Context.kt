@@ -277,7 +277,7 @@ class Context(private val messageCollector: MessageCollector) {
                 resolveExpression(atom.body, lambdaTypeInfo)
             }
 
-            else -> TODO("atom=$atom -> $typeInfo")
+            else -> TODO("atom=$atom -> $typeInfo -> ${atom.javaClass}")
         }
     }
 
@@ -368,6 +368,11 @@ class Context(private val messageCollector: MessageCollector) {
                     typeInfo.functionDefinition.arrowType = expression.type?.let {
                         ArrowType(listOf(it))
                     }
+                }
+
+                Predefined.NOT -> {
+                    resolveAtom(expression.atoms[1], typeInfo)
+                    expression.type = GroundedType.BOOLEAN
                 }
 
                 else -> TODO("atom=$atom")

@@ -179,8 +179,16 @@ open class FunctionGenerator(
 
         when (expr) {
             is Expression -> {
-                val (op, left, right) = expr.atoms
+                val (op, left) = expr.atoms
+                val right = expr.atoms.getOrNull(2)
                 when ((op as? Special)?.value) {
+                    Predefined.NOT -> {
+                        mv.visitInsn(Opcodes.ICONST_1)
+                        val label = Label()
+                        generateBooleanExpr(mv, left, label)
+                        mv.visitLabel(label)
+                        mv.visitInsn(Opcodes.ISUB)
+                    }
                     Predefined.AND -> {
                         val label = Label()
                         generateBooleanExpr(mv, left, label) // true or false on stack
@@ -191,7 +199,7 @@ open class FunctionGenerator(
                         mv.visitInsn(Opcodes.ICONST_0)
                         mv.visitJumpInsn(Opcodes.GOTO, exit)
                         mv.visitLabel(next)
-                        generateBooleanExpr(mv, right, exit)
+                        generateBooleanExpr(mv, right!!, exit)
                     }
 
                     Predefined.OR -> {
@@ -204,7 +212,7 @@ open class FunctionGenerator(
                         mv.visitInsn(Opcodes.ICONST_1)
                         mv.visitJumpInsn(Opcodes.GOTO, exit)
                         mv.visitLabel(next)
-                        generateBooleanExpr(mv, right, exit)
+                        generateBooleanExpr(mv, right!!, exit)
                     }
 
                     Predefined.XOR -> {
@@ -212,24 +220,24 @@ open class FunctionGenerator(
                         generateBooleanExpr(mv, left, label1)
                         mv.visitLabel(label1)
                         val label2 = Label()
-                        generateBooleanExpr(mv, right, label2)
+                        generateBooleanExpr(mv, right!!, label2)
                         mv.visitLabel(label2)
                         mv.visitInsn(Opcodes.IADD)
                         mv.visitInsn(Opcodes.ICONST_2)
                         mv.visitInsn(Opcodes.IREM) // not the best way but simple
                     }
 
-                    Predefined.COND_EQ -> generateBooleanOp(left, right, Opcodes.IF_ICMPNE)
-                    Predefined.COND_NEQ -> generateBooleanOp(left, right, Opcodes.IF_ICMPEQ)
-                    Predefined.COND_GT -> generateBooleanOp(left, right, Opcodes.IF_ICMPLE)
-                    Predefined.COND_LT -> generateBooleanOp(left, right, Opcodes.IF_ICMPGE)
-                    Predefined.COND_GE -> generateBooleanOp(left, right, Opcodes.IF_ICMPLT)
-                    Predefined.COND_LE -> generateBooleanOp(left, right, Opcodes.IF_ICMPGT)
+                    Predefined.COND_EQ -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPNE)
+                    Predefined.COND_NEQ -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPEQ)
+                    Predefined.COND_GT -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPLE)
+                    Predefined.COND_LT -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPGE)
+                    Predefined.COND_GE -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPLT)
+                    Predefined.COND_LE -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPGT)
                     else -> TODO("Op=$op")
                 }
             }
 
-            else -> TODO()
+            else -> generateAtom(mv, expr, exit, false)
         }
     }
 
