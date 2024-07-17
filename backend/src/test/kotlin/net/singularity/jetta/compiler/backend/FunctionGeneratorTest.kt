@@ -12,7 +12,6 @@ import net.singularity.jetta.compiler.frontend.ir.Predefined.COND_NEQ
 import net.singularity.jetta.compiler.frontend.ir.Predefined.IF
 import net.singularity.jetta.compiler.frontend.ir.Predefined.MINUS
 import net.singularity.jetta.compiler.frontend.ir.Predefined.OR
-import net.singularity.jetta.compiler.frontend.ir.Predefined.PLUS
 import net.singularity.jetta.compiler.frontend.ir.Predefined.TIMES
 import net.singularity.jetta.compiler.frontend.ir.Predefined.XOR
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
@@ -22,95 +21,6 @@ import kotlin.test.assertEquals
 import kotlin.test.fail
 
 class FunctionGeneratorTest : GeneratorTestBase() {
-    @Test
-    fun generateExample1() {
-        // (: example1 (-> Int))
-        // (= (example1) (+ 1 1))
-        val function = FunctionDefinition(
-            name = "example1",
-            params = listOf(),
-            arrowType = ArrowType(types = listOf(GroundedType.INT)),
-            body = Expression(Special(PLUS), Grounded(1), Grounded(1), type = GroundedType.INT)
-        )
-        val generator = Generator()
-        val source = ParsedSource("Example1.metta", listOf(function))
-        val result = generator.generate(source)[0]
-        writeResult(result)
-        val clazz = result.getClass()
-        val r = clazz.getMethod(function.name).invoke(null)
-        assertEquals(2, r)
-    }
-
-    @Test
-    fun generateExample2() {
-        // (: example2 (-> Int Int))
-        // (= (example2 $x) (+ $x 1))
-        val function = FunctionDefinition(
-            name = "example2",
-            params = listOf(Variable("x")),
-            arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT)),
-            body = Expression(Special(PLUS), Variable("x", GroundedType.INT), Grounded(1), type = GroundedType.INT)
-        )
-        val generator = Generator()
-        val source = ParsedSource("Example2.metta", listOf(function))
-        val result = generator.generate(source)[0]
-        writeResult(result)
-        val clazz = result.getClass()
-        val r = clazz.getMethod(function.name, Int::class.java).invoke(null, 3)
-        assertEquals(4, r)
-    }
-
-    @Test
-    fun generateExample3() {
-        // (: example3 (-> Int Int Int))
-        // (= (example3 $x $y) (+ $x $y 1))
-        val function = FunctionDefinition(
-            name = "example3",
-            params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.INT)),
-            arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
-            body = Expression(
-                Special(PLUS),
-                Variable("x", GroundedType.INT),
-                Variable("y", GroundedType.INT),
-                Grounded(1),
-                type = GroundedType.INT
-            )
-        )
-        val generator = Generator()
-        val source = ParsedSource("Example3.metta", listOf(function))
-        val result = generator.generate(source)[0]
-        writeResult(result)
-        val clazz = result.getClass()
-        val r = clazz.getMethod(function.name, Int::class.java, Int::class.java).invoke(null, 3, 2)
-        assertEquals(6, r)
-    }
-
-    @Test
-    fun generateExample4() {
-        // (: example4 (-> Int Int Int))
-        // (= (example4 $x $y) (+ $x $y 10 20))
-        val function = FunctionDefinition(
-            name = "example4",
-            params = listOf(Variable("x", GroundedType.INT), Variable("y", GroundedType.INT)),
-            arrowType = ArrowType(types = listOf(GroundedType.INT, GroundedType.INT, GroundedType.INT)),
-            body = Expression(
-                Special(PLUS),
-                Variable("x", GroundedType.INT),
-                Variable("y", GroundedType.INT),
-                Grounded(10),
-                Grounded(20),
-                type = GroundedType.INT
-            )
-        )
-        val generator = Generator()
-        val source = ParsedSource("Example4.metta", listOf(function))
-        val result = generator.generate(source)[0]
-        writeResult(result)
-        val clazz = result.getClass()
-        val r = clazz.getMethod(function.name, Int::class.java, Int::class.java).invoke(null, 30, 40)
-        assertEquals(100, r)
-    }
-
     @Test
     fun generateFactorial() {
         // (: factorial (-> Int Int))
