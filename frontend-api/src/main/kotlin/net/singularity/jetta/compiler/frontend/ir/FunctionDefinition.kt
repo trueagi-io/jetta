@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.frontend.ir
 
-data class FunctionDefinition(
+class FunctionDefinition(
     val name: String,
     override val params: List<Variable>,
     override var arrowType: ArrowType?,
@@ -21,4 +21,6 @@ data class FunctionDefinition(
                     it.first
                 }
         }
+
+    fun copy(body: Expression) = FunctionDefinition(name, params, arrowType, body, position)
 }

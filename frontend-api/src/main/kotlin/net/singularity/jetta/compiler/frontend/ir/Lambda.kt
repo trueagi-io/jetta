@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.frontend.ir
 
-data class Lambda(
+class Lambda(
     override val params: List<Variable>,
     override var arrowType: ArrowType?,
     override val body: Expression,
@@ -24,4 +24,10 @@ data class Lambda(
                     it.first
                 }
         }
+
+    override fun toString(): String {
+        return "Lambda(params=$params, arrowType=$arrowType, body=$body, position=$position)"
+    }
+
+    fun copy(body: Expression) = Lambda(params, arrowType, body, position)
 }

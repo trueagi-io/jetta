@@ -6,6 +6,8 @@ import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
+import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
+import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.compiler.logger.Logger
 
 class Context(private val messageCollector: MessageCollector) {
@@ -14,6 +16,7 @@ class Context(private val messageCollector: MessageCollector) {
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
     private val systemFunctions = mutableMapOf<String, ResolvedSymbol>()
     private val unresolvedElements = mutableMapOf<SourcePosition, AtomWithTypeInfo>()
+    private val nodesToReplace = mutableMapOf<Atom, Atom>()
     private var main: FunctionDefinition? = null
 
     private fun cleanUp() {
@@ -153,7 +156,7 @@ class Context(private val messageCollector: MessageCollector) {
         }
     }
 
-    fun resolve(source: ParsedSource) {
+    fun resolve(source: ParsedSource): ParsedSource {
         cleanUp()
         resolveSource(source)
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
@@ -206,6 +209,7 @@ class Context(private val messageCollector: MessageCollector) {
                 messageCollector.add(CannotInferTypeMessage(data.atom, data.info.functionDefinition))
             }
         }
+        return getReplaced(source)
     }
 
     private fun updateFunction(owner: String, typeInfo: TypeInfo): Boolean {
@@ -276,9 +280,35 @@ class Context(private val messageCollector: MessageCollector) {
                 val lambdaTypeInfo = createLambdaTypeInfo(typeInfo, atom)
                 resolveExpression(atom.body, lambdaTypeInfo)
             }
-
+            is Symbol -> {
+                val def = definedFunctions[atom.name]
+                if (def == null) {
+                    messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                    return
+                }
+                if (suggestedType != def.func.arrowType) {
+                    messageCollector.add(IncompatibleTypesMessage(suggestedType!!, def.func.arrowType!!, atom.position))
+                    return
+                }
+                val wrapper = Lambda(
+                    def.func.params,
+                    def.func.arrowType,
+                    Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position)
+                )
+                resolveAtom(wrapper, typeInfo, suggestedType)
+                replaceNode(atom, wrapper)
+            }
             else -> TODO("atom=$atom -> $typeInfo -> ${atom.javaClass}")
         }
+    }
+
+    private fun replaceNode(from: Atom, to: Atom) {
+        nodesToReplace[from] = to
+    }
+
+    private fun getReplaced(source: ParsedSource): ParsedSource {
+        val rewriter = ReplaceNodesRewriter(nodesToReplace)
+        return rewriter.rewrite(source)
     }
 
     private fun createLambdaTypeInfo(parentTypeInfo: TypeInfo, lambda: Lambda): TypeInfo {
