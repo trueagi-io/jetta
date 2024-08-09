@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.frontend.ir
 
-data class Expression(
+class Expression(
     val atoms: List<Atom>,
     override var type: Atom? = null,
     var resolved: ResolvedSymbol? = null,
@@ -13,9 +13,7 @@ data class Expression(
         resolved
     )
 
-    fun children(): List<Atom> {
-        return atoms
-    }
+    fun copy(atoms: List<Atom>) = Expression(atoms, type, resolved, position)
 
     override fun toString(): String = buildString {
         append("(")

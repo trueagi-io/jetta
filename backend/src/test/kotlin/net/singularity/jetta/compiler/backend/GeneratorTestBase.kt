@@ -22,8 +22,7 @@ open class GeneratorTestBase {
         rewriter.add(FunctionRewriter(messageCollector))
         rewriter.add(LambdaRewriter(messageCollector))
         val parsed = parser.parse(Source(filename, code), messageCollector)
-        val result = rewriter.rewrite(parsed)
-        context.resolve(result)
+        val result = rewriter.rewrite(parsed).let { context.resolve(it) }
         val generator = Generator()
         val compiled = generator.generate(result)
         compiled.forEach {

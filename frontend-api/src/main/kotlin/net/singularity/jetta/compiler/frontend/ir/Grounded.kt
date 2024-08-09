@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.frontend.ir
 
-data class Grounded<T>(val value: T, override val position: SourcePosition? = null) : Atom {
+class Grounded<T>(val value: T, override val position: SourcePosition? = null) : Atom {
     override var type: Atom? =
         when (value) {
             is Int -> GroundedType.INT
