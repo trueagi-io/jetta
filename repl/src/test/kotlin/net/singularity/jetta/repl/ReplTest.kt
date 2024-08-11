@@ -142,5 +142,22 @@ class ReplTest {
             assertEquals(30, it.result)
         }
     }
+
+    @Test
+    fun passFunction() {
+        val repl = createRepl()
+        repl.eval("""
+            (: foo (-> Int Int (-> Int Int Int) Int))
+            (= (foo _x _y _f) (_f _x _y))
+            (: bar (-> Int Int Int))
+            (= (bar _x _y) (+ _x _y))
+            (foo 10 20 bar)
+        """.trimIndent().replace('_', '$')).let {
+            assertTrue(it.isSuccess)
+            assertTrue(it.messages.isEmpty())
+            assertEquals(30, it.result)
+        }
+    }
+
     private fun createRepl(): Repl = ReplImpl()
 }
