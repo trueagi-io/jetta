@@ -5,6 +5,8 @@ data class ArrowType(val types: List<Atom>, override val position: SourcePositio
 
     override var type: Atom? = null
 
+    override val id: Int = UniqueAtomIdGenerator.generate()
+
     override fun toString(): String = buildString {
         append("(->")
         append(types.joinToString(separator = " "))

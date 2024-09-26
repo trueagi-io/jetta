@@ -5,7 +5,10 @@ enum class GroundedType(private val typeName: String, override val position: Sou
     BOOLEAN("Boolean"),
     DOUBLE("Double"),
     STRING("String"),
+    ANY("Any"),
     UNIT("Unit");
+
+    override val id: Int = -1
 
     override var type: Atom? = null
 

@@ -13,6 +13,8 @@ class Lambda(
 
     override var type: Atom? = arrowType
 
+    override val id: Int = UniqueAtomIdGenerator.generate()
+
     val arity = params.size
 
     val typedParameters: List<Variable>?

@@ -7,24 +7,33 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
+import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.compiler.logger.Logger
 
-class Context(private val messageCollector: MessageCollector) {
+class Context(
+    private val messageCollector: MessageCollector,
+    mapImpl: JvmMethod? = null,
+    flatMapImpl: JvmMethod? = null
+) {
     private val logger = Logger.getLogger(Context::class.java)
-    private val definedFunctions = mutableMapOf<String, SymbolDef>()
+    val definedFunctions = mutableMapOf<String, SymbolDef>()
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
     private val systemFunctions = mutableMapOf<String, ResolvedSymbol>()
-    private val unresolvedElements = mutableMapOf<SourcePosition, AtomWithTypeInfo>()
+    private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
     private val nodesToReplace = mutableMapOf<Atom, Atom>()
     private var main: FunctionDefinition? = null
+    private var postprocessingDone = false
+    private val mapSymbol = mapImpl?.let { ResolvedSymbol(it, null, false) }
+    private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
 
     private fun cleanUp() {
         messageCollector.clear()
         unresolvedElements.clear()
     }
 
-    private data class SymbolDef(val owner: String, val func: FunctionDefinition)
+    data class SymbolDef(val owner: String, val func: FunctionDefinition)
 
     private data class AtomWithTypeInfo(val atom: Atom, val info: TypeInfo)
 
@@ -181,11 +190,11 @@ class Context(private val messageCollector: MessageCollector) {
                             postponedFunctions[it.functionDefinition.name] = it
                         }
                     }
-                val resolved = mutableListOf<Pair<SourcePosition, Atom>>()
-                HashMap(unresolvedElements).forEach { (pos, data) ->
+                val resolved = mutableListOf<Pair<Int, Atom>>()
+                HashMap(unresolvedElements).forEach { (id, data) ->
                     logger.debug("Resolving ${data.atom}")
                     resolveAtom(data.atom, data.info)
-                    if (data.atom.type != null) resolved.add(pos to data.atom)
+                    if (data.atom.type != null) resolved.add(id to data.atom)
                 }
                 resolved.forEach {
                     logger.debug("Remove resolved: ${it.second}")
@@ -209,7 +218,10 @@ class Context(private val messageCollector: MessageCollector) {
                 messageCollector.add(CannotInferTypeMessage(data.atom, data.info.functionDefinition))
             }
         }
-        return getReplaced(source)
+        return if (postprocessingDone) source else {
+            postprocessingDone = true
+            resolve(applyPostResolveRewriters(source))
+        }
     }
 
     private fun updateFunction(owner: String, typeInfo: TypeInfo): Boolean {
@@ -272,14 +284,15 @@ class Context(private val messageCollector: MessageCollector) {
 
             is Grounded<*> -> {}
             is Lambda -> {
-                atom.arrowType = suggestedType as ArrowType
-                atom.type = suggestedType
+                atom.arrowType = atom.arrowType ?: suggestedType as ArrowType
+                atom.type =  atom.arrowType ?: suggestedType
                 atom.params.forEachIndexed { index, variable ->
                     variable.type = atom.arrowType!!.types[index]
                 }
                 val lambdaTypeInfo = createLambdaTypeInfo(typeInfo, atom)
                 resolveExpression(atom.body, lambdaTypeInfo)
             }
+
             is Symbol -> {
                 val def = definedFunctions[atom.name]
                 if (def == null) {
@@ -298,6 +311,7 @@ class Context(private val messageCollector: MessageCollector) {
                 resolveAtom(wrapper, typeInfo, suggestedType)
                 replaceNode(atom, wrapper)
             }
+
             else -> TODO("atom=$atom -> $typeInfo -> ${atom.javaClass}")
         }
     }
@@ -306,9 +320,12 @@ class Context(private val messageCollector: MessageCollector) {
         nodesToReplace[from] = to
     }
 
-    private fun getReplaced(source: ParsedSource): ParsedSource {
-        val rewriter = ReplaceNodesRewriter(nodesToReplace)
-        return rewriter.rewrite(source)
+    private fun applyPostResolveRewriters(source: ParsedSource): ParsedSource {
+        val rewriter = CompositeRewriter()
+        rewriter.add(ReplaceNodesRewriter(nodesToReplace))
+        rewriter.add(CanonicalFormRewriter(messageCollector, definedFunctions))
+        val res = rewriter.rewrite(source)
+        return res
     }
 
     private fun createLambdaTypeInfo(parentTypeInfo: TypeInfo, lambda: Lambda): TypeInfo {
@@ -327,8 +344,7 @@ class Context(private val messageCollector: MessageCollector) {
         logger.debug("Resolving expression: $expression")
         if (!typeInfo.isProvided && typeInfo.functionDefinition.name != FunctionRewriter.MAIN) {
             logger.debug("Add $expression >> $typeInfo")
-            assert(expression.position != null) { logger.error("No position: $expression") }
-            unresolvedElements[expression.position!!] = AtomWithTypeInfo(expression, typeInfo)
+            unresolvedElements[expression.id] = AtomWithTypeInfo(expression, typeInfo)
         }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
@@ -405,6 +421,24 @@ class Context(private val messageCollector: MessageCollector) {
                     expression.type = GroundedType.BOOLEAN
                 }
 
+                Predefined.SEQ -> {
+                    expression.type = resolveList(expression, typeInfo)
+                }
+
+                Predefined.MAP_ -> {
+                    val lambda = expression.arguments()[0] as Lambda
+                    resolveAtom(lambda, typeInfo)
+                    expression.type = SeqType(lambda.body.type!!, lambda.body.position)
+                    expression.resolved = mapSymbol
+                }
+
+                Predefined.FLAT_MAP_ -> {
+                    val lambda = expression.arguments()[0] as Lambda
+                    resolveAtom(lambda, typeInfo)
+                    expression.type = SeqType(lambda.body.type!!, lambda.body.position)
+                    expression.resolved = flatMapSymbol
+                }
+
                 else -> TODO("atom=$atom")
             }
 
@@ -420,11 +454,25 @@ class Context(private val messageCollector: MessageCollector) {
         }
     }
 
-    private fun resolve(name: String): ResolvedSymbol? =
-        systemFunctions[name] ?: resolvedFunctions[name]?.toJvm()
-            ?.let { ResolvedSymbol(it, false) }
+    private fun resolveList(expression: Expression, typeInfo: TypeInfo): Atom {
+        var elementType: Atom? = null
+        expression.arguments().forEach {
+            resolveAtom(it, typeInfo)
+            elementType = unifyType(elementType, it.type!! /* FIXME */)
+        }
+        return SeqType(elementType!!, expression.position)
+    }
 
-    private fun ResolvedSymbol.arrowType(): ArrowType = jvmMethod.arrowType()
+    private fun unifyType(lhsType: Atom?, rhsType: Atom): Atom {
+        if (lhsType == null || lhsType == rhsType) return rhsType
+        return GroundedType.ANY // FIXME: too narrow, please introduce NUMBER
+    }
+
+    private fun resolve(name: String): ResolvedSymbol? =
+        systemFunctions[name] ?: resolvedFunctions[name]
+            ?.let { ResolvedSymbol(it.toJvm(), it.func, it.func.isMultiValued()) }
+
+    private fun ResolvedSymbol.arrowType(): ArrowType = func?.arrowType ?: jvmMethod.arrowType()
 
     private fun ResolvedSymbol.paramTypes(): List<Atom> =
         arrowType().types.dropLast(1)

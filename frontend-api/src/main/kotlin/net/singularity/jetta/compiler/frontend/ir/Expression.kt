@@ -15,6 +15,8 @@ class Expression(
 
     fun copy(atoms: List<Atom>) = Expression(atoms, type, resolved, position)
 
+    override val id: Int = UniqueAtomIdGenerator.generate()
+
     override fun toString(): String = buildString {
         append("(")
         append(atoms.joinToString(separator = " "))

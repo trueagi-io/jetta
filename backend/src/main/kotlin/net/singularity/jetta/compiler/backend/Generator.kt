@@ -10,6 +10,7 @@ import org.objectweb.asm.ClassWriter.COMPUTE_FRAMES
 import org.objectweb.asm.ClassWriter.COMPUTE_MAXS
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
+import org.objectweb.asm.commons.LocalVariablesSorter
 
 class Generator {
 
@@ -37,12 +38,18 @@ class Generator {
         source.code.forEach { node ->
             when (node) {
                 is FunctionDefinition -> {
-                    val mv = cw.visitMethod(
-                        Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
-                        node.name,
-                        node.getJvmDescriptor(),
-                        node.getSignature(),
-                        null
+                    val access = Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC
+                    val desc = node.getJvmDescriptor()
+                    val mv = LocalVariablesSorter(
+                        access,
+                        desc,
+                        cw.visitMethod(
+                            access,
+                            node.name,
+                            desc,
+                            node.getSignature(),
+                            null
+                        )
                     )
                     FunctionGenerator(mv, node, true, null).generate()
                 }
@@ -66,6 +73,10 @@ class Generator {
         return result
     }
 
+    private fun findLambdas(def: FunctionDefinition, source: ParsedSource): Map<String, Lambda> {
+       return findLambdas(mkLambdaName(def.name, source), def.body)
+    }
+
     private fun findLambdas(name: String, body: Expression): Map<String, Lambda> {
         var counter = 1
         val result = mutableMapOf<String, Lambda>()
@@ -85,7 +96,8 @@ class Generator {
                 is Expression -> {
                     result.putAll(findLambdas(name, it))
                 }
-                else -> { }
+
+                else -> {}
             }
         }
         return result

@@ -1,10 +1,10 @@
 package net.singularity.jetta.compiler.frontend
 
-import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -83,4 +83,29 @@ class RewriteTest : BaseFrontendTest() {
         println(result)
     }
 
+    @Test
+    fun annotations() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val program = parser.parse(
+            Source(
+                "Annotations.metta",
+                """
+                (@ foo multivalued)
+                (= (foo) (list 1 2 3))
+                
+                (: f (-> Int Int Int))
+                (= (f _x _y) (+ _x _y))
+                
+                (@ bar multivalued)
+                (= (bar _x _y) (f (foo) (foo)))
+                """.trimIndent().replace('_', '$')
+            ),
+            messageCollector
+        )
+        val rewriter = CompositeRewriter()
+        rewriter.add(FunctionRewriter(messageCollector))
+        val result = rewriter.rewrite(program)
+        println(result)
+    }
 }

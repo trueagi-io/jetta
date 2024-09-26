@@ -5,6 +5,8 @@ class Variable(
     override var type: Atom? = null,
     override val position: SourcePosition? = null
 ) : Atom {
+    override val id: Int = UniqueAtomIdGenerator.generate()
+
     override fun toString(): String = buildString {
         append("$$name")
         if (type != null) append(":$type")

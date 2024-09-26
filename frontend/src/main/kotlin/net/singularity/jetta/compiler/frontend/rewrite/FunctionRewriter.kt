@@ -7,13 +7,14 @@ import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOr
 
 class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
+    private val annotations = mutableMapOf<String, List<Atom>>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val main = mutableListOf<Atom>()
 
     private data class Pattern(val pattern: Expression, val value: Expression)
 
     override fun rewrite(source: ParsedSource): ParsedSource {
-       source.code.forEach {
+        source.code.forEach {
             when (it) {
                 is Expression -> rewriteTopLevelExpression(it)
                 else -> TODO()
@@ -33,7 +34,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 null
             }
         }
-        if (list.size != expression.atoms.size - 1) throw RewriteException()
+        if (list.size != expression.atoms.size - 1) throw RewriteException(expression)
         return list
     }
 
@@ -45,7 +46,8 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     name,
                     extractFormalParams(pattern.pattern),
                     typeInfo[name] as? ArrowType,
-                    pattern.value
+                    pattern.value,
+                    annotations[name] ?: emptyList()
                 )
             } else TODO()
         }
@@ -68,6 +70,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     else -> atom
                 }
             }
+
             else -> atom
         }
 
@@ -132,6 +135,11 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
             }
 
+            Predefined.ANNOTATION -> {
+                val symbol = expression.atoms[1] as Symbol
+                annotations[symbol.name] = expression.atoms.drop(2)
+            }
+
             else -> {
                 main.add(expression)
             }
@@ -147,6 +155,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 "String" -> GroundedType.STRING
                 else -> TODO()
             }
+
             is ArrowType -> ArrowType(types = types.map { it.asType() })
             else -> TODO("atom=" + this)
         }
