@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
+import net.singularity.jetta.compiler.frontend.resolve.messages.UndefinedVariableMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
@@ -35,13 +36,34 @@ class Context(
 
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
 
-    private data class AtomWithTypeInfo(val atom: Atom, val info: TypeInfo)
+    private data class AtomWithTypeInfo(val atom: Atom, val info: Scope)
 
-    private data class TypeInfo(
-        val data: MutableMap<String, Atom>,
-        val functionDefinition: FunctionDefinition
+    private data class Scope(
+        val functionDefinition: FunctionLike,
+        val parent: Scope? = null
     ) {
-        val isProvided = functionDefinition.typedParameters != null
+        val isProvided = functionDefinition.arrowType != null
+        val data = mutableMapOf<String, Atom?>()
+
+        init {
+            val arrowType = functionDefinition.arrowType
+            if (arrowType != null) {
+                data.putAll(functionDefinition.params.map { it.name }
+                    .zip(arrowType.types.dropLast(1)).toMap())
+            } else {
+                functionDefinition.params.forEach {
+                    data[it.name] = null
+                }
+            }
+        }
+
+        fun join(child: FunctionLike): Scope = Scope(child, parent = this)
+
+        operator fun get(variableName: String): Pair<FunctionLike, Atom?>? {
+            if (data.containsKey(variableName)) return functionDefinition to data[variableName]
+            if (parent == null) return null
+            return parent[variableName]
+        }
     }
 
     private fun SymbolDef.toJvm() = JvmMethod(
@@ -69,12 +91,12 @@ class Context(
         systemFunctions[resolvedSymbol.jvmMethod.name] = resolvedSymbol
     }
 
-    private fun inferType(atom: Atom, typeInfo: TypeInfo, suggestedType: Atom? = null) {
+    private fun inferType(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
         logger.debug("Infer type for atom $atom")
         when (atom) {
-            is Expression -> inferTypeForExpression(atom, typeInfo)
+            is Expression -> inferTypeForExpression(atom, scope)
             is Variable -> {
-                typeInfo.data[atom.name]?.let {
+                scope.data[atom.name]?.let {
                     atom.type = it
                 }
             }
@@ -90,7 +112,7 @@ class Context(
         }
     }
 
-    private fun inferTypeForExpression(expression: Expression, typeInfo: TypeInfo) {
+    private fun inferTypeForExpression(expression: Expression, scope: Scope) {
         logger.debug("Infer type for expression: $expression")
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
@@ -102,7 +124,7 @@ class Context(
                             when (arg) {
                                 is Variable -> {
                                     // TODO: check previous value
-                                    typeInfo.data[arg.name] = type
+                                    scope.data[arg.name] = type
                                 }
 
                                 is Grounded<*> -> {
@@ -111,7 +133,7 @@ class Context(
                                     }
                                 }
 
-                                is Expression -> inferTypeForExpression(arg, typeInfo)
+                                is Expression -> inferTypeForExpression(arg, scope)
 
                                 else -> TODO()
                             }
@@ -128,10 +150,10 @@ class Context(
             is Special -> when (atom.value) {
                 Predefined.IF -> {
                     val (_, cond, thenBranch, elseBranch) = expression.atoms
-                    inferType(cond, typeInfo)
-                    inferType(thenBranch, typeInfo)
-                    inferType(elseBranch, typeInfo, thenBranch.type)
-                    inferType(thenBranch, typeInfo, elseBranch.type)
+                    inferType(cond, scope)
+                    inferType(thenBranch, scope)
+                    inferType(elseBranch, scope, thenBranch.type)
+                    inferType(thenBranch, scope, elseBranch.type)
                     // TODO: check types of then and else
                     // TODO: for simplicity now (should be unified)
                     expression.type = thenBranch.type ?: elseBranch.type
@@ -139,22 +161,22 @@ class Context(
 
                 Predefined.COND_EQ -> {
                     val (_, lhs, rhs) = expression.atoms
-                    inferType(lhs, typeInfo)
-                    inferType(rhs, typeInfo)
+                    inferType(lhs, scope)
+                    inferType(rhs, scope)
                     if (lhs.type != null && rhs.type == null) {
                         rhs.type = lhs.type
-                        if (rhs is Variable) typeInfo.data[rhs.name] = lhs.type!!
+                        if (rhs is Variable) scope.data[rhs.name] = lhs.type!!
                     }
                     if (lhs.type == null && rhs.type != null) {
                         lhs.type = rhs.type
-                        if (lhs is Variable) typeInfo.data[lhs.name] = rhs.type!!
+                        if (lhs is Variable) scope.data[lhs.name] = rhs.type!!
                     }
                     expression.type = GroundedType.BOOLEAN
                 }
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
                     expression.arguments().forEach {
-                        inferType(it, typeInfo)
+                        inferType(it, scope)
                     }
                 }
 
@@ -169,7 +191,7 @@ class Context(
         cleanUp()
         resolveSource(source)
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
-        val postponedFunctions = mutableMapOf<String, TypeInfo>()
+        val postponedFunctions = mutableMapOf<String, Scope>()
         val owner = source.getJvmClassName()
         try {
             do {
@@ -187,7 +209,7 @@ class Context(
                     .toSet()
                     .forEach {
                         if (!updateFunction(owner, it)) {
-                            postponedFunctions[it.functionDefinition.name] = it
+                            postponedFunctions[(it.functionDefinition as FunctionDefinition).name] = it
                         }
                     }
                 val resolved = mutableListOf<Pair<Int, Atom>>()
@@ -215,7 +237,12 @@ class Context(
         }
         if (unresolvedElements.isNotEmpty()) {
             unresolvedElements.forEach { (_, data) ->
-                messageCollector.add(CannotInferTypeMessage(data.atom, data.info.functionDefinition))
+                messageCollector.add(
+                    CannotInferTypeMessage(
+                        data.atom,
+                        data.info.functionDefinition as FunctionDefinition
+                    )
+                )
             }
         }
         return if (postprocessingDone) source else {
@@ -224,14 +251,14 @@ class Context(
         }
     }
 
-    private fun updateFunction(owner: String, typeInfo: TypeInfo): Boolean {
-        logger.debug("Update: $typeInfo")
-        if (typeInfo.functionDefinition.arrowType != null) return true
+    private fun updateFunction(owner: String, scope: Scope): Boolean {
+        logger.debug("Update: $scope")
+        if (scope.functionDefinition.arrowType != null) return true
 
         var isCompleted = true
         val types = mutableListOf<Atom>()
-        typeInfo.functionDefinition.params.forEach {
-            val type = typeInfo.data[it.name]
+        scope.functionDefinition.params.forEach {
+            val type = scope.data[it.name]
             if (type != null) {
                 types.add(type)
             } else {
@@ -239,13 +266,13 @@ class Context(
             }
         }
         if (isCompleted) {
-            val body = typeInfo.functionDefinition.body
-            resolveExpression(body, typeInfo)
+            val body = scope.functionDefinition.body
+            resolveExpression(body, scope)
             if (body.type != null) {
                 types.add(body.type!!)
-                typeInfo.functionDefinition.arrowType = ArrowType(types)
+                scope.functionDefinition.arrowType = ArrowType(types)
             }
-            addResolvedFunction(owner, typeInfo.functionDefinition)
+            addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
         }
         return isCompleted
     }
@@ -261,35 +288,39 @@ class Context(
     }
 
     private fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
-        val typedVariables = mutableMapOf<String, Atom>()
         if (functionDefinition.returnType != null) addResolvedFunction(owner, functionDefinition)
         functionDefinition.typedParameters?.forEach {
-            typedVariables[it.name] = it.type!!
             functionDefinition.params.find { v -> v.name == it.name }?.type = it.type
         }
         resolveExpression(
             functionDefinition.body,
-            TypeInfo(typedVariables, functionDefinition)
+            Scope(functionDefinition)
         )
         definedFunctions[functionDefinition.name] = SymbolDef(owner, functionDefinition)
     }
 
-    private fun resolveAtom(atom: Atom, typeInfo: TypeInfo, suggestedType: Atom? = null) {
+    private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
         logger.debug("Resolving atom: $atom")
         when (atom) {
-            is Expression -> resolveExpression(atom, typeInfo)
+            is Expression -> resolveExpression(atom, scope)
             is Variable -> {
-                atom.type = typeInfo.data[atom.name]
+                val data = scope[atom.name]
+                if (data != null) {
+                    atom.type = data.second
+                    atom.scope = data.first.body
+                } else {
+                    messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
+                }
             }
 
             is Grounded<*> -> {}
             is Lambda -> {
                 atom.arrowType = atom.arrowType ?: suggestedType as ArrowType
-                atom.type =  atom.arrowType ?: suggestedType
+                atom.type = atom.arrowType ?: suggestedType
                 atom.params.forEachIndexed { index, variable ->
                     variable.type = atom.arrowType!!.types[index]
                 }
-                val lambdaTypeInfo = createLambdaTypeInfo(typeInfo, atom)
+                val lambdaTypeInfo = createLambdaTypeInfo(scope, atom)
                 resolveExpression(atom.body, lambdaTypeInfo)
             }
 
@@ -308,11 +339,11 @@ class Context(
                     def.func.arrowType,
                     Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position)
                 )
-                resolveAtom(wrapper, typeInfo, suggestedType)
+                resolveAtom(wrapper, scope, suggestedType)
                 replaceNode(atom, wrapper)
             }
 
-            else -> TODO("atom=$atom -> $typeInfo -> ${atom.javaClass}")
+            else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
 
@@ -328,23 +359,16 @@ class Context(
         return res
     }
 
-    private fun createLambdaTypeInfo(parentTypeInfo: TypeInfo, lambda: Lambda): TypeInfo {
-        val data = mutableMapOf<String, Atom>()
-        data.putAll(parentTypeInfo.data)
-        lambda.params.forEach {
-            data[it.name] = it.type!!
-        }
-        return TypeInfo(
-            data,
-            parentTypeInfo.functionDefinition
-        )
-    }
+    private fun createLambdaTypeInfo(parentScope: Scope, lambda: Lambda): Scope = parentScope.join(lambda)
 
-    private fun resolveExpression(expression: Expression, typeInfo: TypeInfo) {
+    private fun resolveExpression(expression: Expression, scope: Scope) {
         logger.debug("Resolving expression: $expression")
-        if (!typeInfo.isProvided && typeInfo.functionDefinition.name != FunctionRewriter.MAIN) {
-            logger.debug("Add $expression >> $typeInfo")
-            unresolvedElements[expression.id] = AtomWithTypeInfo(expression, typeInfo)
+        if (!scope.isProvided &&
+            scope.functionDefinition is FunctionDefinition &&
+            scope.functionDefinition.name != FunctionRewriter.MAIN
+        ) {
+            logger.debug("Add $expression >> $scope")
+            unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
         }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
@@ -352,7 +376,7 @@ class Context(
                 if (resolved != null) {
                     val arrowType = resolved.arrowType()
                     expression.arguments().mapIndexed { index, arg ->
-                        resolveAtom(arg, typeInfo, arrowType.types[index])
+                        resolveAtom(arg, scope, arrowType.types[index])
                     }
                     expression.resolved = resolved
                     expression.type = resolved.arrowType().types.last()
@@ -366,9 +390,9 @@ class Context(
             is Special -> when (atom.value) {
                 Predefined.IF -> {
                     val (_, cond, thenBranch, elseBranch) = expression.atoms
-                    resolveAtom(cond, typeInfo)
-                    resolveAtom(thenBranch, typeInfo)
-                    resolveAtom(elseBranch, typeInfo)
+                    resolveAtom(cond, scope)
+                    resolveAtom(thenBranch, scope)
+                    resolveAtom(elseBranch, scope)
                 }
 
                 Predefined.COND_EQ,
@@ -378,15 +402,15 @@ class Context(
                 Predefined.COND_LE,
                 Predefined.COND_GE -> {
                     val (_, lhs, rhs) = expression.atoms
-                    resolveAtom(lhs, typeInfo)
-                    resolveAtom(rhs, typeInfo)
+                    resolveAtom(lhs, scope)
+                    resolveAtom(rhs, scope)
                     expression.type = GroundedType.BOOLEAN
                 }
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
                     var hasDouble = false
                     expression.atoms.drop(1).forEach {
-                        resolveAtom(it, typeInfo)
+                        resolveAtom(it, scope)
                         if (it.type == GroundedType.DOUBLE) hasDouble = true
                     }
                     expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
@@ -394,47 +418,47 @@ class Context(
 
                 Predefined.DIVIDE -> {
                     val (_, lhs, rhs) = expression.atoms
-                    resolveAtom(lhs, typeInfo)
-                    resolveAtom(rhs, typeInfo)
+                    resolveAtom(lhs, scope)
+                    resolveAtom(rhs, scope)
                     expression.type = GroundedType.DOUBLE
                 }
 
                 Predefined.DIV, Predefined.MOD -> {
                     val (_, lhs, rhs) = expression.atoms
-                    resolveAtom(lhs, typeInfo)
-                    resolveAtom(rhs, typeInfo)
+                    resolveAtom(lhs, scope)
+                    resolveAtom(rhs, scope)
                     expression.type = GroundedType.INT
                 }
 
                 Predefined.RUN_SEQ -> {
                     expression.arguments().forEach {
-                        resolveAtom(it, typeInfo)
+                        resolveAtom(it, scope)
                     }
                     expression.type = expression.atoms.last().type
-                    typeInfo.functionDefinition.arrowType = expression.type?.let {
+                    scope.functionDefinition.arrowType = expression.type?.let {
                         ArrowType(listOf(it))
                     }
                 }
 
                 Predefined.NOT -> {
-                    resolveAtom(expression.atoms[1], typeInfo)
+                    resolveAtom(expression.atoms[1], scope)
                     expression.type = GroundedType.BOOLEAN
                 }
 
                 Predefined.SEQ -> {
-                    expression.type = resolveList(expression, typeInfo)
+                    expression.type = resolveList(expression, scope)
                 }
 
                 Predefined.MAP_ -> {
                     val lambda = expression.arguments()[0] as Lambda
-                    resolveAtom(lambda, typeInfo)
+                    resolveAtom(lambda, scope)
                     expression.type = SeqType(lambda.body.type!!, lambda.body.position)
                     expression.resolved = mapSymbol
                 }
 
                 Predefined.FLAT_MAP_ -> {
                     val lambda = expression.arguments()[0] as Lambda
-                    resolveAtom(lambda, typeInfo)
+                    resolveAtom(lambda, scope)
                     expression.type = SeqType(lambda.body.type!!, lambda.body.position)
                     expression.resolved = flatMapSymbol
                 }
@@ -443,9 +467,9 @@ class Context(
             }
 
             is Variable -> {
-                resolveAtom(atom, typeInfo)
+                resolveAtom(atom, scope)
                 expression.arguments().forEach {
-                    resolveAtom(it, typeInfo)
+                    resolveAtom(it, scope)
                 }
             }
 
@@ -454,10 +478,10 @@ class Context(
         }
     }
 
-    private fun resolveList(expression: Expression, typeInfo: TypeInfo): Atom {
+    private fun resolveList(expression: Expression, scope: Scope): Atom {
         var elementType: Atom? = null
         expression.arguments().forEach {
-            resolveAtom(it, typeInfo)
+            resolveAtom(it, scope)
             elementType = unifyType(elementType, it.type!! /* FIXME */)
         }
         return SeqType(elementType!!, expression.position)
@@ -470,7 +494,7 @@ class Context(
 
     private fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolvedFunctions[name]
-            ?.let { ResolvedSymbol(it.toJvm(), it.func, it.func.isMultiValued()) }
+            ?.let { ResolvedSymbol(it.toJvm(), it.func, it.func.isMultivalued()) }
 
     private fun ResolvedSymbol.arrowType(): ArrowType = func?.arrowType ?: jvmMethod.arrowType()
 

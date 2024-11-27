@@ -7,6 +7,8 @@ class Variable(
 ) : Atom {
     override val id: Int = UniqueAtomIdGenerator.generate()
 
+    var scope: Expression? = null
+
     override fun toString(): String = buildString {
         append("$$name")
         if (type != null) append(":$type")

@@ -3,7 +3,7 @@ package net.singularity.jetta.compiler.backend
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.getApplyJvmPlainDescriptor
 import net.singularity.jetta.compiler.frontend.resolve.getJvmInterfaceName
-import net.singularity.jetta.compiler.frontend.resolve.isMultiValued
+import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
 import net.singularity.jetta.compiler.frontend.resolve.toJvmType
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
@@ -210,7 +210,7 @@ open class FunctionGenerator(
     }
 
     private fun generateReturn(mv: MethodVisitor) {
-        if (function is FunctionDefinition && function.isMultiValued()) {
+        if (function is FunctionDefinition && function.isMultivalued()) {
             mv.visitInsn(Opcodes.ARETURN)
             return
         }

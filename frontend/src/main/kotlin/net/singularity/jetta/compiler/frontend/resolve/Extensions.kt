@@ -84,7 +84,7 @@ fun FunctionDefinition.getJvmDescriptor(): String =
             sb.append(it.toJvmType())
         }
         sb.append(")")
-        if (isMultiValued())
+        if (isMultivalued())
             sb.append("Ljava/util/List;")
         else
             sb.append(arrowType!!.types.last().toJvmType())
@@ -95,7 +95,7 @@ fun FunctionDefinition.getJvmDescriptor(): String =
 fun FunctionDefinition.getSignature(): String? {
     if (arrowType!!
         .types
-        .find { it.type is SeqType || it.type is ArrowType } == null && !isMultiValued())
+        .find { it.type is SeqType || it.type is ArrowType } == null && !isMultivalued())
         return null
 
     val sb = StringBuilder()
@@ -104,7 +104,7 @@ fun FunctionDefinition.getSignature(): String? {
         sb.append(it.toJvmGenericType())
     }
     sb.append(")")
-    if (isMultiValued()) {
+    if (isMultivalued()) {
         val returnType = arrowType!!.types.last().toJvmGenericType(true)
         sb.append("Ljava/util/List<$returnType>;")
     } else {
@@ -114,7 +114,7 @@ fun FunctionDefinition.getSignature(): String? {
     return sb.toString()
 }
 
-fun FunctionDefinition.isMultiValued(): Boolean =
+fun FunctionDefinition.isMultivalued(): Boolean =
     annotations.find { (it as? Symbol)?.name == "multivalued" } != null
 
 
