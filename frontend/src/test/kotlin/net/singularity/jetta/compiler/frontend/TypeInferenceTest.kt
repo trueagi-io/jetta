@@ -75,7 +75,7 @@ class TypeInferenceTest : BaseFrontendTest() {
             (= (foo _x _y) (+ _x _y 1))
             
             (= (baz _x) (foo (foo _x 2) (bar _x)))
-            (: bar (-> Int))
+            (: bar (-> Int Int))
             (= (bar _x) (foo _x 2))  
             """.trimIndent().replace('_', '$')
         ).let { (source, messageCollector) ->
