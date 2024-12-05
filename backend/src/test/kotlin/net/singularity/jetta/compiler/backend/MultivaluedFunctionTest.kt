@@ -5,7 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class MultiValuedFunctionTest : GeneratorTestBase() {
+class MultivaluedFunctionTest : GeneratorTestBase() {
     @Test
     fun compileMultiValuedFunction() =
         compile(
@@ -114,5 +114,55 @@ class MultiValuedFunctionTest : GeneratorTestBase() {
             val classes = result.toMap().toClasses()
             val value = classes["RewriteNestedExpression"]!!.getMethod("bar", Int::class.java).invoke(null, 2)
             assertEquals(listOf(3, 4, 5, 5, 6, 7, 7, 8, 9), value)
+        }
+
+    @Test
+    fun rewriteIfCond() =
+        compile(
+            "RewriteIfCond.metta",
+            """
+            (@ foo multivalued)
+            (: foo (-> Int))
+            (= (foo) (seq 1 2 3))
+            
+            (@ bar multivalued)
+            (: bar (-> Int))
+            (= (bar) (+ 1 (if (>= (foo) 2) 1 0)))
+            """.trimIndent().replace('_', '$'),
+            mapImpl, flatMapImpl
+        ).let { (result, messageCollector) ->
+            println(result)
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            val value = classes["RewriteIfCond"]!!.getMethod("bar").invoke(null)
+            assertEquals(listOf(1, 2, 2), value)
+        }
+
+    @Test
+    fun rewriteIfCondWithBranch() =
+        compile(
+            "RewriteIfWithBranch.metta",
+            """
+            (@ foo multivalued)
+            (: foo (-> Int))
+            (= (foo) (seq 1 2 3))
+            
+            (@ bar multivalued)
+            (: bar (-> Int))
+            (= (bar) (+ 1 (if (>= (foo) 2) (+ 1 (foo)) 0)))
+            """.trimIndent().replace('_', '$'),
+            mapImpl, flatMapImpl
+        ).let { (result, messageCollector) ->
+            println(result)
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            val value = classes["RewriteIfWithBranch"]!!.getMethod("bar").invoke(null)
+            assertEquals(listOf(1, 3, 4, 5, 3, 4, 5), value)
         }
 }

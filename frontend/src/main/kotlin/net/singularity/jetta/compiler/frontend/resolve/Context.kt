@@ -287,7 +287,7 @@ class Context(
         }
     }
 
-    private fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
+    fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
         if (functionDefinition.returnType != null) addResolvedFunction(owner, functionDefinition)
         functionDefinition.typedParameters?.forEach {
             functionDefinition.params.find { v -> v.name == it.name }?.type = it.type
@@ -354,7 +354,7 @@ class Context(
     private fun applyPostResolveRewriters(source: ParsedSource): ParsedSource {
         val rewriter = CompositeRewriter()
         rewriter.add(ReplaceNodesRewriter(nodesToReplace))
-        rewriter.add(CanonicalFormRewriter(messageCollector, definedFunctions))
+        rewriter.add(CanonicalFormRewriter(messageCollector, this))
         val res = rewriter.rewrite(source)
         return res
     }
@@ -393,6 +393,7 @@ class Context(
                     resolveAtom(cond, scope)
                     resolveAtom(thenBranch, scope)
                     resolveAtom(elseBranch, scope)
+                    expression.type = unifyType(thenBranch.type, elseBranch.type!!)
                 }
 
                 Predefined.COND_EQ,
@@ -492,7 +493,7 @@ class Context(
         return GroundedType.ANY // FIXME: too narrow, please introduce NUMBER
     }
 
-    private fun resolve(name: String): ResolvedSymbol? =
+    fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolvedFunctions[name]
             ?.let { ResolvedSymbol(it.toJvm(), it.func, it.func.isMultivalued()) }
 

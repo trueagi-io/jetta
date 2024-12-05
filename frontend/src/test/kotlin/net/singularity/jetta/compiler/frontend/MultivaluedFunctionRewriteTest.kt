@@ -3,12 +3,11 @@ package net.singularity.jetta.compiler.frontend
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import org.junit.jupiter.api.Test
-import kotlin.test.Ignore
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-class MultiValuedFunctionRewriteTest : BaseFrontendTest() {
+class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
     private val mapImpl = JvmMethod(
         owner = "",
         name = "",
@@ -224,7 +223,6 @@ class MultiValuedFunctionRewriteTest : BaseFrontendTest() {
             def.body.atoms[2].assertCallWithNoArgs("foo")
         }
 
-    @Ignore
     @Test
     fun rewriteIfCond() =
         resolve(
@@ -236,10 +234,30 @@ class MultiValuedFunctionRewriteTest : BaseFrontendTest() {
             
             (@ bar multivalued)
             (: bar (-> Int))
-            (= (bar) (if (>= (foo) 2) 1 0))
+            (= (bar) (+ 1 (if (>= (foo) 2) 1 0)))
             """.trimIndent().replace('_', '$'),
             mapImpl, flatMapImpl
         ).let { (result, _) ->
             println(result)
+            // FIXME: check all things
+        }
+
+    @Test
+    fun rewriteIfCondWithBranch() =
+        resolve(
+            "RewriteIfWithBranch.metta",
+            """
+            (@ foo multivalued)
+            (: foo (-> Int))
+            (= (foo) (seq 1 2 3))
+            
+            (@ bar multivalued)
+            (: bar (-> Int))
+            (= (bar) (+ 1 (if (>= (foo) 2) (+ 1 (foo)) 0)))
+            """.trimIndent().replace('_', '$'),
+            mapImpl, flatMapImpl
+        ).let { (result, _) ->
+            println(result)
+            // FIXME: check all things
         }
 }
