@@ -1,10 +1,7 @@
 package net.singularity.jetta.compiler.frontend.resolve
 
 import net.singularity.jetta.compiler.frontend.ParsedSource
-import net.singularity.jetta.compiler.frontend.ir.ArrowType
-import net.singularity.jetta.compiler.frontend.ir.Atom
-import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
-import net.singularity.jetta.compiler.frontend.ir.GroundedType
+import net.singularity.jetta.compiler.frontend.ir.*
 import java.io.File
 
 fun ParsedSource.getJvmClassName(): String {
@@ -17,6 +14,7 @@ fun Atom.toJvmType(boxing: Boolean = false): String =
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
         is ArrowType -> this.descriptor()
+        is SeqType -> "Ljava/util/List;"
         else -> TODO("Not implemented yet $this")
     }
 
@@ -27,17 +25,21 @@ fun ArrowType.getJvmInterfaceName(): String {
     return "net/singularity/jetta/runtime/functions/Function$arity"
 }
 
-fun ArrowType.signature(): String {
+fun Atom.signature(): String {
     val sb = StringBuilder()
-    sb.append("L${getJvmInterfaceName()}")
-    sb.append('<')
-    this.types.forEach {
-        sb.append(when (it) {
-            GroundedType.INT -> "Ljava/lang/Integer;"
-            else -> TODO()
-        })
+    when (this) {
+        is ArrowType -> {
+            sb.append("L${getJvmInterfaceName()}")
+            sb.append('<')
+            types.forEach {
+                sb.append(it.signature())
+            }
+            sb.append(">;")
+        }
+        is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
+        GroundedType.INT -> "Ljava/lang/Integer;"
+        else -> TODO()
     }
-    sb.append(">;")
     return sb.toString()
 }
 
@@ -63,18 +65,18 @@ fun ArrowType.getApplyJvmPlainDescriptor(): String {
     return sb.toString()
 }
 
-fun Atom.toJvmGenericType(): String =
+fun Atom.toJvmGenericType(box: Boolean = false): String =
     when (this) {
-        GroundedType.INT -> "I"
-        GroundedType.BOOLEAN -> "Z"
-        GroundedType.DOUBLE -> "D"
+        GroundedType.INT -> if (box) "Ljava/lang/Integer;" else "I"
+        GroundedType.BOOLEAN -> if (box) "Ljava/lang/Boolean;" else "Z"
+        GroundedType.DOUBLE -> if (box) "Ljava/lang/Double;" else "D"
         is ArrowType -> this.signature()
         else -> TODO("Not implemented yet $this")
     }
 
-fun FunctionDefinition.getJvmDescriptor(): String {
+fun FunctionDefinition.getJvmDescriptor(): String =
     if (name == "main") {
-        return "([Ljava/lang/String;)V"
+        "([Ljava/lang/String;)V"
     } else {
         val sb = StringBuilder()
         sb.append("(")
@@ -82,23 +84,37 @@ fun FunctionDefinition.getJvmDescriptor(): String {
             sb.append(it.toJvmType())
         }
         sb.append(")")
-        sb.append(arrowType!!.types.last().toJvmType())
-        return sb.toString()
+        if (isMultivalued())
+            sb.append("Ljava/util/List;")
+        else
+            sb.append(arrowType!!.types.last().toJvmType())
+        sb.toString()
     }
-}
+
 
 fun FunctionDefinition.getSignature(): String? {
-    arrowType!!.types.find {
-        it is ArrowType
-    } ?: return null
+    if (arrowType!!
+        .types
+        .find { it.type is SeqType || it.type is ArrowType } == null && !isMultivalued())
+        return null
+
     val sb = StringBuilder()
     sb.append("(")
     arrowType!!.types.dropLast(1).map {
         sb.append(it.toJvmGenericType())
     }
     sb.append(")")
-    sb.append(arrowType!!.types.last().toJvmGenericType())
+    if (isMultivalued()) {
+        val returnType = arrowType!!.types.last().toJvmGenericType(true)
+        sb.append("Ljava/util/List<$returnType>;")
+    } else {
+        val returnType = arrowType!!.types.last().toJvmGenericType(false)
+        sb.append(returnType)
+    }
     return sb.toString()
 }
+
+fun FunctionDefinition.isMultivalued(): Boolean =
+    annotations.find { (it as? Symbol)?.name == "multivalued" } != null
 
 

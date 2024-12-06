@@ -4,7 +4,8 @@ class Expression(
     val atoms: List<Atom>,
     override var type: Atom? = null,
     var resolved: ResolvedSymbol? = null,
-    override val position: SourcePosition? = null
+    override val position: SourcePosition? = null,
+    override val id: Int = UniqueAtomIdGenerator.generate()
 ) : Atom {
 
     constructor(vararg atoms: Atom, type: Atom? = null, resolved: ResolvedSymbol? = null) : this(

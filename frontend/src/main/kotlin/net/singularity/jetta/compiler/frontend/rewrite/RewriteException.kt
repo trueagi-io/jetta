@@ -1,3 +1,5 @@
 package net.singularity.jetta.compiler.frontend.rewrite
 
-class RewriteException : Exception()
+import net.singularity.jetta.compiler.frontend.ir.Atom
+
+class RewriteException(val atom: Atom) : Exception(atom.toString())

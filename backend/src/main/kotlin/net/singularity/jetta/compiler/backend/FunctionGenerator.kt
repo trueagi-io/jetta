@@ -3,12 +3,16 @@ package net.singularity.jetta.compiler.backend
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.getApplyJvmPlainDescriptor
 import net.singularity.jetta.compiler.frontend.resolve.getJvmInterfaceName
+import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
+import net.singularity.jetta.compiler.frontend.resolve.toJvmType
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.Type
+import org.objectweb.asm.commons.LocalVariablesSorter
 
 open class FunctionGenerator(
-    private val mv: MethodVisitor,
+    private val mv: LocalVariablesSorter,
     private val function: FunctionLike,
     private val isStatic: Boolean,
     private val className: String?
@@ -21,24 +25,42 @@ open class FunctionGenerator(
     protected var maxStack = 0
     protected var maxLocals = function.params.size
 
-    protected fun generateAtom(mv: MethodVisitor, atom: Atom, exit: Label?, doReturn: Boolean) {
+    private fun generateLoadInt(value: Int) {
+        when (value) {
+            0 -> mv.visitInsn(Opcodes.ICONST_0)
+            1 -> mv.visitInsn(Opcodes.ICONST_1)
+            2 -> mv.visitInsn(Opcodes.ICONST_2)
+            3 -> mv.visitInsn(Opcodes.ICONST_3)
+            4 -> mv.visitInsn(Opcodes.ICONST_4)
+            5 -> mv.visitInsn(Opcodes.ICONST_5)
+            else -> mv.visitIntInsn(Opcodes.BIPUSH, value)
+        }
+    }
+
+    private fun generateLoadBoolean(value: Boolean) {
+        when (value) {
+            false -> mv.visitInsn(Opcodes.ICONST_0)
+            true -> mv.visitInsn(Opcodes.ICONST_1)
+        }
+    }
+
+    private fun generateLoad(atom: Atom) {
         when (atom) {
             is Grounded<*> -> {
                 when (atom.value) {
-                    0, false -> mv.visitInsn(Opcodes.ICONST_0)
-                    1, true -> mv.visitInsn(Opcodes.ICONST_1)
-                    2 -> mv.visitInsn(Opcodes.ICONST_2)
-                    3 -> mv.visitInsn(Opcodes.ICONST_3)
-                    4 -> mv.visitInsn(Opcodes.ICONST_4)
-                    5 -> mv.visitInsn(Opcodes.ICONST_5)
-                    is Int -> mv.visitIntInsn(Opcodes.BIPUSH, atom.value as Int)
-                    0.0 -> mv.visitInsn(Opcodes.DCONST_0)
-                    1.0 -> mv.visitInsn(Opcodes.DCONST_1)
+                    is Int -> generateLoadInt(atom.value as Int)
+                    is Boolean -> generateLoadBoolean(atom.value as Boolean)
                     is Double -> mv.visitLdcInsn(atom.value)
                     else -> TODO("Not implemented yet " + atom.value)
                 }
             }
 
+            else -> TODO("Not implemented yet $atom")
+        }
+    }
+
+    protected fun generateAtom(mv: LocalVariablesSorter, atom: Atom, exit: Label?, doReturn: Boolean) {
+        when (atom) {
             is Expression -> {
                 val func = atom.atoms[0]
                 val arguments = atom.atoms.drop(1)
@@ -64,6 +86,9 @@ open class FunctionGenerator(
                             }
                         }
 
+                        Predefined.SEQ -> generateSeq(mv, arguments, atom.type!!)
+                        Predefined.MAP_ -> generateCall(mv, Predefined.MAP_, arguments, atom.resolved)
+                        Predefined.FLAT_MAP_ -> generateCall(mv, Predefined.FLAT_MAP_, arguments, atom.resolved)
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
                                 mv,
@@ -71,7 +96,7 @@ open class FunctionGenerator(
                                 exit,
                                 doReturn
                             )
-                        }
+                        } else TODO("func=$func")
                     }
 
                     is Symbol -> generateCall(mv, func.name, arguments, atom.resolved)
@@ -102,7 +127,7 @@ open class FunctionGenerator(
                 mv.visitTypeInsn(Opcodes.CHECKCAST, atom.arrowType!!.getJvmInterfaceName())
             }
 
-            else -> TODO("Not implemented yet $atom")
+            else -> generateLoad(atom)
         }
         if (doReturn) {
             generateReturn(mv)
@@ -113,8 +138,41 @@ open class FunctionGenerator(
         }
     }
 
+    private fun generateSeq(mv: LocalVariablesSorter, arguments: List<Atom>, type: Atom) {
+        generateLoadInt(arguments.size)
+        val elementType = (type as SeqType).elementType
+        val arr = mv.newLocal(Type.getObjectType("[${elementType.toJvmType(true)};"))
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, elementType.toJvmType(true).drop(1).dropLast(1))
+        mv.visitVarInsn(Opcodes.ASTORE, arr)
+        mv.visitVarInsn(Opcodes.ALOAD, arr)
+        arguments.forEachIndexed { index, arg ->
+            generateLoadInt(index)
+            generateLoad(arg)
+            generateBoxingIfNeeded(arg as Grounded<*>)
+            mv.visitInsn(Opcodes.AASTORE)
+            mv.visitVarInsn(Opcodes.ALOAD, arr)
+        }
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/util/Arrays",
+            "asList",
+            "([Ljava/lang/Object;)Ljava/util/List;",
+            false
+        )
+    }
+
+    private fun generateBoxingIfNeeded(atom: Grounded<*>) {
+        val (owner, name, desc) = when (atom.type) {
+            GroundedType.INT -> Triple("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
+            GroundedType.BOOLEAN -> TODO()
+            GroundedType.DOUBLE -> TODO()
+            else -> return
+        }
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, desc, false)
+    }
+
     private fun generateCall(
-        mv: MethodVisitor,
+        mv: LocalVariablesSorter,
         functionName: String,
         arguments: List<Atom>,
         resolved: ResolvedSymbol?
@@ -132,7 +190,7 @@ open class FunctionGenerator(
         )
     }
 
-    private fun generateLambdaCall(mv: MethodVisitor, variable: Variable, arguments: List<Atom>) {
+    private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
         if (index < 0) throw IllegalArgumentException(variable.toString())
         mv.visitVarInsn(Opcodes.ALOAD, index)
@@ -152,15 +210,20 @@ open class FunctionGenerator(
     }
 
     private fun generateReturn(mv: MethodVisitor) {
+        if (function is FunctionDefinition && function.isMultivalued()) {
+            mv.visitInsn(Opcodes.ARETURN)
+            return
+        }
         when (function.returnType) {
             GroundedType.INT, GroundedType.BOOLEAN -> mv.visitInsn(Opcodes.IRETURN)
             GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DRETURN)
             GroundedType.UNIT -> mv.visitInsn(Opcodes.RETURN)
+            is SeqType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")
         }
     }
 
-    private fun generateBooleanExpr(mv: MethodVisitor, expr: Atom, exit: Label) {
+    private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
         fun generateBooleanOp(left: Atom, right: Atom, inverseOp: Int) {
             val label1 = Label()
             generateAtom(mv, left, label1, false)
@@ -189,6 +252,7 @@ open class FunctionGenerator(
                         mv.visitLabel(label)
                         mv.visitInsn(Opcodes.ISUB)
                     }
+
                     Predefined.AND -> {
                         val label = Label()
                         generateBooleanExpr(mv, left, label) // true or false on stack
@@ -241,7 +305,7 @@ open class FunctionGenerator(
         }
     }
 
-    private fun generateIf(mv: MethodVisitor, arguments: List<Atom>, exit: Label?, doReturn: Boolean) {
+    private fun generateIf(mv: LocalVariablesSorter, arguments: List<Atom>, exit: Label?, doReturn: Boolean) {
         val (cond, thenExpr, elseExpr) = arguments
         val label = Label()
         generateBooleanExpr(mv, cond, label)
@@ -274,7 +338,7 @@ open class FunctionGenerator(
     }
 
     private fun generateDivide(
-        mv: MethodVisitor,
+        mv: LocalVariablesSorter,
         arguments: List<Atom>,
         doReturn: Boolean
     ) {
@@ -287,7 +351,7 @@ open class FunctionGenerator(
     }
 
     private fun generateDiv(
-        mv: MethodVisitor,
+        mv: LocalVariablesSorter,
         arguments: List<Atom>,
         doReturn: Boolean
     ) {
@@ -298,7 +362,7 @@ open class FunctionGenerator(
     }
 
     private fun generateMod(
-        mv: MethodVisitor,
+        mv: LocalVariablesSorter,
         arguments: List<Atom>,
         doReturn: Boolean
     ) {
@@ -309,7 +373,7 @@ open class FunctionGenerator(
     }
 
     private fun generateArithmetics(
-        mv: MethodVisitor,
+        mv: LocalVariablesSorter,
         op: Atom,
         arguments: List<Atom>,
         type: GroundedType,

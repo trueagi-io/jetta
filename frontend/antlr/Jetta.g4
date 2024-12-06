@@ -31,6 +31,7 @@ double
 
 special
     : pattern
+    | annotation
     | type
     | arrow
     | plus
@@ -45,6 +46,15 @@ special
     | ge
     | divide
     | lambda
+    | seq
+    ;
+
+seq
+    : SEQ
+    ;
+
+annotation
+    : AT
     ;
 
 lambda
@@ -120,6 +130,10 @@ symbol
     : IDENT
     ;
 
+AT
+    : '@'
+    ;
+
 WS
     : [ \t\r\n] -> skip
     ;
@@ -188,6 +202,10 @@ TIMES
 
 DOLLAR
     : '$'
+    ;
+
+SEQ
+    : 'seq'
     ;
 
 IF

@@ -6,6 +6,7 @@ import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
+import org.objectweb.asm.commons.LocalVariablesSorter
 
 class LambdaGenerator(private val className: String, private val lambda: Lambda) {
     private val capturedVariables = lambda.capturedVariables()
@@ -37,12 +38,17 @@ class LambdaGenerator(private val className: String, private val lambda: Lambda)
             null
         )
         generateGenericApply(genericApply)
-        val apply = cw.visitMethod(
+        val methodDesc = lambda.arrowType!!.getApplyJvmDescriptor(false)
+        val apply = LocalVariablesSorter(
             Opcodes.ACC_PRIVATE,
-            "apply",
-            lambda.arrowType!!.getApplyJvmDescriptor(false),
-            null,
-            null
+            methodDesc,
+            cw.visitMethod(
+                Opcodes.ACC_PRIVATE,
+                "apply",
+                methodDesc,
+                null,
+                null
+            )
         )
         generateApply(apply)
         return CompilationResult(className, cw.toByteArray())
@@ -78,7 +84,7 @@ class LambdaGenerator(private val className: String, private val lambda: Lambda)
         mv.visitMaxs(1, 1)
     }
 
-    private fun generateApply(mv: MethodVisitor) {
+    private fun generateApply(mv: LocalVariablesSorter) {
         val generator = FunctionGenerator(mv, lambda, false, className)
         generator.generate()
     }

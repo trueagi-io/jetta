@@ -50,7 +50,7 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
                 null
             }
         }
-        if (list.size != expression.atoms.size) throw RewriteException()
+        if (list.size != expression.atoms.size) throw RewriteException(expression)
         return list
     }
 }

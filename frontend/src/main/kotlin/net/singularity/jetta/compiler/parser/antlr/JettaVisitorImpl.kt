@@ -102,6 +102,12 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
         ctx.divide()?.let {
             return Special(Predefined.DIVIDE, mkPosition(ctx.position))
         }
+        ctx.annotation()?.let {
+            return Special(Predefined.ANNOTATION, mkPosition(ctx.position))
+        }
+        ctx.seq()?.let {
+            return Special(Predefined.SEQ, mkPosition(ctx.position))
+        }
         TODO()
     }
 

@@ -13,17 +13,7 @@ class Lambda(
 
     override var type: Atom? = arrowType
 
-    val arity = params.size
-
-    val typedParameters: List<Variable>?
-        get() = arrowType?.let { funcType ->
-            params
-                .zip(funcType.types.dropLast(1))
-                .map {
-                    it.first.type = it.second
-                    it.first
-                }
-        }
+    override val id: Int = UniqueAtomIdGenerator.generate()
 
     override fun toString(): String {
         return "Lambda(params=$params, arrowType=$arrowType, body=$body, position=$position)"

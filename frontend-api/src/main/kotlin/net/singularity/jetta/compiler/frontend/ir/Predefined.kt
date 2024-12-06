@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.frontend.ir
 
 
 object Predefined {
+    const val ANNOTATION = "@"
     const val PATTERN = "="
     const val TYPE = ":"
     const val ARROW = "->"
@@ -26,6 +27,14 @@ object Predefined {
     const val LAMBDA = "\\"
     const val DIV = "div"
     const val MOD = "mod"
+    const val MAP_ = "map?"
+    const val FLAT_MAP_ = "flat-map?"
+    const val SEQ = "seq"
+}
+
+object PredefinedAtoms {
+    val MAP_ = Special(Predefined.MAP_)
+    val FLAT_MAP_ = Special(Predefined.FLAT_MAP_)
 }
 
 fun Atom.isBooleanExpression(): Boolean =

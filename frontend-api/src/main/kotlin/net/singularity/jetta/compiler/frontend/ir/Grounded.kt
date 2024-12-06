@@ -10,5 +10,7 @@ class Grounded<T>(val value: T, override val position: SourcePosition? = null) :
             else -> TODO("Not implemented yet $value")
         }
 
+    override val id: Int = UniqueAtomIdGenerator.generate()
+
     override fun toString(): String = value.toString()
 }

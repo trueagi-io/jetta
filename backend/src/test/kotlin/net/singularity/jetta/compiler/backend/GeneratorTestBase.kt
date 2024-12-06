@@ -5,6 +5,7 @@ import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
@@ -14,9 +15,11 @@ import java.io.File
 open class GeneratorTestBase {
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 
-    protected fun compile(filename: String, code: String): Pair<List<CompilationResult>, MessageCollector> {
+    protected fun compile(filename: String, code: String,
+                          mapImpl: JvmMethod? = null,
+                          flatMapImpl: JvmMethod? = null): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector)
+        val context = Context(messageCollector, mapImpl, flatMapImpl)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add(FunctionRewriter(messageCollector))

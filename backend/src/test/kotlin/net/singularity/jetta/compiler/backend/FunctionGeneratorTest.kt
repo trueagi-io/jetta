@@ -29,7 +29,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         //       (* $n (factorial (- $n 1)))))
         val n = Variable("n", GroundedType.INT)
         val factorial = "factorial"
-        val resolved = ResolvedSymbol(JvmMethod("Factorial", "factorial", "(I)I"),
+        val resolved = ResolvedSymbol(JvmMethod("Factorial", "factorial", "(I)I"), null,
             false)
         val function = FunctionDefinition(
             name = factorial,
@@ -69,7 +69,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             name = "ten",
             descriptor = "()I"
         )
-        val resolved = ResolvedSymbol(external, false)
+        val resolved = ResolvedSymbol(external, null, false)
         val function = FunctionDefinition(
             name = "foo",
             params = listOf(),
@@ -94,7 +94,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             name = "undefined",
             descriptor = "()I"
         )
-        val resolved = ResolvedSymbol(undefined, false)
+        val resolved = ResolvedSymbol(undefined, null, false)
         val cond = Expression(
             Special(AND),
             Expression(
@@ -140,7 +140,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         try {
             method.invoke(null, 6)
             fail()
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             // do nothing
         }
     }
@@ -152,7 +152,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
             name = "undefined",
             descriptor = "()I"
         )
-        val resolved = ResolvedSymbol(undefined, false)
+        val resolved = ResolvedSymbol(undefined, null, false)
         val cond = Expression(
             Special(OR),
             Expression(
@@ -198,7 +198,7 @@ class FunctionGeneratorTest : GeneratorTestBase() {
         try {
             method.invoke(null, 3)
             fail()
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             // do nothing
         }
     }
