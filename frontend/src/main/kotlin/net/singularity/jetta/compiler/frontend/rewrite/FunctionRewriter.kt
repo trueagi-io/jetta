@@ -47,7 +47,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     extractFormalParams(pattern.pattern),
                     typeInfo[name] as? ArrowType,
                     pattern.value,
-                    annotations[name] ?: emptyList()
+                    annotations[name]?.toMutableList() ?: mutableListOf()
                 )
             } else TODO()
         }

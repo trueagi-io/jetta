@@ -17,6 +17,7 @@ repositories {
 
 dependencies {
     implementation(project(":frontend-api"))
+    implementation(project(":runtime"))
     implementation("com.strumenta:antlr-kotlin-runtime:$antlrKotlinVersion")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
 }

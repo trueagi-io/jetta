@@ -38,11 +38,12 @@ class CanonicalFormRewriter(
         return ParsedSource(source.filename, result)
     }
 
-    private fun rewriteFunction(owner: String, functionDefinition: FunctionLike): Atom {
-        val newBody = extractIfStatementsIfNeeded(owner, functionDefinition.body, root = true)
-        collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
-        return rewriteAtom(newBody)
-    }
+    private fun rewriteFunction(owner: String, functionDefinition: FunctionLike): Atom =
+        if (functionDefinition is FunctionDefinition && functionDefinition.name != FunctionRewriter.MAIN) {
+            val newBody = extractIfStatementsIfNeeded(owner, functionDefinition.body, root = true)
+            collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
+            rewriteAtom(newBody)
+        } else functionDefinition.body
 
     private fun extractIfStatementsIfNeeded(owner: String, atom: Atom, root: Boolean): Atom {
         when (atom) {
@@ -55,7 +56,7 @@ class CanonicalFormRewriter(
                         params,
                         arrowType,
                         atom,
-                        annotations = listOf(Symbol("multivalued"))
+                        annotations = mutableListOf(Symbol("multivalued"))
                     )
                     functions.add(def)
                     context.resolveFunctionDefinition(owner, def)

@@ -81,7 +81,12 @@ class Context(
             if (lastCall is Expression &&
                 (lastCall.atoms[0] as? Symbol)?.name == func.name
             ) {
-                it.arrowType = ArrowType(listOf(func.returnType!!))
+                it.arrowType = if (func.isMultivalued()) {
+                    it.annotations.add(Symbol("multivalued"))
+                    ArrowType(listOf(SeqType(func.returnType!!)))
+                } else {
+                    ArrowType(listOf(func.returnType!!))
+                }
                 lastCall.resolved = resolve(func.name)
             }
         }
@@ -189,8 +194,12 @@ class Context(
 
     fun resolve(source: ParsedSource): ParsedSource {
         cleanUp()
-        resolveSource(source)
+        return resolveRecursively(source)
+    }
+
+    fun resolveRecursively(source: ParsedSource): ParsedSource {
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
+        resolveSource(source)
         val postponedFunctions = mutableMapOf<String, Scope>()
         val owner = source.getJvmClassName()
         try {
@@ -245,11 +254,19 @@ class Context(
                 )
             }
         }
-        return if (postprocessingDone) source else {
+        return if (postprocessingDone)
+            source
+        else {
             postprocessingDone = true
-            resolve(applyPostResolveRewriters(source))
+            resolveRecursively(applyPostResolveRewriters(source))
         }
     }
+
+    private fun ParsedSource.replaceMain(): ParsedSource {
+        return copy(code = code.map<Atom, Atom> { if (it.isMain()) main!! else it })
+    }
+
+    private fun Atom.isMain(): Boolean = (this as? FunctionDefinition)?.name == FunctionRewriter.MAIN
 
     private fun updateFunction(owner: String, scope: Scope): Boolean {
         logger.debug("Update: $scope")
@@ -279,12 +296,13 @@ class Context(
 
     private fun resolveSource(source: ParsedSource) {
         println(source)
-        source.code.map {
+        source.code.forEach {
             when (it) {
                 is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)
                 else -> TODO("it=$it")
             }
         }
+        println("----")
     }
 
     fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {

@@ -21,6 +21,6 @@ abstract class BaseFrontendTest {
         rewriter.add(LambdaRewriter(messageCollector))
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed)
-        return context.resolve(result) to messageCollector
+        return context.resolveRecursively(result) to messageCollector
     }
 }

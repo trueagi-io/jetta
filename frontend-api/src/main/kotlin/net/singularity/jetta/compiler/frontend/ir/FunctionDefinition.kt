@@ -1,11 +1,11 @@
 package net.singularity.jetta.compiler.frontend.ir
 
-class FunctionDefinition(
+data class FunctionDefinition(
     val name: String,
     override val params: List<Variable>,
     override var arrowType: ArrowType?,
     override val body: Expression,
-    val annotations: List<Atom> = listOf(),
+    val annotations: MutableList<Atom> = mutableListOf(),
     override val position: SourcePosition? = null
 ) : FunctionLike {
     override val returnType: Atom?
@@ -25,9 +25,9 @@ class FunctionDefinition(
                 }
         }
 
-    fun copy(body: Expression) = FunctionDefinition(name, params, arrowType, body, annotations, position)
+//    fun copy(body: Expression) = FunctionDefinition(name, params, arrowType, body, annotations, position)
 
-    override fun toString(): String {
-        return "FunctionDefinition(name='$name', params=$params, arrowType=$arrowType, body=$body, annotations=$annotations, position=$position, type=$type)"
-    }
+//    override fun toString(): String {
+//        return "FunctionDefinition(name='$name', params=$params, arrowType=$arrowType, body=$body, annotations=$annotations, position=$position, type=$type)"
+//    }
 }

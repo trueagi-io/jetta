@@ -2,7 +2,9 @@ package net.singularity.jetta.repl
 
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.backend.CompilationResult
+import net.singularity.jetta.compiler.backend.DefaultRuntime
 import net.singularity.jetta.compiler.backend.Generator
+import net.singularity.jetta.compiler.backend.JettaRuntime
 import net.singularity.jetta.compiler.frontend.Message
 import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParserFacade
@@ -14,12 +16,13 @@ import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import java.io.File
 
-class ReplImpl : Repl {
+class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
     private var counter = 0
     private val classLoader = ByteArrayReplClassLoader()
 
     private val messageCollector = MessageCollector()
-    private val context = Context(messageCollector)
+
+    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
 
     override fun eval(code: String): EvalResult {
         val filename = createFilename()
@@ -55,14 +58,15 @@ class ReplImpl : Repl {
         rewriter.add(LambdaRewriter(messageCollector))
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = try {
-            rewriter.rewrite(parsed).let { context.resolve(it) }
+            rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
         } catch (_: RewriteException) {
             return listOf()
         }
-        context.resolve(result)
-        if (messageCollector.list().isNotEmpty()) return listOf()
-        val generator = Generator()
-        return generator.generate(result)
+        result.let {
+            if (messageCollector.list().isNotEmpty()) return listOf()
+            val generator = Generator()
+            return generator.generate(it)
+        }
     }
 
     private fun createFilename(): String = "Line_${++counter}"
