@@ -35,6 +35,7 @@ object Predefined {
 object PredefinedAtoms {
     val MAP_ = Special(Predefined.MAP_)
     val FLAT_MAP_ = Special(Predefined.FLAT_MAP_)
+    val MULTIVALUED = Symbol("multivalued")
 }
 
 fun Atom.isBooleanExpression(): Boolean =

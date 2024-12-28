@@ -20,7 +20,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 else -> TODO()
             }
         }
-        val mainPart = if (main.isNotEmpty()) listOf(mkMain()) else listOf()
+        val mainPart = if (main.isNotEmpty()) mkMain() else listOf()
         return ParsedSource(source.filename, mkFunctions() + mainPart)
     }
 
@@ -52,13 +52,32 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
             } else TODO()
         }
 
-    private fun mkMain(): Atom =
-        FunctionDefinition(
-            MAIN,
-            listOf(),
-            null,
-            Expression(listOf(Special(Predefined.RUN_SEQ)) + main)
+    private fun mkMain(): List<Atom> {
+        val result = mutableListOf<Atom>()
+        var count = 0
+
+        val calls = main.map {
+            val fnName = "__main_${count++}"
+            result.add(
+                FunctionDefinition(
+                    fnName,
+                    listOf(),
+                    null,
+                    it
+                )
+            )
+            Expression(Symbol(fnName))
+        }
+        result.add(
+            FunctionDefinition(
+                MAIN,
+                listOf(),
+                null,
+                Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+            )
         )
+        return result
+    }
 
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {

@@ -4,7 +4,7 @@ data class FunctionDefinition(
     val name: String,
     override val params: List<Variable>,
     override var arrowType: ArrowType?,
-    override val body: Expression,
+    override val body: Atom,
     val annotations: MutableList<Atom> = mutableListOf(),
     override val position: SourcePosition? = null
 ) : FunctionLike {
@@ -24,10 +24,4 @@ data class FunctionDefinition(
                     it.first
                 }
         }
-
-//    fun copy(body: Expression) = FunctionDefinition(name, params, arrowType, body, annotations, position)
-
-//    override fun toString(): String {
-//        return "FunctionDefinition(name='$name', params=$params, arrowType=$arrowType, body=$body, annotations=$annotations, position=$position, type=$type)"
-//    }
 }

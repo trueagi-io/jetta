@@ -68,32 +68,38 @@ class Generator {
         val result = mutableMapOf<String, Lambda>()
         source.code.forEach {
             val def = (it as FunctionDefinition)
-            findLambdas(mkLambdaName(source), def.body, result)
+            if (def.body is Expression) findLambdas(mkLambdaName(source), def.body as Expression, result)
         }
         return result
     }
 
-    private fun findLambdas(name: String, body: Expression, acc: MutableMap<String, Lambda>): Map<String, Lambda> {
-        if ((body.atoms.first() as? Special)?.value == Predefined.RUN_SEQ) {
-            body.atoms.drop(1).forEach {
-                findLambdas(name, it as Expression, acc)
-            }
-            return acc
-        }
-        body.atoms.forEach {
-            when (it) {
-                is Lambda -> {
-                    val lambdaName = "$name$${lambdaCount++}"
-                    acc[lambdaName] = it
-                    findLambdas(name, it.body, acc)
+    private fun findLambdas(name: String, body: Atom, acc: MutableMap<String, Lambda>): Map<String, Lambda> {
+        when (body) {
+            is Expression -> {
+                if ((body.atoms.first() as? Special)?.value == Predefined.RUN_SEQ) {
+                    body.atoms.drop(1).forEach {
+                        findLambdas(name, it as Expression, acc)
+                    }
+                    return acc
                 }
+                body.atoms.forEach {
+                    when (it) {
+                        is Lambda -> {
+                            val lambdaName = "$name$${lambdaCount++}"
+                            acc[lambdaName] = it
+                            findLambdas(name, it.body, acc)
+                        }
 
-                is Expression -> {
-                    findLambdas(name, it, acc)
+                        is Expression -> {
+                            findLambdas(name, it, acc)
+                        }
+
+                        else -> {}
+                    }
                 }
-
-                else -> {}
             }
+
+            else -> {}
         }
         return acc
     }

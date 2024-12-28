@@ -1,6 +1,6 @@
 package net.singularity.jetta.repl
 
-import net.singularity.jetta.compiler.backend.DefaultRuntime
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -177,12 +177,32 @@ class ReplTest {
            
             (bar)
         """.trimIndent().replace('_', '$')).let {
-            it.messages.forEach {
-                println("!!!$it")
-            }
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
             assertEquals(listOf(2, 3, 4), it.result)
+        }
+    }
+
+    @Test
+    fun nonDeterministicExpression() {
+        val repl = createRepl()
+        repl.eval("""
+            (@ foo multivalued)
+            (: foo (-> Int))
+            (= (foo) (seq 1 2 3))
+            
+            (: f (-> Int Int))
+            (= (f _x) (+ _x 1))
+            
+            (@ bar multivalued)
+            (: bar (-> Int))
+            (= (bar) (f (foo)))
+           
+            (+ 1 (bar))
+        """.trimIndent().replace('_', '$')).let {
+            assertTrue(it.isSuccess)
+            assertTrue(it.messages.isEmpty())
+            assertEquals(listOf(3, 4, 5), it.result)
         }
     }
 

@@ -56,7 +56,7 @@ class CanonicalFormRewriter(
                         params,
                         arrowType,
                         atom,
-                        annotations = mutableListOf(Symbol("multivalued"))
+                        annotations = mutableListOf(PredefinedAtoms.MULTIVALUED),
                     )
                     functions.add(def)
                     context.resolveFunctionDefinition(owner, def)
@@ -143,7 +143,7 @@ class CanonicalFormRewriter(
     private fun rewriteExpression(expression: Expression): Atom {
         fun createMaps(
             replacement: List<Pair<Int, Expression>>,
-            expression: Expression,
+            expression: Atom,
             op: Atom = PredefinedAtoms.MAP_
         ): Atom {
             if (replacement.isEmpty()) return expression
@@ -162,8 +162,13 @@ class CanonicalFormRewriter(
             )
         }
         if (!expression.isNonDeterministic()) return expression
-        val body = Expression(atoms = expression.atoms.map { atom ->
-            multivaluedCalls[atom.id]?.let { mkVariable(it) } ?: rewriteAtom(atom)
+
+        val body = multivaluedCalls[expression.id]?.let {
+            mkVariable(it)
+        } ?: Expression(atoms = expression.atoms.map { atom ->
+            multivaluedCalls[atom.id]?.let {
+                mkVariable(it)
+            } ?: rewriteAtom(atom)
         })
         // check the expression is a scope
         val replacement = multivaluedCallsInverse[expression.id]

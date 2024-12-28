@@ -215,4 +215,36 @@ class MultivaluedFunctionTest : GeneratorTestBase() {
             val value = classes["RewriteIfWithBothBranches"]!!.getMethod("bar").invoke(null)
             assertEquals(listOf(3, 4, 5, 4, 5, 6, 4, 5, 6), value)
         }
+
+    @Test
+    fun nonDeterministicFunction() =
+        compile(
+            "NonDeterministicFunction.metta",
+            """
+            (@ foo multivalued)
+            (: foo (-> Int))
+            (= (foo) (seq 1 2 3))
+            
+            (: f (-> Int Int))
+            (= (f _x) (+ _x 1))
+            
+            (@ bar multivalued)
+            (: bar (-> Int))
+            (= (bar) (f (foo)))
+           
+            (@ bar multivalued)
+            (: baz (-> Int))
+            (= (baz) (bar))
+        """.trimIndent().replace('_', '$'),
+            mapImpl, flatMapImpl
+        ).let { (result, messageCollector) ->
+            println(result)
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            val value = classes["NonDeterministicFunction"]!!.getMethod("baz").invoke(null)
+            assertEquals(listOf(2, 3, 4), value)
+        }
 }
