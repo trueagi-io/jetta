@@ -3,6 +3,7 @@ package net.singularity.jetta.repl
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ReplTest {
@@ -203,6 +204,30 @@ class ReplTest {
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
             assertEquals(listOf(3, 4, 5), it.result)
+        }
+    }
+
+    @Test
+    fun `recover from a failure`() {
+        val repl = createRepl()
+        repl.eval("""(+ 1 (foo 2))""").let {
+            assertFalse(it.isSuccess)
+        }
+        repl.eval(
+            """
+            (: log-int (-> Int Int))
+            (= (log-int _x)
+                (if (== _x 1) 0 (+ 1 (log-int (- _x 1))))
+            )
+            (log-int 8)
+            """.trimIndent().replace('_', '$')
+        ).let {
+            it.messages.forEach {
+                println(">>" + it)
+            }
+            assertTrue(it.isSuccess)
+            assertTrue(it.messages.isEmpty())
+            println(it.result)
         }
     }
 

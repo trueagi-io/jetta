@@ -58,7 +58,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
         rewriter.add(LambdaRewriter(messageCollector))
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = try {
-            rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
+            rewriter.rewrite(parsed).let { context.resolve(it) }
         } catch (_: RewriteException) {
             return listOf()
         }
