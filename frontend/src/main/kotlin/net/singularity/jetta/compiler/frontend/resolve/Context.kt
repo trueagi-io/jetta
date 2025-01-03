@@ -22,6 +22,7 @@ class Context(
     private val logger = Logger.getLogger(Context::class.java)
     val definedFunctions = mutableMapOf<String, SymbolDef>()
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
+    private val functions = mutableMapOf<String, FunctionDefinition>()
     private val systemFunctions = mutableMapOf<String, ResolvedSymbol>()
     private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
     private val nodesToReplace = mutableMapOf<Atom, Atom>()
@@ -33,6 +34,7 @@ class Context(
     private fun cleanUp() {
         messageCollector.clear()
         unresolvedElements.clear()
+        postprocessingDone = false
     }
 
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
@@ -378,7 +380,7 @@ class Context(
     private fun applyPostResolveRewriters(source: ParsedSource): ParsedSource {
         val rewriter = CompositeRewriter()
         rewriter.add(ReplaceNodesRewriter(nodesToReplace))
-        rewriter.add(MarkMultivaluedFunctionsRewriter())
+        rewriter.add(MarkMultivaluedFunctionsRewriter(functions))
         rewriter.add(CanonicalFormRewriter(messageCollector, this))
         val res = rewriter.rewrite(source)
         return res

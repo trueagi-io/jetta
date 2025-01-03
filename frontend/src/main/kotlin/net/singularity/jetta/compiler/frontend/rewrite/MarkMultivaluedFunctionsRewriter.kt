@@ -8,9 +8,8 @@ import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
 
-class MarkMultivaluedFunctionsRewriter : Rewriter {
+class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, FunctionDefinition>) : Rewriter {
     private val callsLocations = mutableMapOf<String, MutableList<FunctionDefinition>>()
-    private val functions = mutableMapOf<String, FunctionDefinition>()
 
     override fun rewrite(source: ParsedSource): ParsedSource {
         source.code.forEach {

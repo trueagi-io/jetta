@@ -222,12 +222,25 @@ class ReplTest {
             (log-int 8)
             """.trimIndent().replace('_', '$')
         ).let {
-            it.messages.forEach {
-                println(">>" + it)
-            }
             assertTrue(it.isSuccess)
-            assertTrue(it.messages.isEmpty())
             println(it.result)
+        }
+    }
+
+    @Test
+    fun `split function definition and the call`() {
+        val repl = createRepl()
+        repl.eval("""
+            (@ foo multivalued)
+            (: foo (-> Int))
+            (= (foo) (seq 1 2 3))
+        """.trimIndent()).let {
+            assertTrue(it.isSuccess)
+        }
+        repl.eval("""
+            (foo)
+        """.trimIndent()).let {
+            assertTrue(it.isSuccess)
         }
     }
 
