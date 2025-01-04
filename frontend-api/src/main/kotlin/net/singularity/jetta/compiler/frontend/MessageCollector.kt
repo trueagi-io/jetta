@@ -1,13 +1,13 @@
 package net.singularity.jetta.compiler.frontend
 
 class MessageCollector {
-    private val messages = mutableListOf<Message>()
+    private val messages = LinkedHashSet<Message>()//mutableListOf<Message>()
 
     fun add(message: Message) {
         messages.add(message)
     }
 
-    fun list(): List<Message> = messages
+    fun list(): List<Message> = messages.toList()
 
     fun hasErrors(): Boolean = messages.find { it.level == MessageLevel.ERROR } != null
 

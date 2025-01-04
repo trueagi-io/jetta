@@ -1,5 +1,6 @@
 package net.singularity.jetta.compiler.frontend
 
+import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
 import net.singularity.jetta.compiler.frontend.ir.Variable
@@ -22,8 +23,8 @@ class ResolveTest : BaseFrontendTest() {
         ).let { (result, _) ->
             val func = result.code[0] as FunctionDefinition
             assertEquals(GroundedType.INT, func.body.type)
-            assertEquals(GroundedType.INT, (func.body.atoms[1] as Variable).type)
-            assertEquals(GroundedType.INT, (func.body.atoms[2] as Variable).type)
+            assertEquals(GroundedType.INT, ((func.body as Expression).atoms[1] as Variable).type)
+            assertEquals(GroundedType.INT, ((func.body as Expression).atoms[2] as Variable).type)
         }
 
     @Test
@@ -40,7 +41,7 @@ class ResolveTest : BaseFrontendTest() {
         ).let { (result, _) ->
             assertEquals(2, result.code.size)
             val func = result.code[1] as FunctionDefinition
-            val call = func.body
+            val call = func.body as Expression
             assertNotNull(call.resolved)
             assertEquals(JvmMethod("FunctionCall", "foo", "(II)I"), call.resolved!!.jvmMethod)
         }

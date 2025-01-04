@@ -109,16 +109,22 @@ fun Lambda.capturedVariables(): List<Variable> {
             }
 
             is Lambda -> {
-                atom.body.atoms.forEach {
-                    collect(params + atom.params, it)
+                when (val body = atom.body) {
+                    is  Expression -> body.atoms.forEach {
+                        collect(params + atom.params, it)
+                    }
+                    else -> collect(params, atom.body)
                 }
             }
 
             else -> {}
         }
     }
-    body.atoms.forEach {
-        collect(params, it)
+    when (val b = body) {
+        is Expression -> b.atoms.forEach {
+            collect(params, it)
+        }
+        else -> collect(params, body)
     }
     return result
 }

@@ -10,6 +10,7 @@ import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleType
 import net.singularity.jetta.compiler.frontend.resolve.messages.UndefinedVariableMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.compiler.logger.Logger
 
@@ -21,6 +22,7 @@ class Context(
     private val logger = Logger.getLogger(Context::class.java)
     val definedFunctions = mutableMapOf<String, SymbolDef>()
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
+    private val functions = mutableMapOf<String, FunctionDefinition>()
     private val systemFunctions = mutableMapOf<String, ResolvedSymbol>()
     private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
     private val nodesToReplace = mutableMapOf<Atom, Atom>()
@@ -32,6 +34,7 @@ class Context(
     private fun cleanUp() {
         messageCollector.clear()
         unresolvedElements.clear()
+        postprocessingDone = false
     }
 
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
@@ -77,11 +80,19 @@ class Context(
         logger.debug("Add function ${func.name}")
         resolvedFunctions[func.name] = SymbolDef(owner, func)
         main?.let {
-            val lastCall = it.body.atoms.last()
+            val lastCall = when (it.body) {
+                is Expression -> (it.body as Expression).atoms.last()
+                else -> it.body
+            }
             if (lastCall is Expression &&
                 (lastCall.atoms[0] as? Symbol)?.name == func.name
             ) {
-                it.arrowType = ArrowType(listOf(func.returnType!!))
+                it.arrowType = if (func.isMultivalued()) {
+                    it.annotations.add(PredefinedAtoms.MULTIVALUED)
+                    ArrowType(listOf(SeqType(func.returnType!!)))
+                } else {
+                    ArrowType(listOf(func.returnType!!))
+                }
                 lastCall.resolved = resolve(func.name)
             }
         }
@@ -135,7 +146,15 @@ class Context(
 
                                 is Expression -> inferTypeForExpression(arg, scope)
 
-                                else -> TODO()
+                                is Lambda -> {
+                                    // FIXME: do nothing for now
+                                }
+
+                                is Symbol -> {
+                                    // FIXME: do nothing for now
+                                }
+                                
+                                else -> TODO("it=$arg")
                             }
                         }
                     expression.type = resolvedSymbol.arrowType().types.last()
@@ -189,8 +208,12 @@ class Context(
 
     fun resolve(source: ParsedSource): ParsedSource {
         cleanUp()
-        resolveSource(source)
+        return resolveRecursively(source)
+    }
+
+    fun resolveRecursively(source: ParsedSource): ParsedSource {
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
+        resolveSource(source)
         val postponedFunctions = mutableMapOf<String, Scope>()
         val owner = source.getJvmClassName()
         try {
@@ -245,9 +268,11 @@ class Context(
                 )
             }
         }
-        return if (postprocessingDone) source else {
+        return if (postprocessingDone)
+            source
+        else {
             postprocessingDone = true
-            resolve(applyPostResolveRewriters(source))
+            resolveRecursively(applyPostResolveRewriters(source))
         }
     }
 
@@ -267,7 +292,7 @@ class Context(
         }
         if (isCompleted) {
             val body = scope.functionDefinition.body
-            resolveExpression(body, scope)
+            resolveAtom(body, scope)
             if (body.type != null) {
                 types.add(body.type!!)
                 scope.functionDefinition.arrowType = ArrowType(types)
@@ -279,12 +304,13 @@ class Context(
 
     private fun resolveSource(source: ParsedSource) {
         println(source)
-        source.code.map {
+        source.code.forEach {
             when (it) {
                 is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)
                 else -> TODO("it=$it")
             }
         }
+        println("----")
     }
 
     fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
@@ -292,7 +318,7 @@ class Context(
         functionDefinition.typedParameters?.forEach {
             functionDefinition.params.find { v -> v.name == it.name }?.type = it.type
         }
-        resolveExpression(
+        resolveAtom(
             functionDefinition.body,
             Scope(functionDefinition)
         )
@@ -307,7 +333,7 @@ class Context(
                 val data = scope[atom.name]
                 if (data != null) {
                     atom.type = data.second
-                    atom.scope = data.first.body
+                    atom.scope = data.first.body as? Expression
                 } else {
                     messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
                 }
@@ -321,7 +347,7 @@ class Context(
                     variable.type = atom.arrowType!!.types[index]
                 }
                 val lambdaTypeInfo = createLambdaTypeInfo(scope, atom)
-                resolveExpression(atom.body, lambdaTypeInfo)
+                resolveAtom(atom.body, lambdaTypeInfo)
             }
 
             is Symbol -> {
@@ -354,6 +380,7 @@ class Context(
     private fun applyPostResolveRewriters(source: ParsedSource): ParsedSource {
         val rewriter = CompositeRewriter()
         rewriter.add(ReplaceNodesRewriter(nodesToReplace))
+        rewriter.add(MarkMultivaluedFunctionsRewriter(functions))
         rewriter.add(CanonicalFormRewriter(messageCollector, this))
         val res = rewriter.rewrite(source)
         return res

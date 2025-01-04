@@ -54,15 +54,18 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
             //     (f $__var0)) (foo))
             val def = result.code.findFunctionDefinition("bar")
             assertNotNull(def)
-            assertEquals(3, def.body.atoms.size)
-            assertEquals(PredefinedAtoms.MAP_, def.body.atoms[0])
-            assertTrue { def.body.atoms[1] is Lambda }
-            (def.body.atoms[1] as Lambda).let { lambda ->
+            assertTrue(def.body is Expression)
+            val body = def.body as Expression
+            assertEquals(3, body.atoms.size)
+            assertEquals(PredefinedAtoms.MAP_, body.atoms[0])
+            assertTrue { body.atoms[1] is Lambda }
+            (body.atoms[1] as Lambda).let { lambda ->
                 assertNotNull(lambda.arrowType)
                 assertEquals(listOf(GroundedType.INT, GroundedType.INT), lambda.arrowType!!.types)
                 assertEquals(1, lambda.params.size)
                 assertEquals("__var0", lambda.params[0].name)
-                lambda.body.let { body ->
+                assertTrue { lambda.body is Expression }
+                (lambda.body as Expression).let { body ->
                     assertEquals(2, body.atoms.size)
                     assertTrue(body.atoms[0] is Symbol)
                     assertEquals("f", (body.atoms[0] as Symbol).name)
@@ -71,7 +74,7 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                     assertNotNull(body.resolved)
                 }
             }
-            def.body.atoms[2].assertCallWithNoArgs("foo")
+            body.atoms[2].assertCallWithNoArgs("foo")
         }
 
     @Test
@@ -98,21 +101,27 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
             println(result)
             val def = result.code.findFunctionDefinition("bar")
             assertNotNull(def)
-            assertEquals(3, def.body.atoms.size)
-            assertEquals(PredefinedAtoms.FLAT_MAP_, def.body.atoms[0])
-            assertTrue { def.body.atoms[1] is Lambda }
-            (def.body.atoms[1] as Lambda).let { lambda ->
+            assertTrue(def.body is Expression)
+            val body = def.body as Expression
+            assertEquals(3, body.atoms.size)
+            assertEquals(PredefinedAtoms.FLAT_MAP_, body.atoms[0])
+            assertTrue { body.atoms[1] is Lambda }
+            (body.atoms[1] as Lambda).let { lambda ->
                 assertNotNull(lambda.arrowType)
                 assertEquals(listOf(GroundedType.INT, SeqType(GroundedType.INT)), lambda.arrowType!!.types)
                 assertEquals(1, lambda.params.size)
                 assertEquals("__var1", lambda.params[0].name)
-                assertEquals(PredefinedAtoms.MAP_, lambda.body.atoms[0])
-                assertTrue { lambda.body.atoms[1] is Lambda }
-                (lambda.body.atoms[1] as Lambda).let { lambda1 ->
+                assertTrue { lambda.body is Expression }
+                val lBody = lambda.body as Expression
+                assertEquals(PredefinedAtoms.MAP_, lBody.atoms[0])
+                assertTrue { lBody.atoms[1] is Lambda }
+                (lBody.atoms[1] as Lambda).let { lambda1 ->
                     assertNotNull(lambda1.arrowType)
                     assertEquals(listOf(GroundedType.INT, GroundedType.INT), lambda1.arrowType!!.types)
                     assertEquals("__var0", lambda1.params[0].name)
-                    lambda1.body.let { body ->
+                    assertTrue { lambda1.body is Expression }
+                    val l1Body = lambda1.body as Expression
+                    l1Body.let { body ->
                         assertEquals(3, body.atoms.size)
                         assertTrue(body.atoms[0] is Symbol)
                         assertEquals("f", (body.atoms[0] as Symbol).name)
@@ -123,9 +132,9 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                         assertNotNull(body.resolved)
                     }
                 }
-                lambda.body.atoms[2].assertCallWithNoArgs("foo")
+                lBody.atoms[2].assertCallWithNoArgs("foo")
             }
-            def.body.atoms[2].assertCallWithNoArgs("foo")
+            body.atoms[2].assertCallWithNoArgs("foo")
         }
 
     @Test
@@ -148,15 +157,18 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
             println(result)
             val def = result.code.findFunctionDefinition("bar")
             assertNotNull(def)
-            assertEquals(3, def.body.atoms.size)
-            assertEquals(PredefinedAtoms.MAP_, def.body.atoms[0])
-            assertTrue { def.body.atoms[1] is Lambda }
-            (def.body.atoms[1] as Lambda).let { lambda ->
+            assertTrue(def.body is Expression)
+            val body = def.body as Expression
+            assertEquals(3, body.atoms.size)
+            assertEquals(PredefinedAtoms.MAP_, body.atoms[0])
+            assertTrue { body.atoms[1] is Lambda }
+            (body.atoms[1] as Lambda).let { lambda ->
                 assertNotNull(lambda.arrowType)
                 assertEquals(listOf(GroundedType.INT, GroundedType.INT), lambda.arrowType!!.types)
                 assertEquals(1, lambda.params.size)
                 assertEquals("__var0", lambda.params[0].name)
-                lambda.body.let { body ->
+                assertTrue { lambda.body is Expression }
+                (lambda.body as Expression).let { body ->
                     assertEquals(3, body.atoms.size)
                     assertTrue(body.atoms[0] is Special)
                     assertEquals("+", (body.atoms[0] as Special).value)
@@ -165,7 +177,7 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                     assertEquals("x", (body.atoms[2] as Variable).name)
                 }
             }
-            def.body.atoms[2].assertCallWithNoArgs("foo")
+            body.atoms[2].assertCallWithNoArgs("foo")
         }
 
 
@@ -190,21 +202,25 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
             println(result)
             val def = result.code.findFunctionDefinition("bar")
             assertNotNull(def)
-            assertEquals(3, def.body.atoms.size)
-            assertEquals(PredefinedAtoms.FLAT_MAP_, def.body.atoms[0])
-            assertTrue { def.body.atoms[1] is Lambda }
-            (def.body.atoms[1] as Lambda).let { lambda ->
+            assertTrue(def.body is Expression)
+            val body = def.body as Expression
+            assertEquals(3, body.atoms.size)
+            assertEquals(PredefinedAtoms.FLAT_MAP_, body.atoms[0])
+            assertTrue { body.atoms[1] is Lambda }
+            (body.atoms[1] as Lambda).let { lambda ->
                 assertNotNull(lambda.arrowType)
                 assertEquals(listOf(GroundedType.INT, SeqType(GroundedType.INT)), lambda.arrowType!!.types)
                 assertEquals(1, lambda.params.size)
                 assertEquals("__var1", lambda.params[0].name)
-                assertEquals(PredefinedAtoms.MAP_, lambda.body.atoms[0])
-                assertTrue { lambda.body.atoms[1] is Lambda }
-                (lambda.body.atoms[1] as Lambda).let { lambda1 ->
+                val lBody = lambda.body as Expression
+                assertEquals(PredefinedAtoms.MAP_, lBody.atoms[0])
+                assertTrue { lBody.atoms[1] is Lambda }
+                (lBody.atoms[1] as Lambda).let { lambda1 ->
                     assertNotNull(lambda1.arrowType)
                     assertEquals(listOf(GroundedType.INT, GroundedType.INT), lambda1.arrowType!!.types)
                     assertEquals("__var0", lambda1.params[0].name)
-                    lambda1.body.let { body ->
+                    assertTrue { lambda1.body is Expression }
+                    (lambda1.body as Expression).let { body ->
                         assertEquals(3, body.atoms.size)
                         assertTrue(body.atoms[0] is Special)
                         assertEquals("+", (body.atoms[0] as Special).value)
@@ -218,9 +234,9 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                         }
                     }
                 }
-                lambda.body.atoms[2].assertCallWithNoArgs("foo")
+                lBody.atoms[2].assertCallWithNoArgs("foo")
             }
-            def.body.atoms[2].assertCallWithNoArgs("foo")
+            body.atoms[2].assertCallWithNoArgs("foo")
         }
 
     @Test

@@ -3,7 +3,7 @@ package net.singularity.jetta.compiler.frontend.ir
 class Lambda(
     override val params: List<Variable>,
     override var arrowType: ArrowType?,
-    override val body: Expression,
+    override val body: Atom,
     override val position: SourcePosition? = null
 ) : FunctionLike {
     var resolvedClassName: String? = null
@@ -19,5 +19,5 @@ class Lambda(
         return "Lambda(params=$params, arrowType=$arrowType, body=$body, position=$position)"
     }
 
-    fun copy(body: Expression) = Lambda(params, arrowType, body, position)
+    fun copy(body: Atom) = Lambda(params, arrowType, body, position)
 }

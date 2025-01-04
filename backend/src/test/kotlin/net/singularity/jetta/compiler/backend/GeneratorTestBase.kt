@@ -12,7 +12,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import java.io.File
 
-open class GeneratorTestBase {
+abstract class GeneratorTestBase {
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 
     protected fun compile(filename: String, code: String,
@@ -25,7 +25,7 @@ open class GeneratorTestBase {
         rewriter.add(FunctionRewriter(messageCollector))
         rewriter.add(LambdaRewriter(messageCollector))
         val parsed = parser.parse(Source(filename, code), messageCollector)
-        val result = rewriter.rewrite(parsed).let { context.resolve(it) }
+        val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
         val generator = Generator()
         val compiled = generator.generate(result)
         compiled.forEach {

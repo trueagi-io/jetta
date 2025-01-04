@@ -28,5 +28,5 @@ class ReplaceNodesRewriter(private val nodesToReplace: Map<Atom, Atom>) : Rewrit
         expression.copy(atoms = expression.atoms.map(::rewriteAtom))
 
     private fun rewriteLambda(lambda: Lambda): Atom =
-        lambda.copy(body = rewriteExpression(lambda.body) as Expression)
+        lambda.copy(body = rewriteAtom(lambda.body))
 }

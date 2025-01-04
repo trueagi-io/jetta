@@ -38,11 +38,12 @@ class CanonicalFormRewriter(
         return ParsedSource(source.filename, result)
     }
 
-    private fun rewriteFunction(owner: String, functionDefinition: FunctionLike): Atom {
-        val newBody = extractIfStatementsIfNeeded(owner, functionDefinition.body, root = true)
-        collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
-        return rewriteAtom(newBody)
-    }
+    private fun rewriteFunction(owner: String, functionDefinition: FunctionLike): Atom =
+        if (functionDefinition is FunctionDefinition && functionDefinition.name != FunctionRewriter.MAIN) {
+            val newBody = extractIfStatementsIfNeeded(owner, functionDefinition.body, root = true)
+            collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
+            rewriteAtom(newBody)
+        } else functionDefinition.body
 
     private fun extractIfStatementsIfNeeded(owner: String, atom: Atom, root: Boolean): Atom {
         when (atom) {
@@ -55,7 +56,7 @@ class CanonicalFormRewriter(
                         params,
                         arrowType,
                         atom,
-                        annotations = listOf(Symbol("multivalued"))
+                        annotations = mutableListOf(PredefinedAtoms.MULTIVALUED),
                     )
                     functions.add(def)
                     context.resolveFunctionDefinition(owner, def)
@@ -142,7 +143,7 @@ class CanonicalFormRewriter(
     private fun rewriteExpression(expression: Expression): Atom {
         fun createMaps(
             replacement: List<Pair<Int, Expression>>,
-            expression: Expression,
+            expression: Atom,
             op: Atom = PredefinedAtoms.MAP_
         ): Atom {
             if (replacement.isEmpty()) return expression
@@ -161,8 +162,13 @@ class CanonicalFormRewriter(
             )
         }
         if (!expression.isNonDeterministic()) return expression
-        val body = Expression(atoms = expression.atoms.map { atom ->
-            multivaluedCalls[atom.id]?.let { mkVariable(it) } ?: rewriteAtom(atom)
+
+        val body = multivaluedCalls[expression.id]?.let {
+            mkVariable(it)
+        } ?: Expression(atoms = expression.atoms.map { atom ->
+            multivaluedCalls[atom.id]?.let {
+                mkVariable(it)
+            } ?: rewriteAtom(atom)
         })
         // check the expression is a scope
         val replacement = multivaluedCallsInverse[expression.id]
