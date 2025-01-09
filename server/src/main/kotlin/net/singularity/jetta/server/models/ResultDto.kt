@@ -5,7 +5,7 @@ import net.singularity.jetta.repl.EvalResult
 
 @Serializable
 data class ResultDto(
-    val result: String?,
+    @Serializable(with = AnySerializer::class) val result: Any?,
     val type: String?,
     val messages: List<String>,
     val isSuccess: Boolean
@@ -13,7 +13,7 @@ data class ResultDto(
 
 fun EvalResult.toDto() =
     ResultDto(
-        result?.toString(),
+        result,
         result?.let { it::class.java.canonicalName },
         messages,
         isSuccess

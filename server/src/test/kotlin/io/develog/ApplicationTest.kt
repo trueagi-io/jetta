@@ -63,7 +63,7 @@ class ApplicationTest {
             assertEquals(HttpStatusCode.OK, it.status)
             val result = it.body<ResultDto>()
             assertTrue(result.isSuccess)
-            assertEquals("4", result.result)
+            assertEquals(4, result.result)
         }
     }
 
@@ -110,7 +110,7 @@ class ApplicationTest {
             assertEquals(HttpStatusCode.OK, it.status)
             val result = it.body<ResultDto>()
             assertTrue(result.isSuccess)
-            assertEquals("720", result.result)
+            assertEquals(720, result.result)
         }
     }
 
@@ -131,7 +131,7 @@ class ApplicationTest {
             assertEquals(HttpStatusCode.OK, it.status)
             val result = it.body<ResultDto>()
             assertTrue(result.isSuccess)
-            assertEquals("3", result.result)
+            assertEquals(3, result.result)
         }
         client.post("/contexts/$contextId") {
             setBody(
@@ -145,6 +145,30 @@ class ApplicationTest {
             val result = it.body<ResultDto>()
             assertTrue(result.isSuccess)
         }
+    }
 
+    @Test
+    fun `eval multivalued function which returns a list`() = testApplication {
+        val client = setup()
+        val contextId = client.post("/contexts").let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            it.bodyAsText()
+        }
+        client.post("/contexts/$contextId") {
+            setBody(
+                """
+                (@ foo multivalued)
+                (: foo (-> Int))
+                (= (foo) (seq 1 2 3))
+                (foo)
+                """.trimIndent()
+            )
+        }.let {
+            assertEquals(HttpStatusCode.OK, it.status)
+            val result = it.body<ResultDto>()
+            println(result)
+            assertTrue(result.isSuccess)
+            assertEquals(listOf(1, 2, 3), result.result)
+        }
     }
 }
