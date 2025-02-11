@@ -13,6 +13,8 @@ import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.compiler.logger.Logger
+import kotlin.collections.component1
+import kotlin.collections.component2
 
 class Context(
     private val messageCollector: MessageCollector,
@@ -211,9 +213,7 @@ class Context(
         return resolveRecursively(source)
     }
 
-    fun resolveRecursively(source: ParsedSource): ParsedSource {
-        main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
-        resolveSource(source)
+    fun typeInferenceLoop(source: ParsedSource) {
         val postponedFunctions = mutableMapOf<String, Scope>()
         val owner = source.getJvmClassName()
         try {
@@ -268,6 +268,12 @@ class Context(
                 )
             }
         }
+    }
+
+    fun resolveRecursively(source: ParsedSource): ParsedSource {
+        main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
+        resolveSource(source)
+        typeInferenceLoop(source)
         return if (postprocessingDone)
             source
         else {
