@@ -1,7 +1,7 @@
 val kotlinVersion: String by project
 
 plugins {
-    kotlin("jvm") version "1.9.22"
+    kotlin("jvm") version "2.1.0"
 }
 
 group = "net.singularity.jetta"
