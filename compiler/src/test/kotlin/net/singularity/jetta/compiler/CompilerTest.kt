@@ -4,7 +4,6 @@ import net.singularity.jetta.compiler.frontend.Source
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import net.singularity.jetta.compiler.backend.utils.toClasses
 
 class CompilerTest {
     @Test
@@ -16,8 +15,7 @@ class CompilerTest {
             (+ 1 1)    
             """.trimIndent()
         ))
-        val classes = result.toClasses()
-        assertEquals(1, classes.size)
-        assertTrue(classes.contains(name))
+        assertEquals(1, result.size)
+        assertTrue(result.contains(name))
     }
 }
