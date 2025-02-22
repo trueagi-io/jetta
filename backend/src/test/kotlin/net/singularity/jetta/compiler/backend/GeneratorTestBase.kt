@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.backend
 
-import net.singularity.jetta.compiler.backend.utils.ByteArrayClassLoader
+import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
@@ -41,13 +41,7 @@ abstract class GeneratorTestBase {
         file.writeBytes(result.bytecode)
     }
 
-    protected fun Map<String, ByteArray>.toClasses(): Map<String, Class<*>> {
-        val loader = ByteArrayClassLoader(this)
-        return mapValues { loader.loadClass(it.key) }
-    }
-
     protected fun List<CompilationResult>.toMap() = this.associate { it.className to it.bytecode }
 
     protected fun CompilationResult.getClass(): Class<*> = listOf(this).toMap().toClasses()[this.className]!!
-
 }

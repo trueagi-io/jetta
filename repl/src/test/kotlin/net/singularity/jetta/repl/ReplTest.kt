@@ -1,6 +1,5 @@
 package net.singularity.jetta.repl
 
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

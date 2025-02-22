@@ -316,7 +316,6 @@ class Context(
                 else -> TODO("it=$it")
             }
         }
-        println("----")
     }
 
     fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {

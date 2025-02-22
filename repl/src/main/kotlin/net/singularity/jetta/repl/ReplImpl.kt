@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.backend.Generator
 import net.singularity.jetta.compiler.backend.JettaRuntime
 import net.singularity.jetta.compiler.frontend.Message
 import net.singularity.jetta.compiler.frontend.MessageCollector
+import net.singularity.jetta.compiler.frontend.MessageRenderer
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.resolve.Context
