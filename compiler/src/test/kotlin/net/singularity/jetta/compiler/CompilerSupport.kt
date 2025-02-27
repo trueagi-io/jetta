@@ -2,25 +2,17 @@ package net.singularity.jetta.compiler
 
 import net.singularity.jetta.compiler.frontend.Source
 import java.io.File
-import java.io.IOException
-import java.util.UUID
+import java.util.*
 import java.util.concurrent.TimeUnit
 
 class CompilerSupport {
-    private val jettaCompilerPath: File
+    private val jettaCompilerMainClass: String = "net.singularity.jetta.compiler.MainKt"
 
     private val outputDir: File
 
     private val sourceDir: File
 
-    private val jettaHome = ".."
-
     init {
-        jettaCompilerPath = jettaHome / "bin" / "jettac"
-
-        if (!jettaCompilerPath.exists())
-            throw IOException("$jettaCompilerPath does not exist")
-
         outputDir = createTempDir()
         outputDir.mkdirs()
 
@@ -50,12 +42,15 @@ class CompilerSupport {
 
         val result = mutableMapOf<String, ByteArray>()
 
-        val proc = ProcessBuilder(jettaCompilerPath.absolutePath, *sources.map { it.filename }.toTypedArray(), "-d", outputDir.absolutePath)
+        val classpath = System.getProperty("java.class.path")
+        val builder = ProcessBuilder("java", "-cp", classpath, jettaCompilerMainClass, *sources.map { it.filename }.toTypedArray(), "-d", outputDir.absolutePath)
             .directory(sourceDir)
             .redirectOutput(ProcessBuilder.Redirect.INHERIT)
             .redirectError(ProcessBuilder.Redirect.INHERIT)
-            .start()
 
+        println("Command: " + builder.command().joinToString(" "))
+
+        val proc = builder.start()
         proc.waitFor(60, TimeUnit.SECONDS)
 
         if (proc.exitValue() != 0) throw CompilationErrorException(proc.errorStream.bufferedReader().readText())
@@ -74,5 +69,5 @@ class CompilerSupport {
 
     operator fun File.div(other: String) = File(this.absolutePath + File.separator + other)
 
-    operator fun String.div(other: String) = File(this + File.separator + other)
+    operator fun String.div(other: String) = this + File.separator + other
 }

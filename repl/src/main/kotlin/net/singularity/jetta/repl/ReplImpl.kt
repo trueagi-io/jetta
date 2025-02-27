@@ -1,17 +1,13 @@
 package net.singularity.jetta.repl
 
-import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.backend.CompilationResult
 import net.singularity.jetta.compiler.backend.DefaultRuntime
 import net.singularity.jetta.compiler.backend.Generator
 import net.singularity.jetta.compiler.backend.JettaRuntime
-import net.singularity.jetta.compiler.frontend.Message
-import net.singularity.jetta.compiler.frontend.MessageCollector
-import net.singularity.jetta.compiler.frontend.MessageRenderer
-import net.singularity.jetta.compiler.frontend.ParserFacade
-import net.singularity.jetta.compiler.frontend.Source
+import net.singularity.jetta.compiler.frontend.*
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
@@ -26,6 +22,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
     private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
 
     override fun eval(code: String): EvalResult {
+        context.clearMessages()
         val filename = createFilename()
         val result = try {
             compile(filename, code)
@@ -55,8 +52,8 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
     private fun compile(filename: String, code: String): List<CompilationResult> {
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = try {
             rewriter.rewrite(parsed).let { context.resolve(it) }
@@ -74,9 +71,5 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 
-    private fun createMessageRenderer(): MessageRenderer = object : MessageRenderer {
-        override fun render(message: Message): String {
-            return message.toString()
-        }
-    }
+    private fun createMessageRenderer(): MessageRenderer = DefaultMessageRenderer()
 }

@@ -6,6 +6,7 @@ import com.github.ajalt.clikt.parameters.arguments.multiple
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
+import kotlin.system.exitProcess
 
 
 class Compile : CliktCommand("jettac") {
@@ -18,7 +19,8 @@ class Compile : CliktCommand("jettac") {
 
     override fun run() {
         val compiler = Compiler(sources, output)
-        compiler.compile()
+        val code = compiler.compile()
+        if (code != 0) exitProcess(code)
     }
 }
 

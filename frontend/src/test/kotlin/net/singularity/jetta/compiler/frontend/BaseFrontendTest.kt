@@ -17,10 +17,27 @@ abstract class BaseFrontendTest {
         val context = Context(messageCollector, internalMap, internalFlatMap)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed)
         return context.resolveRecursively(result) to messageCollector
+    }
+
+    protected fun resolveMultiple(vararg sources: Source, internalMap: JvmMethod? = null,
+                                  internalFlatMap: JvmMethod? = null): Pair<List<ParsedSource>, MessageCollector> {
+        val messageCollector = MessageCollector()
+        val context = Context(messageCollector, internalMap, internalFlatMap)
+        val parser = createParserFacade()
+        val rewriter = CompositeRewriter()
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
+        val parsed = sources.map {
+            val parsed = parser.parse(it, messageCollector)
+            val result = rewriter.rewrite(parsed)
+            context.addExternalFunctions(result)
+            result
+        }
+        return parsed.map { context.resolveRecursively(it) } to messageCollector
     }
 }

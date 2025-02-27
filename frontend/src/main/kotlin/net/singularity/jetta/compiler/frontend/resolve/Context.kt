@@ -34,9 +34,12 @@ class Context(
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
 
     private fun cleanUp() {
-        messageCollector.clear()
         unresolvedElements.clear()
         postprocessingDone = false
+    }
+
+    fun clearMessages() {
+        messageCollector.clear()
     }
 
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
@@ -97,6 +100,13 @@ class Context(
                 }
                 lastCall.resolved = resolve(func.name)
             }
+        }
+    }
+
+    fun addExternalFunctions(source: ParsedSource) {
+        val external = source.code.filter { it is FunctionDefinition && it.annotations.contains(PredefinedAtoms.EXPORT) }.map { it as FunctionDefinition }
+        external.forEach {
+            resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
         }
     }
 
@@ -384,9 +394,9 @@ class Context(
 
     private fun applyPostResolveRewriters(source: ParsedSource): ParsedSource {
         val rewriter = CompositeRewriter()
-        rewriter.add(ReplaceNodesRewriter(nodesToReplace))
-        rewriter.add(MarkMultivaluedFunctionsRewriter(functions))
-        rewriter.add(CanonicalFormRewriter(messageCollector, this))
+        rewriter.add { ReplaceNodesRewriter(nodesToReplace) }
+        rewriter.add { MarkMultivaluedFunctionsRewriter(functions) }
+        rewriter.add { CanonicalFormRewriter(messageCollector, this) }
         val res = rewriter.rewrite(source)
         return res
     }

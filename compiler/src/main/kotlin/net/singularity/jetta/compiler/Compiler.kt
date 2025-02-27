@@ -4,7 +4,10 @@ import net.singularity.jetta.compiler.backend.CompilationResult
 import net.singularity.jetta.compiler.backend.DefaultRuntime
 import net.singularity.jetta.compiler.backend.Generator
 import net.singularity.jetta.compiler.backend.JettaRuntime
+import net.singularity.jetta.compiler.frontend.DefaultMessageRenderer
+import net.singularity.jetta.compiler.frontend.Message
 import net.singularity.jetta.compiler.frontend.MessageCollector
+import net.singularity.jetta.compiler.frontend.MessageLevel
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.resolve.Context
@@ -15,30 +18,55 @@ import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import java.io.File
 
 class Compiler(val files: List<String>, val outputDir: String, val runtime: JettaRuntime = DefaultRuntime()) {
-    fun compile() {
-        files.forEach {
-            print("Compiling $it")
-            val code = File(it).readText()
-            compile(it, code)
-            println(" OK")
+    fun compile(): Int {
+        val sources = files.map {
+            Source(it, File(it).readText())
+        }
+        val (success, messages) = compileMultipleSources(sources)
+        val renderer = DefaultMessageRenderer()
+        messages.forEach {
+            println(renderer.render(it))
+        }
+        return if (success) {
+            0
+        } else {
+            1
         }
     }
 
-    private fun compile(filename: String, code: String): Pair<List<CompilationResult>, MessageCollector> {
+    private fun MessageCollector.containsErrors(): Boolean =
+        list().find { it.level == MessageLevel.ERROR } != null
+
+    fun compileMultipleSources(sources: List<Source>): Pair<Boolean, List<Message>> {
         val messageCollector = MessageCollector()
         val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
-        val parsed = parser.parse(Source(filename, code), messageCollector)
-        val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
-        val generator = Generator()
-        val compiled = generator.generate(result)
-        compiled.forEach {
-            writeResult(it)
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
+
+        val parsed = sources.map { source ->
+            println("Compiling ${source.filename} ====== \n ${source.code} \n ======")
+            val parsed = parser.parse(source, messageCollector)
+            val result = rewriter.rewrite(parsed)
+            context.addExternalFunctions(result)
+            result
         }
-        return compiled to messageCollector
+
+        if (messageCollector.containsErrors()) {
+            // do not generate classes if there is any error
+            return false to messageCollector.list()
+        }
+        val resolved = parsed.map { context.resolve(it) }
+
+        resolved.forEach {
+            val generator = Generator()
+            val compiled = generator.generate(it)
+            compiled.forEach {
+                writeResult(it)
+            }
+        }
+        return true to messageCollector.list()
     }
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()

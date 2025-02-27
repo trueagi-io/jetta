@@ -30,12 +30,15 @@ object Predefined {
     const val MAP_ = "map?"
     const val FLAT_MAP_ = "flat-map?"
     const val SEQ = "seq"
+    const val IMPORT = "import"
+    const val PACKAGE = "package"
 }
 
 object PredefinedAtoms {
     val MAP_ = Special(Predefined.MAP_)
     val FLAT_MAP_ = Special(Predefined.FLAT_MAP_)
     val MULTIVALUED = Symbol("multivalued")
+    val EXPORT = Symbol("export")
 }
 
 fun Atom.isBooleanExpression(): Boolean =

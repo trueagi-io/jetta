@@ -117,4 +117,7 @@ fun FunctionDefinition.getSignature(): String? {
 fun FunctionDefinition.isMultivalued(): Boolean =
     annotations.find { (it as? Symbol)?.name == "multivalued" } != null
 
+fun FunctionDefinition.isExport(): Boolean =
+    annotations.find { (it as? Symbol)?.name == "export" } != null
+
 

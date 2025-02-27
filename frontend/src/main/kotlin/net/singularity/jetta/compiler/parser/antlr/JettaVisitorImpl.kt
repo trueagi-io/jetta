@@ -108,7 +108,13 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
         ctx.seq()?.let {
             return Special(Predefined.SEQ, mkPosition(ctx.position))
         }
-        TODO()
+        ctx.import_()?.let {
+            return Special(Predefined.IMPORT,  mkPosition(ctx.position))
+        }
+        ctx.package_()?.let {
+            return Special(Predefined.PACKAGE,  mkPosition(ctx.position))
+        }
+        TODO(ctx.text)
     }
 
     private fun Point.toPosition() = Position(line, column + 1)

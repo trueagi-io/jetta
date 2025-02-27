@@ -15,19 +15,52 @@ import java.io.File
 abstract class GeneratorTestBase {
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 
-    protected fun compile(filename: String, code: String,
-                          mapImpl: JvmMethod? = null,
-                          flatMapImpl: JvmMethod? = null): Pair<List<CompilationResult>, MessageCollector> {
+    protected fun compile(
+        filename: String, code: String,
+        mapImpl: JvmMethod? = null,
+        flatMapImpl: JvmMethod? = null
+    ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
         val context = Context(messageCollector, mapImpl, flatMapImpl)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
         val generator = Generator()
         val compiled = generator.generate(result)
+        compiled.forEach {
+            println("Writing " + it.className)
+            writeResult(it)
+        }
+        return compiled to messageCollector
+    }
+
+    protected fun compileMultiple(
+        vararg sources: Source,
+        mapImpl: JvmMethod? = null,
+        flatMapImpl: JvmMethod? = null
+    ): Pair<List<CompilationResult>, MessageCollector> {
+        val messageCollector = MessageCollector()
+        val context = Context(messageCollector, mapImpl, flatMapImpl)
+        val parser = createParserFacade()
+        val rewriter = CompositeRewriter()
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
+
+        val parsed = sources.map {
+            val parsed = parser.parse(it, messageCollector)
+            val result = rewriter.rewrite(parsed)
+            context.addExternalFunctions(result)
+            result
+        }
+
+        val compiled = parsed.map { context.resolve(it) }.flatMap {
+            val generator = Generator()
+            generator.generate(it)
+        }
+
         compiled.forEach {
             println("Writing " + it.className)
             writeResult(it)

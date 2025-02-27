@@ -93,4 +93,29 @@ class ResolveTest : BaseFrontendTest() {
             }
             assertEquals(0, messageCollector.list().size)
         }
+
+
+    @Test
+    fun `resolve dependencies in multiple files`() =
+        resolveMultiple(
+            Source(
+                "Foo.metta",
+                """(@ foo export)
+                   (: foo (-> Int Int))
+                   (= (foo _x) (+ _x 1))
+                """.trimMargin().replace('_', '$')
+            ),
+            Source(
+                "Bar.metta",
+                """
+                   (: bar (-> Int Int)) 
+                   (= (bar _x) (foo _x))
+                """.trimMargin().replace('_', '$')
+            )
+        ).let { (_, messageCollector) ->
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertEquals(0, messageCollector.list().size)
+        }
 }

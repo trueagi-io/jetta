@@ -51,8 +51,8 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
     }
@@ -77,8 +77,8 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
     }
@@ -104,7 +104,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
     }

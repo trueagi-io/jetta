@@ -31,6 +31,8 @@ double
 
 special
     : pattern
+    | import_
+    | package
     | annotation
     | type
     | arrow
@@ -115,6 +117,14 @@ arrow
 
 if
     : IF
+    ;
+
+import_
+    : IMPORT
+    ;
+
+package
+    : PACKAGE
     ;
 
 variable
@@ -210,6 +220,14 @@ SEQ
 
 IF
     : 'if'
+    ;
+
+IMPORT
+    : 'import'
+    ;
+
+PACKAGE
+    : 'package'
     ;
 
 EQ
