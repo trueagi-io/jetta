@@ -10,11 +10,15 @@ import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.MessageLevel
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
+import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import net.singularity.jetta.runtime.IO
+import org.objectweb.asm.Type
 import java.io.File
 
 class Compiler(val files: List<String>, val outputDir: String, val runtime: JettaRuntime = DefaultRuntime()) {
@@ -37,9 +41,22 @@ class Compiler(val files: List<String>, val outputDir: String, val runtime: Jett
     private fun MessageCollector.containsErrors(): Boolean =
         list().find { it.level == MessageLevel.ERROR } != null
 
+    private fun addSystemFunctions(context: Context) {
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = Type.getInternalName(IO::class.java),
+                    name = "println",
+                    descriptor = "(I)V"
+                ), null, false
+            )
+        )
+    }
+
     fun compileMultipleSources(sources: List<Source>): Pair<Boolean, List<Message>> {
         val messageCollector = MessageCollector()
         val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
+        addSystemFunctions(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector) }

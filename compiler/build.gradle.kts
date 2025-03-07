@@ -14,6 +14,7 @@ dependencies {
     implementation(project(":frontend-api"))
     implementation(project(":frontend"))
     implementation(project(":backend"))
+    implementation(project(":runtime"))
 
     implementation("org.ow2.asm:asm:9.4")
     implementation("org.ow2.asm:asm-commons:9.4")

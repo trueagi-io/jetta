@@ -12,9 +12,10 @@ abstract class BaseFrontendTest {
 
     protected fun resolve(filename: String, code: String,
                           internalMap: JvmMethod? = null,
-                          internalFlatMap: JvmMethod? = null): Pair<ParsedSource, MessageCollector> {
+                          internalFlatMap: JvmMethod? = null, init: (Context) -> Unit = {}): Pair<ParsedSource, MessageCollector> {
         val messageCollector = MessageCollector()
         val context = Context(messageCollector, internalMap, internalFlatMap)
+        init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector) }

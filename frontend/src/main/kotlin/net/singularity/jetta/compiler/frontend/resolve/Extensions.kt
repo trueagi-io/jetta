@@ -13,6 +13,7 @@ fun Atom.toJvmType(boxing: Boolean = false): String =
         GroundedType.INT -> if (boxing) "Ljava/lang/Integer;" else "I"
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
+        GroundedType.UNIT -> if (boxing) throw RuntimeException("Should never happen") else "V"
         is ArrowType -> this.descriptor()
         is SeqType -> "Ljava/util/List;"
         else -> TODO("Not implemented yet $this")

@@ -30,4 +30,20 @@ class CompilerCLITest {
         assertTrue(success)
         assertEquals(0, messages.size)
     }
+
+    @Test
+    fun `compile a println call`() {
+        val sources = listOf(
+            Source(
+                "Println.metta",
+                """
+                (println (+ 1 1))
+                """.trimMargin().replace('_', '$')
+            )
+        )
+        val compiler = Compiler(listOf(), "/tmp")
+        val (success, messages) = compiler.compileMultipleSources(sources)
+        assertTrue(success)
+        assertEquals(0, messages.size)
+    }
 }

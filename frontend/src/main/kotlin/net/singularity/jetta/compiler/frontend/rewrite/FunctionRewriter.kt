@@ -172,6 +172,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 "Double" -> GroundedType.DOUBLE
                 "Boolean" -> GroundedType.BOOLEAN
                 "String" -> GroundedType.STRING
+                "Unit" -> GroundedType.UNIT
                 else -> TODO()
             }
 
