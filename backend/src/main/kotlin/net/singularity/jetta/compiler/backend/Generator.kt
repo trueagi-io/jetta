@@ -5,6 +5,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.frontend.resolve.getJvmDescriptor
 import net.singularity.jetta.compiler.frontend.resolve.getSignature
+import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.ClassWriter.COMPUTE_FRAMES
 import org.objectweb.asm.ClassWriter.COMPUTE_MAXS
@@ -12,7 +13,7 @@ import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.LocalVariablesSorter
 
-class Generator {
+class Generator(val generateMain: Boolean = false) {
     private var lambdaCount = 1
 
     fun generate(source: ParsedSource): List<CompilationResult> {
@@ -52,6 +53,17 @@ class Generator {
                         )
                     )
                     FunctionGenerator(mv, node, true, null).generate()
+                    if (generateMain && node.name == FunctionRewriter.MAIN) {
+                        val mv = cw.visitMethod(
+                            Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                            "main",
+                            "([Ljava/lang/String;)V",
+                            null,
+                            null
+                        )
+                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", "()V", false)
+                        mv.visitInsn(Opcodes.RETURN)
+                    }
                 }
 
                 else -> TODO("Not implemented yet")

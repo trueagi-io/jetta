@@ -77,7 +77,7 @@ class Compiler(val files: List<String>, val outputDir: String, val runtime: Jett
         val resolved = parsed.map { context.resolve(it) }
 
         resolved.forEach {
-            val generator = Generator()
+            val generator = Generator(generateMain = true)
             val compiled = generator.generate(it)
             compiled.forEach {
                 writeResult(it)
