@@ -127,6 +127,7 @@ class Context(
             is Grounded<*> -> {
                 when (atom.value) {
                     is Int -> GroundedType.INT
+                    is Double -> GroundedType.DOUBLE
                     else -> TODO("${atom.value}")
                 }
             }
@@ -340,6 +341,11 @@ class Context(
         definedFunctions[functionDefinition.name] = SymbolDef(owner, functionDefinition)
     }
 
+    private fun isAssignableFrom(left: Atom, right: Atom): Boolean {
+        if (left == GroundedType.ANY) return true
+        return left == right
+    }
+
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
         logger.debug("Resolving atom: $atom")
         when (atom) {
@@ -349,12 +355,21 @@ class Context(
                 if (data != null) {
                     atom.type = data.second
                     atom.scope = data.first.body as? Expression
+                    if (suggestedType != null && atom.type != null && !isAssignableFrom(suggestedType, atom.type!!)) {
+                        messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
+                    }
                 } else {
                     messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
                 }
             }
 
-            is Grounded<*> -> {}
+            is Grounded<*> -> {
+                if (suggestedType != null && suggestedType != atom.type) {
+                    messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
+                    return
+                }
+            }
+
             is Lambda -> {
                 atom.arrowType = atom.arrowType ?: suggestedType as ArrowType
                 atom.type = atom.arrowType ?: suggestedType

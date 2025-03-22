@@ -37,6 +37,7 @@ fun Atom.signature(): String {
             }
             sb.append(">;")
         }
+
         is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
         GroundedType.INT -> "Ljava/lang/Integer;"
         else -> TODO()
@@ -95,8 +96,9 @@ fun FunctionDefinition.getJvmDescriptor(): String =
 
 fun FunctionDefinition.getSignature(): String? {
     if (arrowType!!
-        .types
-        .find { it.type is SeqType || it.type is ArrowType } == null && !isMultivalued())
+            .types
+            .find { it.type is SeqType || it.type is ArrowType } == null && !isMultivalued()
+    )
         return null
 
     val sb = StringBuilder()
@@ -120,5 +122,74 @@ fun FunctionDefinition.isMultivalued(): Boolean =
 
 fun FunctionDefinition.isExport(): Boolean =
     annotations.find { (it as? Symbol)?.name == "export" } != null
+
+
+fun JvmMethod.returnType(): Atom =
+    toType(descriptor.substring(descriptor.indexOf(')') + 1))
+
+fun JvmMethod.arrowType(): ArrowType = ArrowType(
+//    (signature ?: descriptor).parseDescriptor().map(::toType)
+    descriptor.parseDescriptor().map(::toType)
+)
+
+fun JvmMethod.doesParameterHaveAnyType(index: Int) =
+    descriptor.parseDescriptor()[index] == "Ljava/lang/Object;"
+
+private fun toType(jvmType: String): Atom =
+    when (jvmType) {
+        "I" -> GroundedType.INT
+        "D" -> GroundedType.DOUBLE
+        "V" -> GroundedType.UNIT
+        "Z" -> GroundedType.BOOLEAN
+        "Ljava/lang/String;" -> GroundedType.STRING
+        "Ljava/lang/Object;" -> GroundedType.ANY
+        else -> {
+            jvmType.parseArrowType() ?: TODO("type=$jvmType")
+        }
+    }
+
+private fun String.parseArrowType(): ArrowType? =
+    if (startsWith("Lnet/singularity/jetta/runtime/functions/Function")) {
+        val bra = indexOf('<')
+        val ket = length - 2
+        ArrowType(substring(bra + 1, ket).parseDescriptor().map {
+            when (it) {
+                "Ljava/lang/Integer;" -> GroundedType.INT
+                else -> TODO()
+            }
+        })
+    } else null
+
+
+fun String.parseDescriptor(): List<String> {
+    val list = mutableListOf<String>()
+    val type = StringBuilder()
+    var isObject = false
+    var isGeneric = false
+    this.forEach {
+        if (isObject) {
+            type.append(it)
+            if (it == '<') isGeneric = true
+            if (it == '>') isGeneric = false
+            if (it == ';' && !isGeneric) {
+                list.add(type.toString())
+                type.clear()
+                isObject = false
+            }
+        } else {
+            when (it) {
+                '(', ')' -> {}
+                'I', 'D', 'V', 'Z' -> list.add(it.toString())
+                'L' -> {
+                    type.append(it)
+                    isObject = true
+                }
+
+                else -> TODO("jvm type=$it")
+            }
+        }
+    }
+    return list
+}
 
 

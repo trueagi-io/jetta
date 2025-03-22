@@ -1,6 +1,8 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.*
+import net.singularity.jetta.compiler.frontend.resolve.arrowType
+import net.singularity.jetta.compiler.frontend.resolve.doesParameterHaveAnyType
 import net.singularity.jetta.compiler.frontend.resolve.getApplyJvmPlainDescriptor
 import net.singularity.jetta.compiler.frontend.resolve.getJvmInterfaceName
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
@@ -59,7 +61,7 @@ open class FunctionGenerator(
         }
     }
 
-    protected fun generateAtom(mv: LocalVariablesSorter, atom: Atom, exit: Label?, doReturn: Boolean) {
+    protected fun generateAtom(mv: LocalVariablesSorter, atom: Atom, exit: Label?, doReturn: Boolean, needBoxing: Boolean = false) {
         when (atom) {
             is Expression -> {
                 val func = atom.atoms[0]
@@ -127,8 +129,11 @@ open class FunctionGenerator(
                 mv.visitTypeInsn(Opcodes.CHECKCAST, atom.arrowType!!.getJvmInterfaceName())
             }
 
-            else -> generateLoad(atom)
+            else -> {
+                generateLoad(atom)
+            }
         }
+        if (needBoxing) generateBoxingIfNeeded(atom)
         if (doReturn) {
             generateReturn(mv)
         } else {
@@ -161,11 +166,11 @@ open class FunctionGenerator(
         )
     }
 
-    private fun generateBoxingIfNeeded(atom: Grounded<*>) {
+    private fun generateBoxingIfNeeded(atom: Atom) {
         val (owner, name, desc) = when (atom.type) {
             GroundedType.INT -> Triple("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
             GroundedType.BOOLEAN -> TODO()
-            GroundedType.DOUBLE -> TODO()
+            GroundedType.DOUBLE -> Triple("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
             else -> return
         }
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, desc, false)
@@ -178,8 +183,8 @@ open class FunctionGenerator(
         resolved: ResolvedSymbol?
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
-        arguments.forEach {
-            generateAtom(mv, it, null, false)
+        arguments.forEachIndexed { index, arg ->
+            generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,

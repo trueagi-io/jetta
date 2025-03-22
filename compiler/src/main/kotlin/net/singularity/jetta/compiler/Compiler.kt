@@ -47,7 +47,7 @@ class Compiler(val files: List<String>, val outputDir: String, val runtime: Jett
                 JvmMethod(
                     owner = Type.getInternalName(IO::class.java),
                     name = "println",
-                    descriptor = "(I)V"
+                    descriptor = "(Ljava/lang/Object;)V"
                 ), null, false
             )
         )

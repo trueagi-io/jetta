@@ -18,10 +18,12 @@ abstract class GeneratorTestBase {
     protected fun compile(
         filename: String, code: String,
         mapImpl: JvmMethod? = null,
-        flatMapImpl: JvmMethod? = null
+        flatMapImpl: JvmMethod? = null,
+        init: (Context) -> Unit = {}
     ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
         val context = Context(messageCollector, mapImpl, flatMapImpl)
+        init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector) }
