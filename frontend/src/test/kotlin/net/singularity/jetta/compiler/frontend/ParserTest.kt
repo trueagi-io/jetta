@@ -78,6 +78,7 @@ class ParserTest : BaseFrontendTest() {
         )
         assertEquals(0, messageCollector.list().size)
     }
+
     @Test
     fun dashInIdent() {
         val parser = createParserFacade()
@@ -96,37 +97,34 @@ class ParserTest : BaseFrontendTest() {
 
     @Test
     fun `parse import`() {
-        val parser = createParserFacade()
-        val messageCollector = MessageCollector()
-        parser.parse(
-            Source(
-                "Import.metta",
-                """
+        justParse("""
                 (import net.singularity.jetta.example.bar)
                 (: foo (-> Int Int))
                 (= (foo _x) (bar _x))
-                """.trimIndent().replace('_', '$')
-            ),
-            messageCollector
-        )
-        assertEquals(0, messageCollector.list().size)
+                """)
     }
 
     @Test
     fun `parse package`() {
-        val parser = createParserFacade()
-        val messageCollector = MessageCollector()
-        parser.parse(
-            Source(
-                "Import.metta",
-                """
+        justParse("""
                 (package net.singularity.jetta.example)
                 (: foo (-> Int Int))
                 (= (foo _x) (bar _x))
-                """.trimIndent().replace('_', '$')
-            ),
-            messageCollector
-        )
-        assertEquals(0, messageCollector.list().size)
+                """)
+    }
+
+    @Test
+    fun `parse a string`() {
+        justParse("""(println "Hello")""")
+    }
+
+    @Test
+    fun `parse an empty string`() {
+        justParse("""(println "")""")
+    }
+
+    @Test
+    fun `parse special characters in the string`() {
+       justParse("""(println "Hello\n\tworld")""")
     }
 }

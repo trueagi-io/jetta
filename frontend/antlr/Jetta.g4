@@ -12,6 +12,7 @@ atom
     : variable
     | symbol
     | number
+    | string
     | special
     | expression
     ;
@@ -19,6 +20,10 @@ atom
 number
     : integer
     | double
+    ;
+
+string
+    : STRING
     ;
 
 integer
@@ -138,6 +143,10 @@ identifier
 
 symbol
     : IDENT
+    ;
+
+STRING
+    : '"' ( ~["\\] | '\\' . )* '"'
     ;
 
 AT

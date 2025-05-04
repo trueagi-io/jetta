@@ -1,12 +1,7 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.*
-import net.singularity.jetta.compiler.frontend.resolve.arrowType
-import net.singularity.jetta.compiler.frontend.resolve.doesParameterHaveAnyType
-import net.singularity.jetta.compiler.frontend.resolve.getApplyJvmPlainDescriptor
-import net.singularity.jetta.compiler.frontend.resolve.getJvmInterfaceName
-import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
-import net.singularity.jetta.compiler.frontend.resolve.toJvmType
+import net.singularity.jetta.compiler.frontend.resolve.*
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
@@ -53,6 +48,7 @@ open class FunctionGenerator(
                     is Int -> generateLoadInt(atom.value as Int)
                     is Boolean -> generateLoadBoolean(atom.value as Boolean)
                     is Double -> mv.visitLdcInsn(atom.value)
+                    is String -> mv.visitLdcInsn(atom.value)
                     else -> TODO("Not implemented yet " + atom.value)
                 }
             }

@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import kotlin.test.assertEquals
 
 abstract class BaseFrontendTest {
     protected fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
@@ -40,5 +41,19 @@ abstract class BaseFrontendTest {
             result
         }
         return parsed.map { context.resolveRecursively(it) } to messageCollector
+    }
+
+    fun justParse(code: String): ParsedSource {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val result = parser.parse(
+            Source(
+                "Hello.metta",
+                code.trimIndent().replace('_', '$')
+            ),
+            messageCollector
+        )
+        assertEquals(0, messageCollector.list().size)
+        return result
     }
 }

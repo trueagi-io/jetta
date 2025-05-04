@@ -152,7 +152,7 @@ class Context(
                                 }
 
                                 is Grounded<*> -> {
-                                    if (arg.type != type) {
+                                    if (arg.type != null && !isAssignableFrom(type, arg.type!!)) {
                                         TODO()
                                     }
                                 }
@@ -229,7 +229,7 @@ class Context(
         val owner = source.getJvmClassName()
         try {
             do {
-                var numElements = unresolvedElements.size
+                val numElements = unresolvedElements.size
                 unresolvedElements.forEach { (_, data) ->
                     inferType(data.atom, data.info)
                     logger.debug("----------------------------------")
@@ -364,7 +364,7 @@ class Context(
             }
 
             is Grounded<*> -> {
-                if (suggestedType != null && suggestedType != atom.type) {
+                if (suggestedType != null && !isAssignableFrom(suggestedType, atom.type!!)) {
                     messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
                     return
                 }

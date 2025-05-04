@@ -43,7 +43,14 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
         ctx.number()?.let {
             return visitNumber(it)
         }
+        ctx.string()?.let {
+            return visitString(it)
+        }
         TODO(">>>" + ctx.text)
+    }
+
+    override fun visitString(ctx: JettaParser.StringContext): Atom {
+        return Grounded(ctx.text.substring(1, ctx.text.length - 1), mkPosition(ctx.position))
     }
 
     override fun visitNumber(ctx: JettaParser.NumberContext): Atom {
