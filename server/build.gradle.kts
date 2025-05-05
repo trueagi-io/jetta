@@ -24,6 +24,7 @@ repositories {
 dependencies {
     implementation(project(":repl"))
     implementation(project(":backend"))
+    implementation(project(":frontend"))
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-sessions-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")
