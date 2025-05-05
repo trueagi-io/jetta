@@ -12,6 +12,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
+import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.logger.Logger
 import kotlin.collections.component1
 import kotlin.collections.component2
@@ -19,9 +20,10 @@ import kotlin.collections.component2
 class Context(
     private val messageCollector: MessageCollector,
     mapImpl: JvmMethod? = null,
-    flatMapImpl: JvmMethod? = null
+    flatMapImpl: JvmMethod? = null,
+    logLevel: LogLevel = LogLevel.DEBUG,
 ) {
-    private val logger = Logger.getLogger(Context::class.java)
+    private val logger = Logger.getLogger(Context::class.java, logLevel)
     val definedFunctions = mutableMapOf<String, SymbolDef>()
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
     private val functions = mutableMapOf<String, FunctionDefinition>()
@@ -320,7 +322,6 @@ class Context(
     }
 
     private fun resolveSource(source: ParsedSource) {
-        println(source)
         source.code.forEach {
             when (it) {
                 is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)

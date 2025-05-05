@@ -10,16 +10,17 @@ import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
+import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import java.io.File
 
-class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
+class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = LogLevel.DEBUG) : Repl {
     private var counter = 0
     private val classLoader = ByteArrayReplClassLoader()
 
     private val messageCollector = MessageCollector()
 
-    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
+    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, logLevel)
 
     override fun eval(code: String): EvalResult {
         context.clearMessages()
@@ -36,12 +37,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime()) : Repl {
         }
         result.forEach(classLoader::add)
         val main = result.find { it.className == filename }!!
-        println("$filename.class")
-        File("/tmp/$filename.class").writeBytes(main.bytecode)
         val clazz = classLoader.loadClass(main.className)
-        clazz.methods.forEach {
-            println(it.name)
-        }
         try {
             val method = clazz.getMethod(FunctionRewriter.MAIN)
             return EvalResult(method.invoke(null), messages, true)

@@ -10,29 +10,25 @@ interface Logger {
     fun debug(msg: String)
 
     companion object {
-        private val logLevel = Level.DEBUG
-        private enum class Level {
-            DEBUG, WARN, ERROR, INFO
-        }
 
-        fun getLogger(clazz: Class<*>) = object : Logger {
+        fun getLogger(clazz: Class<*>, logLevel: LogLevel) = object : Logger {
             override fun warn(msg: String) {
-                log(Level.WARN, msg)
+                log(LogLevel.WARN, msg)
             }
 
             override fun error(msg: String) {
-                log(Level.ERROR, msg)
+                log(LogLevel.ERROR, msg)
             }
 
             override fun info(msg: String) {
-                log(Level.INFO, msg)
+                log(LogLevel.INFO, msg)
             }
 
             override fun debug(msg: String) {
-                log(Level.DEBUG, msg)
+                log(LogLevel.DEBUG, msg)
             }
 
-            fun log(level: Level, msg: String) {
+            fun log(level: LogLevel, msg: String) {
                 if (level >= logLevel) println("[$level] $msg")
             }
         }
