@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":repl"))
+    implementation(project(":compiler"))
     implementation(project(":backend"))
     implementation(project(":frontend"))
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")

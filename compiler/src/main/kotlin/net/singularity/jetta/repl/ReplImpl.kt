@@ -12,7 +12,6 @@ import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
-import java.io.File
 
 class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = LogLevel.DEBUG) : Repl {
     private var counter = 0

@@ -1,4 +1,4 @@
-package net.singularity.jetta.repl
+package net.singularity.jetta
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.parameters.arguments.argument
@@ -7,19 +7,26 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
+import net.singularity.jetta.compiler.Compiler
 import net.singularity.jetta.compiler.VersionInfo
-import net.singularity.jetta.compiler.greetings
 import net.singularity.jetta.compiler.logger.LogLevel
+import net.singularity.jetta.repl.InvalidInputException
+import net.singularity.jetta.repl.Repl
+import net.singularity.jetta.repl.ReplImpl
 import kotlin.system.exitProcess
 
 
-class ReplCommand : CliktCommand("jettac") {
+class Compile : CliktCommand("jettac") {
+    private val sources by argument(help = "Paths to source files").multiple()
+    private val output by option("-d", "--directory", help = "Output directory").default(".")
+    private val noGreetings by option("-n", "--no-greetings", help = "Do not show greetings").flag()
+    private val interactive by option("-i", "--interactive", help = "Interactive mode").flag()
+
     init {
         versionOption(VersionInfo.VERSION, names = setOf("--version"))
     }
-    private val noGreetings by option("-n", "--no-greetings", help = "Do no use greetings").flag()
 
-    override fun run() {
+    private fun runRepl() {
         if (!noGreetings) println(greetings())
         val repl = ReplImpl(logLevel = LogLevel.ERROR)
         runRepl(repl)
@@ -83,8 +90,19 @@ class ReplCommand : CliktCommand("jettac") {
     private fun printError(message: String) {
         println(message)
     }
+
+    private fun runCompiler() {
+        if (!noGreetings) println(greetings())
+        val compiler = Compiler(sources, output)
+        val code = compiler.compile()
+        if (code != 0) exitProcess(code)
+    }
+
+    override fun run() {
+        if (interactive) runRepl() else runCompiler()
+    }
 }
 
 fun main(args: Array<String>) {
-    ReplCommand().main(args)
+    Compile().main(args)
 }

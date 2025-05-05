@@ -6,7 +6,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 
 class CompilerSupport {
-    private val jettaCompilerMainClass: String = "net.singularity.jetta.compiler.MainKt"
+    private val jettaCompilerMainClass: String = "net.singularity.jetta.MainKt"
 
     private val outputDir: File
 

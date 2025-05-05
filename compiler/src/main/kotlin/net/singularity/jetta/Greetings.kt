@@ -1,4 +1,6 @@
-package net.singularity.jetta.compiler
+package net.singularity.jetta
+
+import net.singularity.jetta.compiler.VersionInfo
 
 fun greetings(): String {
     return """

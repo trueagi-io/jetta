@@ -73,7 +73,7 @@ tasks.withType<Jar> { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
 tasks.shadowJar {
     manifest {
         attributes(
-            "Main-Class" to "net.singularity.jetta.compiler.MainKt",
+            "Main-Class" to "net.singularity.jetta.MainKt",
             "Implementation-Title" to "Jetta Compiler",
             "Implementation-Version" to archiveVersion.get()
         )
@@ -84,7 +84,6 @@ tasks.register<Copy>("copyShadowJar") {
     dependsOn(tasks.shadowJar) // Ensure shadowJar runs first
 
     from(tasks.shadowJar.get().archiveFile) // Get the generated shadow jar
-    println(">>>" + layout.projectDirectory.dir("bin"))
     into(layout.projectDirectory.dir("../bin")) // Destination directory
 
     rename { "jettac.jar" } // Rename the jar file
