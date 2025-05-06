@@ -16,12 +16,18 @@ import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.runtime.IO
 import org.objectweb.asm.Type
 import java.io.File
 
-class Compiler(val files: List<String>, val outputDir: String, val runtime: JettaRuntime = DefaultRuntime()) {
+class Compiler(
+    val files: List<String>,
+    val outputDir: String,
+    val runtime: JettaRuntime = DefaultRuntime(),
+    val logLevel: LogLevel = LogLevel.DEBUG
+) {
     fun compile(): Int {
         val sources = files.map {
             Source(it, File(it).readText())
@@ -31,11 +37,7 @@ class Compiler(val files: List<String>, val outputDir: String, val runtime: Jett
         messages.forEach {
             println(renderer.render(it))
         }
-        return if (success) {
-            0
-        } else {
-            1
-        }
+        return if (success) 0 else 1
     }
 
     private fun MessageCollector.containsErrors(): Boolean =
@@ -55,7 +57,7 @@ class Compiler(val files: List<String>, val outputDir: String, val runtime: Jett
 
     fun compileMultipleSources(sources: List<Source>): Pair<Boolean, List<Message>> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
+        val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, logLevel)
         addSystemFunctions(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
@@ -63,7 +65,7 @@ class Compiler(val files: List<String>, val outputDir: String, val runtime: Jett
         rewriter.add { LambdaRewriter(messageCollector) }
 
         val parsed = sources.map { source ->
-            println("Compiling ${source.filename} ====== \n ${source.code} \n ======")
+            println("Compiling ${source.filename}")
             val parsed = parser.parse(source, messageCollector)
             val result = rewriter.rewrite(parsed)
             context.addExternalFunctions(result)

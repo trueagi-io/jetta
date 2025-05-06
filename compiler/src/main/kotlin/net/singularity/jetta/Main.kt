@@ -21,6 +21,7 @@ class Compile : CliktCommand("jettac") {
     private val output by option("-d", "--directory", help = "Output directory").default(".")
     private val noGreetings by option("-n", "--no-greetings", help = "Do not show greetings").flag()
     private val interactive by option("-i", "--interactive", help = "Interactive mode").flag()
+    private val debug  by option("-D", "--debug", help = "Debug mode").flag()
 
     init {
         versionOption(VersionInfo.VERSION, names = setOf("--version"))
@@ -93,7 +94,8 @@ class Compile : CliktCommand("jettac") {
 
     private fun runCompiler() {
         if (!noGreetings) println(greetings())
-        val compiler = Compiler(sources, output)
+        val logLevel = if (debug) LogLevel.DEBUG else LogLevel.INFO
+        val compiler = Compiler(sources, output, logLevel = logLevel)
         val code = compiler.compile()
         if (code != 0) exitProcess(code)
     }
