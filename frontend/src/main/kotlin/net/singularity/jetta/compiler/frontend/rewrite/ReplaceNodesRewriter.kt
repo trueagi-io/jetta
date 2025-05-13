@@ -11,7 +11,7 @@ class ReplaceNodesRewriter(private val nodesToReplace: Map<Atom, Atom>) : Rewrit
         val result = mutableListOf<Atom>()
         source.code.forEach { atom ->
             val def = atom as FunctionDefinition
-            val expression = def.copy(body = rewriteAtom(def.body) as Expression)
+            val expression = def.copy(body = rewriteAtom(def.body))
             result.add(expression)
         }
         return ParsedSource(source.filename, result)

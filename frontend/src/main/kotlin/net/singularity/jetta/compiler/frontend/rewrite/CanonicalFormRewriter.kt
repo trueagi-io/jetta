@@ -24,7 +24,7 @@ class CanonicalFormRewriter(
         var i = 0
         while (i < functions.size) {
             val def = functions[i]
-            val expression = def.copy(body = rewriteFunction(source.getJvmClassName(), def) as Expression)
+            val expression = def.copy(body = rewriteFunction(source.getJvmClassName(), def))
             result.add(expression)
             i++
         }

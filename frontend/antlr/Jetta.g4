@@ -12,6 +12,7 @@ atom
     : variable
     | symbol
     | number
+    | string
     | special
     | expression
     ;
@@ -19,6 +20,10 @@ atom
 number
     : integer
     | double
+    ;
+
+string
+    : STRING
     ;
 
 integer
@@ -31,6 +36,8 @@ double
 
 special
     : pattern
+    | import_
+    | package
     | annotation
     | type
     | arrow
@@ -117,6 +124,14 @@ if
     : IF
     ;
 
+import_
+    : IMPORT
+    ;
+
+package
+    : PACKAGE
+    ;
+
 variable
     : DOLLAR identifier
     ;
@@ -128,6 +143,10 @@ identifier
 
 symbol
     : IDENT
+    ;
+
+STRING
+    : '"' ( ~["\\] | '\\' . )* '"'
     ;
 
 AT
@@ -210,6 +229,14 @@ SEQ
 
 IF
     : 'if'
+    ;
+
+IMPORT
+    : 'import'
+    ;
+
+PACKAGE
+    : 'package'
     ;
 
 EQ

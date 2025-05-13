@@ -1,10 +1,7 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.*
-import net.singularity.jetta.compiler.frontend.resolve.getApplyJvmPlainDescriptor
-import net.singularity.jetta.compiler.frontend.resolve.getJvmInterfaceName
-import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
-import net.singularity.jetta.compiler.frontend.resolve.toJvmType
+import net.singularity.jetta.compiler.frontend.resolve.*
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
@@ -51,6 +48,7 @@ open class FunctionGenerator(
                     is Int -> generateLoadInt(atom.value as Int)
                     is Boolean -> generateLoadBoolean(atom.value as Boolean)
                     is Double -> mv.visitLdcInsn(atom.value)
+                    is String -> mv.visitLdcInsn(atom.value)
                     else -> TODO("Not implemented yet " + atom.value)
                 }
             }
@@ -59,7 +57,7 @@ open class FunctionGenerator(
         }
     }
 
-    protected fun generateAtom(mv: LocalVariablesSorter, atom: Atom, exit: Label?, doReturn: Boolean) {
+    protected fun generateAtom(mv: LocalVariablesSorter, atom: Atom, exit: Label?, doReturn: Boolean, needBoxing: Boolean = false) {
         when (atom) {
             is Expression -> {
                 val func = atom.atoms[0]
@@ -127,8 +125,13 @@ open class FunctionGenerator(
                 mv.visitTypeInsn(Opcodes.CHECKCAST, atom.arrowType!!.getJvmInterfaceName())
             }
 
-            else -> generateLoad(atom)
+            is Match -> generateMatch(mv, atom)
+
+            else -> {
+                generateLoad(atom)
+            }
         }
+        if (needBoxing) generateBoxingIfNeeded(atom.type!!)
         if (doReturn) {
             generateReturn(mv)
         } else {
@@ -137,6 +140,41 @@ open class FunctionGenerator(
             }
         }
     }
+
+    private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
+        generateLoadInt(match.branches.size)
+        mv.visitTypeInsn(Opcodes.NEW, "java/util/ArrayList")
+        val resultVar = mv.newLocal(Type.getObjectType("java/util/ArrayList"))
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false)
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/List")
+        mv.visitVarInsn(Opcodes.ASTORE, resultVar)
+        match.branches.forEach { branch -> generateMatchBranch(mv, branch, match.returnType!!, resultVar) }
+        mv.visitVarInsn(Opcodes.ALOAD, resultVar)
+        mv.visitInsn(Opcodes.ARETURN)
+    }
+
+    private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
+        // 1. generate condition for the pattern
+        // 2. generate function application
+        val elseLabel = Label()
+        if (branch.cond != null) {
+            val label = Label()
+            generateBooleanExpr(mv, branch.cond!!,  label)
+            mv.visitLabel(label)
+            mv.visitInsn(Opcodes.ICONST_1)
+            mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
+        }
+        mv.visitVarInsn(Opcodes.ALOAD, resultVar)
+        generateAtom(mv, branch.body, null, false)
+        generateBoxingIfNeeded(resultType)
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
+        mv.visitInsn(Opcodes.POP)
+        if (branch.cond != null) {
+            mv.visitLabel(elseLabel)
+        }
+    }
+
 
     private fun generateSeq(mv: LocalVariablesSorter, arguments: List<Atom>, type: Atom) {
         generateLoadInt(arguments.size)
@@ -148,7 +186,7 @@ open class FunctionGenerator(
         arguments.forEachIndexed { index, arg ->
             generateLoadInt(index)
             generateLoad(arg)
-            generateBoxingIfNeeded(arg as Grounded<*>)
+            generateBoxingIfNeeded(arg.type!!)
             mv.visitInsn(Opcodes.AASTORE)
             mv.visitVarInsn(Opcodes.ALOAD, arr)
         }
@@ -161,11 +199,11 @@ open class FunctionGenerator(
         )
     }
 
-    private fun generateBoxingIfNeeded(atom: Grounded<*>) {
-        val (owner, name, desc) = when (atom.type) {
+    private fun generateBoxingIfNeeded(type: Atom) {
+        val (owner, name, desc) = when (type) {
             GroundedType.INT -> Triple("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
             GroundedType.BOOLEAN -> TODO()
-            GroundedType.DOUBLE -> TODO()
+            GroundedType.DOUBLE -> Triple("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
             else -> return
         }
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, desc, false)
@@ -178,8 +216,8 @@ open class FunctionGenerator(
         resolved: ResolvedSymbol?
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
-        arguments.forEach {
-            generateAtom(mv, it, null, false)
+        arguments.forEachIndexed { index, arg ->
+            generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,

@@ -12,14 +12,18 @@ import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
+import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.logger.Logger
+import kotlin.collections.component1
+import kotlin.collections.component2
 
 class Context(
     private val messageCollector: MessageCollector,
     mapImpl: JvmMethod? = null,
-    flatMapImpl: JvmMethod? = null
+    flatMapImpl: JvmMethod? = null,
+    logLevel: LogLevel = LogLevel.DEBUG,
 ) {
-    private val logger = Logger.getLogger(Context::class.java)
+    private val logger = Logger.getLogger(Context::class.java, logLevel)
     val definedFunctions = mutableMapOf<String, SymbolDef>()
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
     private val functions = mutableMapOf<String, FunctionDefinition>()
@@ -32,9 +36,12 @@ class Context(
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
 
     private fun cleanUp() {
-        messageCollector.clear()
         unresolvedElements.clear()
         postprocessingDone = false
+    }
+
+    fun clearMessages() {
+        messageCollector.clear()
     }
 
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
@@ -98,6 +105,13 @@ class Context(
         }
     }
 
+    fun addExternalFunctions(source: ParsedSource) {
+        val external = source.code.filter { it is FunctionDefinition && it.annotations.contains(PredefinedAtoms.EXPORT) }.map { it as FunctionDefinition }
+        external.forEach {
+            resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
+        }
+    }
+
     fun addSystemFunction(resolvedSymbol: ResolvedSymbol) {
         systemFunctions[resolvedSymbol.jvmMethod.name] = resolvedSymbol
     }
@@ -115,6 +129,7 @@ class Context(
             is Grounded<*> -> {
                 when (atom.value) {
                     is Int -> GroundedType.INT
+                    is Double -> GroundedType.DOUBLE
                     else -> TODO("${atom.value}")
                 }
             }
@@ -139,7 +154,7 @@ class Context(
                                 }
 
                                 is Grounded<*> -> {
-                                    if (arg.type != type) {
+                                    if (arg.type != null && !isAssignableFrom(type, arg.type!!)) {
                                         TODO()
                                     }
                                 }
@@ -202,6 +217,10 @@ class Context(
                 else -> TODO("atom=$atom")
             }
 
+            is Lambda -> {
+                TODO()
+            }
+
             else -> TODO("atom=$atom")
         }
     }
@@ -211,14 +230,12 @@ class Context(
         return resolveRecursively(source)
     }
 
-    fun resolveRecursively(source: ParsedSource): ParsedSource {
-        main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
-        resolveSource(source)
+    fun typeInferenceLoop(source: ParsedSource) {
         val postponedFunctions = mutableMapOf<String, Scope>()
         val owner = source.getJvmClassName()
         try {
             do {
-                var numElements = unresolvedElements.size
+                val numElements = unresolvedElements.size
                 unresolvedElements.forEach { (_, data) ->
                     inferType(data.atom, data.info)
                     logger.debug("----------------------------------")
@@ -268,6 +285,12 @@ class Context(
                 )
             }
         }
+    }
+
+    fun resolveRecursively(source: ParsedSource): ParsedSource {
+        main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
+        resolveSource(source)
+        typeInferenceLoop(source)
         return if (postprocessingDone)
             source
         else {
@@ -303,14 +326,12 @@ class Context(
     }
 
     private fun resolveSource(source: ParsedSource) {
-        println(source)
         source.code.forEach {
             when (it) {
                 is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)
                 else -> TODO("it=$it")
             }
         }
-        println("----")
     }
 
     fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
@@ -325,6 +346,11 @@ class Context(
         definedFunctions[functionDefinition.name] = SymbolDef(owner, functionDefinition)
     }
 
+    private fun isAssignableFrom(left: Atom, right: Atom): Boolean {
+        if (left == GroundedType.ANY) return true
+        return left == right
+    }
+
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
         logger.debug("Resolving atom: $atom")
         when (atom) {
@@ -334,17 +360,26 @@ class Context(
                 if (data != null) {
                     atom.type = data.second
                     atom.scope = data.first.body as? Expression
+                    if (suggestedType != null && atom.type != null && !isAssignableFrom(suggestedType, atom.type!!)) {
+                        messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
+                    }
                 } else {
                     messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
                 }
             }
 
-            is Grounded<*> -> {}
+            is Grounded<*> -> {
+                if (suggestedType != null && !isAssignableFrom(suggestedType, atom.type!!)) {
+                    messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
+                    return
+                }
+            }
+
             is Lambda -> {
-                atom.arrowType = atom.arrowType ?: suggestedType as ArrowType
+                atom.arrowType = atom.arrowType ?: suggestedType as? ArrowType
                 atom.type = atom.arrowType ?: suggestedType
                 atom.params.forEachIndexed { index, variable ->
-                    variable.type = atom.arrowType!!.types[index]
+                    variable.type = atom.arrowType?.types?.get(index)
                 }
                 val lambdaTypeInfo = createLambdaTypeInfo(scope, atom)
                 resolveAtom(atom.body, lambdaTypeInfo)
@@ -369,6 +404,11 @@ class Context(
                 replaceNode(atom, wrapper)
             }
 
+            is Match -> {
+                atom.branches.forEach { branch ->
+                    resolveAtom(branch.body, scope)
+                }
+            }
             else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
@@ -379,9 +419,9 @@ class Context(
 
     private fun applyPostResolveRewriters(source: ParsedSource): ParsedSource {
         val rewriter = CompositeRewriter()
-        rewriter.add(ReplaceNodesRewriter(nodesToReplace))
-        rewriter.add(MarkMultivaluedFunctionsRewriter(functions))
-        rewriter.add(CanonicalFormRewriter(messageCollector, this))
+        rewriter.add { ReplaceNodesRewriter(nodesToReplace) }
+        rewriter.add { MarkMultivaluedFunctionsRewriter(functions) }
+        rewriter.add { CanonicalFormRewriter(messageCollector, this) }
         val res = rewriter.rewrite(source)
         return res
     }
@@ -501,6 +541,14 @@ class Context(
                 }
             }
 
+
+            is Lambda -> {
+                if (atom.arrowType != null) {
+                    resolveAtom(atom, scope)
+                } else {
+                    unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
+                }
+            }
 
             else -> TODO("atom=$atom")
         }

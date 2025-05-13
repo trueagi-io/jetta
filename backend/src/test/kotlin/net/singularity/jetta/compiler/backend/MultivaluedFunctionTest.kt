@@ -1,5 +1,6 @@
 package net.singularity.jetta.compiler.backend
 
+import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import kotlin.test.Test
 import kotlin.test.assertEquals

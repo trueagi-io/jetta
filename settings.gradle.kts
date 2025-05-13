@@ -3,7 +3,6 @@ plugins {
 }
 rootProject.name = "jetta"
 include("compiler")
-include("repl")
 include("frontend-api")
 include("backend")
 include("frontend")

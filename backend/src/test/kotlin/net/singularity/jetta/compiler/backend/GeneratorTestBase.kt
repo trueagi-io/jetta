@@ -1,6 +1,6 @@
 package net.singularity.jetta.compiler.backend
 
-import net.singularity.jetta.compiler.backend.utils.ByteArrayClassLoader
+import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
@@ -15,19 +15,54 @@ import java.io.File
 abstract class GeneratorTestBase {
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 
-    protected fun compile(filename: String, code: String,
-                          mapImpl: JvmMethod? = null,
-                          flatMapImpl: JvmMethod? = null): Pair<List<CompilationResult>, MessageCollector> {
+    protected fun compile(
+        filename: String, code: String,
+        mapImpl: JvmMethod? = null,
+        flatMapImpl: JvmMethod? = null,
+        init: (Context) -> Unit = {}
+    ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
         val context = Context(messageCollector, mapImpl, flatMapImpl)
+        init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add(FunctionRewriter(messageCollector))
-        rewriter.add(LambdaRewriter(messageCollector))
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
         val generator = Generator()
         val compiled = generator.generate(result)
+        compiled.forEach {
+            println("Writing " + it.className)
+            writeResult(it)
+        }
+        return compiled to messageCollector
+    }
+
+    protected fun compileMultiple(
+        vararg sources: Source,
+        mapImpl: JvmMethod? = null,
+        flatMapImpl: JvmMethod? = null
+    ): Pair<List<CompilationResult>, MessageCollector> {
+        val messageCollector = MessageCollector()
+        val context = Context(messageCollector, mapImpl, flatMapImpl)
+        val parser = createParserFacade()
+        val rewriter = CompositeRewriter()
+        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { LambdaRewriter(messageCollector) }
+
+        val parsed = sources.map {
+            val parsed = parser.parse(it, messageCollector)
+            val result = rewriter.rewrite(parsed)
+            context.addExternalFunctions(result)
+            result
+        }
+
+        val compiled = parsed.map { context.resolve(it) }.flatMap {
+            val generator = Generator()
+            generator.generate(it)
+        }
+
         compiled.forEach {
             println("Writing " + it.className)
             writeResult(it)
@@ -41,13 +76,7 @@ abstract class GeneratorTestBase {
         file.writeBytes(result.bytecode)
     }
 
-    protected fun Map<String, ByteArray>.toClasses(): Map<String, Class<*>> {
-        val loader = ByteArrayClassLoader(this)
-        return mapValues { loader.loadClass(it.key) }
-    }
-
     protected fun List<CompilationResult>.toMap() = this.associate { it.className to it.bytecode }
 
     protected fun CompilationResult.getClass(): Class<*> = listOf(this).toMap().toClasses()[this.className]!!
-
 }
