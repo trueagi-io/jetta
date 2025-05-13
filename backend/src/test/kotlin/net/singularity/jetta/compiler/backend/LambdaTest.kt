@@ -1,6 +1,7 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -186,5 +187,25 @@ class LambdaTest : GeneratorTestBase() {
             assertEquals(2, classes.size)
             val value = classes["PassFunction"]!!.getMethod("__main").invoke(null)
             assertEquals(30, value)
+        }
+
+    @Test
+    @Ignore
+    fun `apply in-place`() =
+        compile(
+            "ApplyInPlace.metta",
+            """
+                (: foo (-> Int Int))
+                (= (foo) ((\ (_x) (+ _x 1)) 2))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            assertEquals(2, classes.size)
+            val value = classes["PassFunction"]!!.getMethod("foo").invoke(null)
+            assertEquals(3, value)
         }
 }

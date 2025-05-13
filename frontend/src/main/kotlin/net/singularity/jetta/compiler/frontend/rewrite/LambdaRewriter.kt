@@ -10,7 +10,7 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
         val result = mutableListOf<Atom>()
         source.code.forEach { atom ->
             val def = atom as FunctionDefinition
-            val expression = def.copy(body = rewriteAtom(def.body) as Expression)
+            val expression = def.copy(body = rewriteAtom(def.body))
             result.add(expression)
         }
         return ParsedSource(source.filename, result)
@@ -34,10 +34,10 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
                 )
             }
             else -> {
-                val params = expression.atoms.drop(1).map {
+                val atoms = expression.atoms.map {
                     rewriteAtom(it)
                 }
-                Expression(listOf(expression.atoms.first()) + params, position = expression.position)
+                Expression(atoms, position = expression.position)
             }
         }
 

@@ -217,6 +217,10 @@ class Context(
                 else -> TODO("atom=$atom")
             }
 
+            is Lambda -> {
+                TODO()
+            }
+
             else -> TODO("atom=$atom")
         }
     }
@@ -372,10 +376,10 @@ class Context(
             }
 
             is Lambda -> {
-                atom.arrowType = atom.arrowType ?: suggestedType as ArrowType
+                atom.arrowType = atom.arrowType ?: suggestedType as? ArrowType
                 atom.type = atom.arrowType ?: suggestedType
                 atom.params.forEachIndexed { index, variable ->
-                    variable.type = atom.arrowType!!.types[index]
+                    variable.type = atom.arrowType?.types?.get(index)
                 }
                 val lambdaTypeInfo = createLambdaTypeInfo(scope, atom)
                 resolveAtom(atom.body, lambdaTypeInfo)
@@ -400,6 +404,11 @@ class Context(
                 replaceNode(atom, wrapper)
             }
 
+            is Match -> {
+                atom.branches.forEach { branch ->
+                    resolveAtom(branch.body, scope)
+                }
+            }
             else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
@@ -532,6 +541,14 @@ class Context(
                 }
             }
 
+
+            is Lambda -> {
+                if (atom.arrowType != null) {
+                    resolveAtom(atom, scope)
+                } else {
+                    unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
+                }
+            }
 
             else -> TODO("atom=$atom")
         }

@@ -80,7 +80,16 @@ class Generator(val generateMain: Boolean = false) {
         val result = mutableMapOf<String, Lambda>()
         source.code.forEach {
             val def = (it as FunctionDefinition)
-            if (def.body is Expression) findLambdas(mkLambdaName(source), def.body as Expression, result)
+            val name = mkLambdaName(source)
+            when (val body = def.body) {
+                is Expression -> findLambdas(name, def.body as Expression, result)
+                is Match -> {
+                    body.branches.forEach { branch ->
+                        findLambdas(name, branch.body, result)
+                    }
+                }
+                else -> {}
+            }
         }
         return result
     }
