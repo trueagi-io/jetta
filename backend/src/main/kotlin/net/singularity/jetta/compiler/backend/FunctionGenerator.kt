@@ -58,7 +58,13 @@ open class FunctionGenerator(
         }
     }
 
-    protected fun generateAtom(mv: LocalVariablesSorter, atom: Atom, exit: Label?, doReturn: Boolean, needBoxing: Boolean = false) {
+    protected fun generateAtom(
+        mv: LocalVariablesSorter,
+        atom: Atom,
+        exit: Label?,
+        doReturn: Boolean,
+        needBoxing: Boolean = false
+    ) {
         when (atom) {
             is Expression -> {
                 val func = atom.atoms[0]
@@ -161,7 +167,7 @@ open class FunctionGenerator(
         val elseLabel = Label()
         if (branch.cond != null) {
             val label = Label()
-            generateBooleanExpr(mv, branch.cond!!,  label)
+            generateBooleanExpr(mv, branch.cond!!, label)
             mv.visitLabel(label)
             mv.visitInsn(Opcodes.ICONST_1)
             mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
@@ -263,7 +269,7 @@ open class FunctionGenerator(
     }
 
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
-        fun generateBooleanOp(left: Atom, right: Atom, inverseOp: Int) {
+        fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int) {
             val label1 = Label()
             generateAtom(mv, left, label1, false)
             mv.visitLabel(label1)
@@ -278,6 +284,30 @@ open class FunctionGenerator(
             mv.visitInsn(Opcodes.ICONST_0)
             mv.visitJumpInsn(Opcodes.GOTO, exit)
         }
+
+        fun generateDoubleGt(left: Atom, right: Atom, branchOpcode: Int) {
+            val labelTrue = Label()
+
+            // Push operands: left, then right
+            generateAtom(mv, left, null, false)
+            generateAtom(mv, right, null, false)
+
+            // Compare the two doubles (result is int)
+            mv.visitInsn(Opcodes.DCMPG)
+
+            // Branch to true if comparison passes
+            mv.visitJumpInsn(branchOpcode, labelTrue)
+
+            // False case: push 0
+            mv.visitInsn(Opcodes.ICONST_0)
+            mv.visitJumpInsn(Opcodes.GOTO, exit)
+
+            // True case: push 1
+            mv.visitLabel(labelTrue)
+            mv.visitInsn(Opcodes.ICONST_1)
+            // Falls through to exit
+        }
+
 
         when (expr) {
             is Expression -> {
@@ -330,12 +360,52 @@ open class FunctionGenerator(
                         mv.visitInsn(Opcodes.IREM) // not the best way but simple
                     }
 
-                    Predefined.COND_EQ -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPNE)
-                    Predefined.COND_NEQ -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPEQ)
-                    Predefined.COND_GT -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPLE)
-                    Predefined.COND_LT -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPGE)
-                    Predefined.COND_GE -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPLT)
-                    Predefined.COND_LE -> generateBooleanOp(left, right!!, Opcodes.IF_ICMPGT)
+                    Predefined.COND_EQ -> {
+                        if (left.type == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right!!, Opcodes.IFEQ)
+                        } else {
+                            generateIntComparison(left, right!!, Opcodes.IF_ICMPNE)
+                        }
+                    }
+                    Predefined.COND_NEQ -> {
+                        if (left.type == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right!!, Opcodes.IFNE)
+                        } else {
+                            generateIntComparison(left, right!!, Opcodes.IF_ICMPEQ)
+                        }
+                    }
+                    Predefined.COND_GT -> {
+                        if (left.type == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right!!, Opcodes.IFGT)
+                        } else {
+                            generateIntComparison(left, right!!, Opcodes.IF_ICMPLE)
+                        }
+                    }
+
+                    Predefined.COND_LT -> {
+                        if (left.type == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right!!, Opcodes.IFLT)
+                        } else {
+                            generateIntComparison(left, right!!, Opcodes.IF_ICMPGE)
+                        }
+                    }
+
+                    Predefined.COND_GE -> {
+                        if (left.type == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right!!, Opcodes.IFGE)
+                        } else {
+                            generateIntComparison(left, right!!, Opcodes.IF_ICMPLT)
+                        }
+                    }
+
+                    Predefined.COND_LE -> {
+                        if (left.type == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right!!, Opcodes.IFLE)
+                        } else {
+                            generateIntComparison(left, right!!, Opcodes.IF_ICMPGT)
+                        }
+                    }
+
                     else -> TODO("Op=$op")
                 }
             }

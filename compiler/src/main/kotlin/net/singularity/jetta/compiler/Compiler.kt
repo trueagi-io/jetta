@@ -10,17 +10,13 @@ import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.MessageLevel
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
-import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.resolve.Context
-import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
-import net.singularity.jetta.registerExternals
-import net.singularity.jetta.runtime.IO
-import org.objectweb.asm.Type
+import net.singularity.jetta.compiler.backend.registerExternals
 import java.io.File
 
 class Compiler(

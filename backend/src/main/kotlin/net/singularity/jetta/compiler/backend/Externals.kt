@@ -1,4 +1,4 @@
-package net.singularity.jetta
+package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.GroundedType

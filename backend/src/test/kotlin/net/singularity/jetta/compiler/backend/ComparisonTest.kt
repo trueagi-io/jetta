@@ -100,4 +100,100 @@ class ComparisonTest : GeneratorTestBase() {
             assertFalse(method.invoke(null, 2, 2) as Boolean)
             assertTrue(method.invoke(null, 1, 2) as Boolean)
         }
+
+    @Test
+    fun `double lt`() =
+        compile(
+            "Lt.metta",
+            """
+                (: foo (-> Double Double Boolean))
+                (= (foo _x _y _f) (< _x _y))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val method = result[0].getClass().getMethod("foo", Double::class.java, Double::class.java)
+            assertFalse(method.invoke(null, 2.0, 1.0) as Boolean)
+            assertFalse(method.invoke(null, 2.0, 2.0) as Boolean)
+            assertTrue(method.invoke(null, 1.0, 2.0) as Boolean)
+        }
+
+    @Test
+    fun `double gt`() =
+        compile(
+            "Gt.metta",
+            """
+                (: foo (-> Double Double Boolean))
+                (= (foo _x _y _f) (> _x _y))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val method = result[0].getClass().getMethod("foo", Double::class.java, Double::class.java)
+            assertTrue(method.invoke(null, 2.0, 1.0) as Boolean)
+            assertFalse(method.invoke(null, 2.0, 2.0) as Boolean)
+            assertFalse(method.invoke(null, 1.0, 2.0) as Boolean)
+        }
+
+    @Test
+    fun `double le`() =
+        compile(
+            "Le.metta",
+            """
+                (: foo (-> Double Double Boolean))
+                (= (foo _x _y _f) (<= _x _y))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val method = result[0].getClass().getMethod("foo", Double::class.java, Double::class.java)
+            assertFalse(method.invoke(null, 2.0, 1.0) as Boolean)
+            assertTrue(method.invoke(null, 2.0, 2.0) as Boolean)
+            assertTrue(method.invoke(null, 1.0, 2.0) as Boolean)
+        }
+
+    @Test
+    fun `double ge`() =
+        compile(
+            "Ge.metta",
+            """
+                (: foo (-> Double Double Boolean))
+                (= (foo _x _y _f) (>= _x _y))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val method = result[0].getClass().getMethod("foo", Double::class.java, Double::class.java)
+            assertTrue(method.invoke(null, 2.0, 1.0) as Boolean)
+            assertTrue(method.invoke(null, 2.0, 2.0) as Boolean)
+            assertFalse(method.invoke(null, 1.0, 2.0) as Boolean)
+        }
+
+    @Test
+    fun `double eq`() =
+        compile(
+            "Eq.metta",
+            """
+                (: foo (-> Double Double Boolean))
+                (= (foo _x _y _f) (== _x _y))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val method = result[0].getClass().getMethod("foo", Double::class.java, Double::class.java)
+            assertFalse(method.invoke(null, 2.0, 1.0) as Boolean)
+            assertTrue(method.invoke(null, 2.0, 2.0) as Boolean)
+            assertFalse(method.invoke(null, 1.0, 2.0) as Boolean)
+        }
+
+    @Test
+    fun `double neq`() =
+        compile(
+            "Neq.metta",
+            """
+                (: foo (-> Double Double Boolean))
+                (= (foo _x _y _f) (!= _x _y))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val method = result[0].getClass().getMethod("foo", Double::class.java, Double::class.java)
+            assertTrue(method.invoke(null, 2.0, 1.0) as Boolean)
+            assertFalse(method.invoke(null, 2.0, 2.0) as Boolean)
+            assertTrue(method.invoke(null, 1.0, 2.0) as Boolean)
+        }
 }
