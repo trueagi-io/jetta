@@ -5,13 +5,22 @@ import net.singularity.jetta.compiler.backend.DefaultRuntime
 import net.singularity.jetta.compiler.backend.Generator
 import net.singularity.jetta.compiler.backend.JettaRuntime
 import net.singularity.jetta.compiler.frontend.*
+import net.singularity.jetta.compiler.frontend.ir.ArrowType
+import net.singularity.jetta.compiler.frontend.ir.GroundedType
+import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
+import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import net.singularity.jetta.registerExternals
+import net.singularity.jetta.runtime.Random
+import net.singularity.jetta.runtime.functions.Function1
+import org.objectweb.asm.Type
 
 class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = LogLevel.DEBUG) : Repl {
     private var counter = 0
@@ -20,6 +29,10 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
     private val messageCollector = MessageCollector()
 
     private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, logLevel)
+
+    init {
+        registerExternals(context)
+    }
 
     override fun eval(code: String): EvalResult {
         context.clearMessages()

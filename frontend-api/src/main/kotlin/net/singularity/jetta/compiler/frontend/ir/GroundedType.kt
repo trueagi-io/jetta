@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.frontend.ir
 
 enum class GroundedType(private val typeName: String, override val position: SourcePosition? = null) : Atom {
     INT("Int"),
+    LONG("Long"),
     BOOLEAN("Boolean"),
     DOUBLE("Double"),
     STRING("String"),

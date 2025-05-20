@@ -19,6 +19,7 @@ atom
 
 number
     : integer
+    | long
     | double
     ;
 
@@ -28,6 +29,10 @@ string
 
 integer
     : INTEGER
+    ;
+
+long
+    : LONG
     ;
 
 double
@@ -173,6 +178,11 @@ IDENT_WITH_ID
 INTEGER
     : ZERO
     | ('-' | '+')? NON_ZERO_DIGIT DIGIT*
+    ;
+
+LONG
+    : ZERO
+    | ('-' | '+')? NON_ZERO_DIGIT DIGIT* 'L'
     ;
 
 DOUBLE

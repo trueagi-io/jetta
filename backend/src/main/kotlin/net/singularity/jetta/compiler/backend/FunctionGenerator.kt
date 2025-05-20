@@ -46,6 +46,7 @@ open class FunctionGenerator(
             is Grounded<*> -> {
                 when (atom.value) {
                     is Int -> generateLoadInt(atom.value as Int)
+                    is Long -> mv.visitLdcInsn(atom.value)
                     is Boolean -> generateLoadBoolean(atom.value as Boolean)
                     is Double -> mv.visitLdcInsn(atom.value)
                     is String -> mv.visitLdcInsn(atom.value)

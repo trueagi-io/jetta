@@ -11,6 +11,7 @@ fun ParsedSource.getJvmClassName(): String {
 fun Atom.toJvmType(boxing: Boolean = false): String =
     when (this) {
         GroundedType.INT -> if (boxing) "Ljava/lang/Integer;" else "I"
+        GroundedType.LONG -> if (boxing) "Ljava/lang/Long;" else "J"
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (boxing) throw RuntimeException("Should never happen") else "V"
@@ -40,6 +41,7 @@ fun Atom.signature(): String {
 
         is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
         GroundedType.INT -> "Ljava/lang/Integer;"
+        GroundedType.DOUBLE -> "Ljava/lang/Integer;"
         else -> TODO()
     }
     return sb.toString()
@@ -138,6 +140,7 @@ fun JvmMethod.doesParameterHaveAnyType(index: Int) =
 private fun toType(jvmType: String): Atom =
     when (jvmType) {
         "I" -> GroundedType.INT
+        "J" -> GroundedType.LONG
         "D" -> GroundedType.DOUBLE
         "V" -> GroundedType.UNIT
         "Z" -> GroundedType.BOOLEAN
@@ -152,6 +155,7 @@ private fun String.parseArrowType(): ArrowType? =
     if (startsWith("Lnet/singularity/jetta/runtime/functions/Function")) {
         val bra = indexOf('<')
         val ket = length - 2
+        // FIXME: unused
         ArrowType(substring(bra + 1, ket).parseDescriptor().map {
             when (it) {
                 "Ljava/lang/Integer;" -> GroundedType.INT
@@ -179,7 +183,7 @@ fun String.parseDescriptor(): List<String> {
         } else {
             when (it) {
                 '(', ')' -> {}
-                'I', 'D', 'V', 'Z' -> list.add(it.toString())
+                'I', 'D', 'V', 'Z', 'J' -> list.add(it.toString())
                 'L' -> {
                     type.append(it)
                     isObject = true

@@ -1,5 +1,6 @@
 package net.singularity.jetta.compiler.frontend
 
+import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.parser.messages.ParseErrorMessage
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -126,5 +127,13 @@ class ParserTest : BaseFrontendTest() {
     @Test
     fun `parse special characters in the string`() {
        justParse("""(println "Hello\n\tworld")""")
+    }
+
+    @Test
+    fun `parse long literal`() {
+        justParse("""(seed 10L)""").let {
+            val expr = it.code[0] as Expression
+            assertEquals(2, expr.atoms.size)
+        }
     }
 }

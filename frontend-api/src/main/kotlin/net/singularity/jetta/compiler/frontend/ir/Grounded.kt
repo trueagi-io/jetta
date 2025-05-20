@@ -4,6 +4,7 @@ class Grounded<T>(val value: T, override val position: SourcePosition? = null) :
     override var type: Atom? =
         when (value) {
             is Int -> GroundedType.INT
+            is Long -> GroundedType.LONG
             is Boolean -> GroundedType.BOOLEAN
             is Double -> GroundedType.DOUBLE
             is String -> GroundedType.STRING

@@ -18,6 +18,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import net.singularity.jetta.registerExternals
 import net.singularity.jetta.runtime.IO
 import org.objectweb.asm.Type
 import java.io.File
@@ -44,15 +45,7 @@ class Compiler(
         list().find { it.level == MessageLevel.ERROR } != null
 
     private fun addSystemFunctions(context: Context) {
-        context.addSystemFunction(
-            ResolvedSymbol(
-                JvmMethod(
-                    owner = Type.getInternalName(IO::class.java),
-                    name = "println",
-                    descriptor = "(Ljava/lang/Object;)V"
-                ), null, false
-            )
-        )
+        registerExternals(context)
     }
 
     fun compileMultipleSources(sources: List<Source>): Pair<Boolean, List<Message>> {

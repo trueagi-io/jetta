@@ -570,9 +570,9 @@ class Context(
 
     fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolvedFunctions[name]
-            ?.let { ResolvedSymbol(it.toJvm(), it.func, it.func.isMultivalued()) }
+            ?.let { ResolvedSymbol(it.toJvm(), it.func.arrowType, it.func.isMultivalued()) }
 
-    private fun ResolvedSymbol.arrowType(): ArrowType = func?.arrowType ?: jvmMethod.arrowType()
+    private fun ResolvedSymbol.arrowType(): ArrowType = arrowType ?: jvmMethod.arrowType()
 
     private fun ResolvedSymbol.paramTypes(): List<Atom> =
         arrowType().types.dropLast(1)

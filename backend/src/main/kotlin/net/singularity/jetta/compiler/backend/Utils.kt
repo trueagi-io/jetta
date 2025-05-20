@@ -73,6 +73,18 @@ fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             )
         }
 
+        GroundedType.DOUBLE -> {
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Number")
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                "java/lang/Number",
+                "doubleValue",
+                "()D",
+                false
+            )
+        }
+
+
         null -> {}
         else -> TODO()
     }
@@ -85,6 +97,14 @@ fun boxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             "java/lang/Integer",
             "valueOf",
             "(I)Ljava/lang/Integer;",
+            false
+        )
+
+        GroundedType.DOUBLE -> mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/lang/Double",
+            "valueOf",
+            "(D)Ljava/lang/Double;",
             false
         )
 
