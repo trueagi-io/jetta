@@ -8,6 +8,10 @@ enum class GroundedType(private val typeName: String, override val position: Sou
     STRING("String"),
     ANY("Any"),
     UNIT("Unit"),
+    SPACE("Space"),
+    ATOM("Atom"),
+    EXPRESSION("Expression"),
+    LIST("List"),
     NOTHING("Nothing");
 
     override val id: Int = -1

@@ -10,6 +10,7 @@ repositories {
 }
 
 dependencies {
+    implementation(project(":frontend-api"))
     testImplementation("org.jetbrains.kotlin:kotlin-test")
 }
 

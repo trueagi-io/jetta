@@ -15,6 +15,7 @@ fun Atom.toJvmType(boxing: Boolean = false): String =
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (boxing) throw RuntimeException("Should never happen") else "V"
+        GroundedType.LIST -> "Ljava/util/List;"
         is ArrowType -> this.descriptor()
         is SeqType -> "Ljava/util/List;"
         else -> TODO("Not implemented yet $this")
@@ -75,6 +76,7 @@ fun Atom.toJvmGenericType(box: Boolean = false): String =
         GroundedType.BOOLEAN -> if (box) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (box) "Ljava/lang/Double;" else "D"
         is ArrowType -> this.signature()
+        is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
         else -> TODO("Not implemented yet $this")
     }
 
@@ -146,6 +148,10 @@ private fun toType(jvmType: String): Atom =
         "Z" -> GroundedType.BOOLEAN
         "Ljava/lang/String;" -> GroundedType.STRING
         "Ljava/lang/Object;" -> GroundedType.ANY
+        "Lnet/singularity/jetta/runtime/space/Space;" -> GroundedType.SPACE
+        "Lnet/singularity/jetta/compiler/frontend/ir/Expression;" -> GroundedType.EXPRESSION
+        "Lnet/singularity/jetta/compiler/frontend/ir/Atom;" -> GroundedType.ATOM
+        "Ljava/util/List;" -> GroundedType.LIST
         else -> {
             jvmType.parseArrowType() ?: TODO("type=$jvmType")
         }

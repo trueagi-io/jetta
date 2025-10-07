@@ -163,7 +163,7 @@ WS
     ;
 
 COMMENT
-    : ';' .*? '\n' -> skip
+    : ';' .*? ( '\n' | EOF ) -> skip
     ;
 
 fragment NON_NEGATIVE_INTEGER
@@ -290,5 +290,5 @@ RPAREN
     ;
 
 IDENT
-    : [a-zA-Z_] [a-zA-Z0-9_\-]*
+    : [a-zA-Z_&] [a-zA-Z0-9_\-]*
     ;

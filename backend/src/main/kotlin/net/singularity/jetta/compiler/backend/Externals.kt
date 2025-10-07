@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.runtime.IO
+import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.Random
 import net.singularity.jetta.runtime.functions.Function1
 import org.objectweb.asm.Type
@@ -40,6 +41,15 @@ fun registerExternals(context: Context) {
                 owner = Type.getInternalName(IO::class.java),
                 name = "println",
                 descriptor = "(Ljava/lang/Object;)V"
+            ), null, false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = Type.getInternalName(Matcher::class.java),
+                name = "match",
+                descriptor = "(Lnet/singularity/jetta/runtime/space/Space;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
             ), null, false
         )
     )

@@ -1,5 +1,6 @@
 package net.singularity.jetta.repl
 
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -33,6 +34,7 @@ class ReplTest {
             (= (bar _x) (foo _x 2))
             (bar 2)
         """.trimIndent().replace('_', '$')).let {
+            it.messages.forEach { println(it) }
             assertTrue(it.isSuccess)
             assertEquals(5, it.result)
         }
@@ -200,6 +202,9 @@ class ReplTest {
            
             (+ 1 (bar))
         """.trimIndent().replace('_', '$')).let {
+            it.messages.forEach {
+                println(it)
+            }
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
             assertEquals(listOf(3, 4, 5), it.result)

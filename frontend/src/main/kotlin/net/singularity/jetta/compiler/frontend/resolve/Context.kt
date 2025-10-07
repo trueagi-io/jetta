@@ -12,6 +12,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
+import net.singularity.jetta.runtime.space.SpaceImpl
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.logger.Logger
 import kotlin.collections.component1
@@ -31,13 +32,14 @@ class Context(
     private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
     private val nodesToReplace = mutableMapOf<Atom, Atom>()
     private var main: FunctionDefinition? = null
-    private var postprocessingDone = false
+    private var typeInferenceDone = false
     private val mapSymbol = mapImpl?.let { ResolvedSymbol(it, null, false) }
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
+    private val space = SpaceImpl()
 
     private fun cleanUp() {
         unresolvedElements.clear()
-        postprocessingDone = false
+        typeInferenceDone = false
     }
 
     fun clearMessages() {
@@ -106,7 +108,9 @@ class Context(
     }
 
     fun addExternalFunctions(source: ParsedSource) {
-        val external = source.code.filter { it is FunctionDefinition && it.annotations.contains(PredefinedAtoms.EXPORT) }.map { it as FunctionDefinition }
+        val external =
+            source.code.filter { it is FunctionDefinition && it.annotations.contains(PredefinedAtoms.EXPORT) }
+                .map { it as FunctionDefinition }
         external.forEach {
             resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
         }
@@ -168,7 +172,7 @@ class Context(
                                 is Symbol -> {
                                     // FIXME: do nothing for now
                                 }
-                                
+
                                 else -> TODO("it=$arg")
                             }
                         }
@@ -212,6 +216,12 @@ class Context(
                     expression.arguments().forEach {
                         inferType(it, scope)
                     }
+                }
+
+                Predefined.MAP_, Predefined.FLAT_MAP_ -> { /* skip it */ }
+
+                Predefined.QUOTE -> {
+                    expression.type = GroundedType.ATOM
                 }
 
                 else -> TODO("atom=$atom")
@@ -285,18 +295,63 @@ class Context(
                 )
             }
         }
+        typeInferenceDone = true
+    }
+
+    private fun removeSpaceNodes(source: ParsedSource): ParsedSource {
+        fun removeNodesFromFunction(func: FunctionDefinition): FunctionDefinition {
+            val atoms = (func.body as Expression).atoms.filter { !space.contains(it.id) }
+            return func.copy(body = (func.body as Expression).copy(atoms))
+        }
+
+        val code = mutableListOf<Atom>()
+        source.code.forEach {
+            if (it is FunctionDefinition && it.name == FunctionRewriter.MAIN) {
+                // FIXME: Can it be optimized sometimes to avoid additional functions?
+                val bag = removeNodesFromFunction(it)
+                val atoms =(bag.body as Expression).atoms
+                if (atoms.size != 1) {
+                    var count = 0
+
+                    val calls = atoms.drop(1).map { atom ->
+                        val fnName = "__main_${count++}"
+                        val def = FunctionDefinition(
+                            fnName,
+                            listOf(),
+                            ArrowType(atom.type!!),
+                            atom
+                        )
+                        resolveFunctionDefinition(source.getJvmClassName(), def)
+                        code.add(def)
+                        Expression(Symbol(fnName))
+                    }
+                    val def = FunctionDefinition(
+                        FunctionRewriter.MAIN,
+                        listOf(),
+                        null,
+                        Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+                    )
+//                    resolveFunctionDefinition(source.getJvmClassName(), def)
+//                    addResolvedFunction(source.getJvmClassName(), def)
+                    code.add(def)
+                }
+            }
+            else
+                code.add(it)
+        }
+
+        return ParsedSource(source.filename, code)
     }
 
     fun resolveRecursively(source: ParsedSource): ParsedSource {
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
         resolveSource(source)
         typeInferenceLoop(source)
-        return if (postprocessingDone)
-            source
-        else {
-            postprocessingDone = true
-            resolveRecursively(applyPostResolveRewriters(source))
-        }
+        resolveSource(source)
+        val cleaned = removeSpaceNodes(source)
+        val postprocessed = applyPostResolveRewriters(cleaned)
+        resolveSource(postprocessed)
+        return postprocessed
     }
 
     private fun updateFunction(owner: String, scope: Scope): Boolean {
@@ -386,6 +441,9 @@ class Context(
             }
 
             is Symbol -> {
+                if (atom.name == Predefined.SELF) {
+                    return
+                }
                 val def = definedFunctions[atom.name]
                 if (def == null) {
                     messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
@@ -409,6 +467,7 @@ class Context(
                     resolveAtom(branch.body, scope)
                 }
             }
+
             else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
@@ -448,8 +507,15 @@ class Context(
                     expression.resolved = resolved
                     expression.type = resolved.arrowType().types.last()
                 } else {
-                    if (unresolvedElements.isEmpty()) {
-                        messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                    if (scope.functionDefinition is FunctionDefinition &&
+                        scope.functionDefinition.name == FunctionRewriter.MAIN
+                    ) {
+                        if (typeInferenceDone)
+                            space.put(expression)
+                    } else {
+                        if (unresolvedElements.isEmpty()) {
+                            messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                        }
                     }
                 }
             }
@@ -531,6 +597,10 @@ class Context(
                     expression.resolved = flatMapSymbol
                 }
 
+                Predefined.QUOTE -> {
+                    // don't need to resolve
+                }
+
                 else -> TODO("atom=$atom")
             }
 
@@ -550,7 +620,14 @@ class Context(
                 }
             }
 
-            else -> TODO("atom=$atom")
+            else -> {
+                if (scope.functionDefinition is FunctionDefinition &&
+                    scope.functionDefinition.name == FunctionRewriter.MAIN
+                ) {
+                    if (typeInferenceDone)
+                        space.put(expression)
+                } else TODO("atom=$atom")
+            }
         }
     }
 

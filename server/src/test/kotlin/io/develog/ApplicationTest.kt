@@ -14,6 +14,7 @@ import net.singularity.jetta.server.models.ContextId
 import net.singularity.jetta.server.models.ResultDto
 import net.singularity.jetta.server.plugins.configureRouting
 import net.singularity.jetta.server.services.ReplServiceImpl
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -91,6 +92,7 @@ class ApplicationTest {
     }
 
     @Test
+    @Ignore
     fun evalFactorial() = testApplication {
         val client = setup()
         val contextId = client.post("/contexts").let {

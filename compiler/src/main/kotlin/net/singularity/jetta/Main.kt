@@ -72,13 +72,13 @@ class Compile : CliktCommand("jettac") {
                     printError(e.message!!)
                 }
                 if (readyToEvaluate) {
-                    if (input == code.toString()) {
-                        eval(code.toString())
-                        code.clear()
-                    } else {
+//                    if (input == code.toString()) {
+//                        eval(code.toString())
+//                        code.clear()
+//                    } else {
                         println("Press ENTER to evaluate")
-                        continue
-                    }
+//                        continue
+//                    }
                 }
             } else {
                 if (code.isEmpty()) continue

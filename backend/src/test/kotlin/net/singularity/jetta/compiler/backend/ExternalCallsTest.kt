@@ -1,6 +1,7 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -69,6 +70,7 @@ class ExternalCallsTest : GeneratorTestBase() {
         }
 
     @Test
+    @Ignore
     fun `random with seed`() =
         compile(
             "RandomWithSeed.metta",

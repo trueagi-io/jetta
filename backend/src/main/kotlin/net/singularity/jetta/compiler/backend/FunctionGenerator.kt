@@ -2,6 +2,8 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.*
+import net.singularity.jetta.runtime.Matcher
+import net.singularity.jetta.runtime.space.SpaceImpl
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
@@ -41,7 +43,7 @@ open class FunctionGenerator(
         }
     }
 
-    private fun generateLoad(atom: Atom) {
+    private fun generateLoad(mv: LocalVariablesSorter, atom: Atom) {
         when (atom) {
             is Grounded<*> -> {
                 when (atom.value) {
@@ -54,8 +56,36 @@ open class FunctionGenerator(
                 }
             }
 
+            is Symbol -> {
+                if (atom.name == Predefined.SELF) {
+                    generateSpaceSingleton(mv)
+                } else TODO("Not implemented " + atom.name)
+            }
+
             else -> TODO("Not implemented yet $atom")
         }
+    }
+
+    private fun generateSpaceSingleton(mv: LocalVariablesSorter) {
+        mv.visitFieldInsn(
+            Opcodes.GETSTATIC,
+            "net/singularity/jetta/runtime/Matcher",
+            "INSTANCE",
+            "Lnet/singularity/jetta/runtime/Matcher;"
+        )
+        mv.visitFieldInsn(
+            Opcodes.GETSTATIC,
+            "net/singularity/jetta/runtime/space/SpaceImpl",
+            "Companion",
+            "Lnet/singularity/jetta/runtime/space/SpaceImpl\$Companion;"
+        )
+        mv.visitMethodInsn(
+            Opcodes.INVOKEVIRTUAL,
+            "net/singularity/jetta/runtime/space/SpaceImpl\$Companion",
+            "getInstance",
+            "()Lnet/singularity/jetta/runtime/space/Space;",
+            false
+        )
     }
 
     protected fun generateAtom(
@@ -94,6 +124,7 @@ open class FunctionGenerator(
                         Predefined.SEQ -> generateSeq(mv, arguments, atom.type!!)
                         Predefined.MAP_ -> generateCall(mv, Predefined.MAP_, arguments, atom.resolved)
                         Predefined.FLAT_MAP_ -> generateCall(mv, Predefined.FLAT_MAP_, arguments, atom.resolved)
+                        Predefined.QUOTE -> generateQuote(mv, arguments[0])
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
                                 mv,
@@ -135,7 +166,7 @@ open class FunctionGenerator(
             is Match -> generateMatch(mv, atom)
 
             else -> {
-                generateLoad(atom)
+                generateLoad(mv, atom)
             }
         }
         if (needBoxing) generateBoxingIfNeeded(atom.type!!)
@@ -145,6 +176,147 @@ open class FunctionGenerator(
             if (exit != null) {
                 mv.visitJumpInsn(Opcodes.GOTO, exit)
             }
+        }
+    }
+
+    fun test() {
+        Matcher.match(
+            SpaceImpl.getInstance(),
+            Expression(Symbol("leaf2")), Variable("x")
+        )
+    }
+
+    private fun generateQuote(mv: LocalVariablesSorter, atom: Atom) {
+        when (atom) {
+            is Expression -> {
+                /*
+                    LINENUMBER 177 L2
+                    NEW net/singularity/jetta/compiler/frontend/ir/Expression
+                    DUP
+                    ICONST_2
+                    ANEWARRAY net/singularity/jetta/compiler/frontend/ir/Atom
+                    ASTORE 1
+                    ALOAD 1
+                    ICONST_0
+                    NEW net/singularity/jetta/compiler/frontend/ir/Symbol
+                    DUP
+                    LDC "hello"
+                    ACONST_NULL
+                    ICONST_2
+                    ACONST_NULL
+                    INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Symbol.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+                    AASTORE
+                    ALOAD 1
+                    ICONST_1
+                    NEW net/singularity/jetta/compiler/frontend/ir/Symbol
+                    DUP
+                    LDC "world"
+                    ACONST_NULL
+                    ICONST_2
+                    ACONST_NULL
+                    INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Symbol.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+                    AASTORE
+                    ALOAD 1
+                    ACONST_NULL
+                    ACONST_NULL
+                    BIPUSH 6
+                    ACONST_NULL
+                    INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Expression.<init> ([Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/ResolvedSymbol;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+                   L3
+                 */
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                generateLoadInt(atom.atoms.size)
+                val atomType = Type.getInternalName(Atom::class.java)
+                val arr = mv.newLocal(Type.getObjectType("[$atomType"))
+                mv.visitTypeInsn(Opcodes.ANEWARRAY, atomType)
+                mv.visitVarInsn(Opcodes.ASTORE, arr)
+                atom.atoms.forEachIndexed { index, atom ->
+                    mv.visitVarInsn(Opcodes.ALOAD, arr)
+                    generateLoadInt(index)
+                    generateQuote(mv, atom)
+                    mv.visitInsn(Opcodes.AASTORE)
+                }
+                mv.visitVarInsn(Opcodes.ALOAD, arr)
+                mv.visitInsn(Opcodes.ACONST_NULL) // type
+                mv.visitInsn(Opcodes.ACONST_NULL) // resolved symbol
+                generateLoadInt(6)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Expression::class.java),
+                    "<init>",
+                    "([Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/ResolvedSymbol;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
+            }
+
+            /*
+                NEW net/singularity/jetta/compiler/frontend/ir/Symbol
+                DUP
+                LDC "hello"
+                ACONST_NULL
+                ICONST_2
+                ACONST_NULL
+                INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Symbol.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+               L4
+             */
+            is Symbol -> {
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Symbol::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                mv.visitLdcInsn(atom.name)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                generateLoadInt(2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Symbol::class.java),
+                    "<init>",
+                    "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
+            }
+
+            is Grounded<*> -> {
+                TODO()
+            }
+
+            is Variable -> {
+                /*
+                LINENUMBER 178 L3
+                NEW net/singularity/jetta/compiler/frontend/ir/Variable
+                DUP
+                LDC "x"
+                ACONST_NULL
+                ACONST_NULL
+                BIPUSH 6
+                ACONST_NULL
+                INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Variable.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+                CHECKCAST net/singularity/jetta/compiler/frontend/ir/Atom
+               L4
+                LINENUMBER 175 L4
+                INVOKEVIRTUAL net/singularity/jetta/runtime/Matcher.match (Lnet/singularity/jetta/runtime/space/Space;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;
+                POP
+               L5
+                 */
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                mv.visitLdcInsn(atom.name)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                generateLoadInt(6)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Variable::class.java),
+                    "<init>",
+                    "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
+                mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Atom::class.java))
+            }
+
+            else -> TODO()
         }
     }
 
@@ -192,7 +364,7 @@ open class FunctionGenerator(
         mv.visitVarInsn(Opcodes.ALOAD, arr)
         arguments.forEachIndexed { index, arg ->
             generateLoadInt(index)
-            generateLoad(arg)
+            generateLoad(mv, arg)
             generateBoxingIfNeeded(arg.type!!)
             mv.visitInsn(Opcodes.AASTORE)
             mv.visitVarInsn(Opcodes.ALOAD, arr)
@@ -226,13 +398,23 @@ open class FunctionGenerator(
         arguments.forEachIndexed { index, arg ->
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            jvmSymbol.owner,
-            jvmSymbol.name,
-            jvmSymbol.descriptor,
-            false
-        )
+        if (resolved.jvmMethod.name == "match") {
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                jvmSymbol.owner,
+                jvmSymbol.name,
+                jvmSymbol.descriptor,
+                false
+            )
+        } else {
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                jvmSymbol.owner,
+                jvmSymbol.name,
+                jvmSymbol.descriptor,
+                false
+            )
+        }
     }
 
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
@@ -263,6 +445,7 @@ open class FunctionGenerator(
             GroundedType.INT, GroundedType.BOOLEAN -> mv.visitInsn(Opcodes.IRETURN)
             GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DRETURN)
             GroundedType.UNIT -> mv.visitInsn(Opcodes.RETURN)
+            GroundedType.LIST -> mv.visitInsn(Opcodes.ARETURN)
             is SeqType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")
         }
@@ -367,6 +550,7 @@ open class FunctionGenerator(
                             generateIntComparison(left, right!!, Opcodes.IF_ICMPNE)
                         }
                     }
+
                     Predefined.COND_NEQ -> {
                         if (left.type == GroundedType.DOUBLE) {
                             generateDoubleGt(left, right!!, Opcodes.IFNE)
@@ -374,6 +558,7 @@ open class FunctionGenerator(
                             generateIntComparison(left, right!!, Opcodes.IF_ICMPEQ)
                         }
                     }
+
                     Predefined.COND_GT -> {
                         if (left.type == GroundedType.DOUBLE) {
                             generateDoubleGt(left, right!!, Opcodes.IFGT)

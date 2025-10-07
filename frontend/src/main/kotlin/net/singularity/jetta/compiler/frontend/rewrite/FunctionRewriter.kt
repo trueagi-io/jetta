@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.ir.MatchBranch
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOrConstantButFoundMessage
+import kotlin.math.exp
 
 class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
@@ -55,6 +56,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     if (!isConstantExpression(it)) return false
                 }
             }
+
             else -> return true
         }
         return true
@@ -152,26 +154,37 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
     private fun mkMain(): List<Atom> {
         val result = mutableListOf<Atom>()
-        var count = 0
-
-        val calls = main.map {
-            val fnName = "__main_${count++}"
-            result.add(
-                FunctionDefinition(
-                    fnName,
-                    listOf(),
-                    null,
-                    it
-                )
-            )
-            Expression(Symbol(fnName))
-        }
+        // FIXME: turn it back
+//        var count = 0
+//
+//        val calls = main.map {
+//            val fnName = "__main_${count++}"
+//            result.add(
+//                FunctionDefinition(
+//                    fnName,
+//                    listOf(),
+//                    null,
+//                    it
+//                )
+//            )
+//            Expression(Symbol(fnName))
+//        }
+//        result.add(
+//            FunctionDefinition(
+//                MAIN,
+//                listOf(),
+//                null,
+//                Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+//            )
+//        )
+        val fnName = MAIN
+        val main1 = main.map { rewriteAtom(it) }
         result.add(
             FunctionDefinition(
-                MAIN,
+                fnName,
                 listOf(),
                 null,
-                Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+                Expression(listOf(Special(Predefined.RUN_SEQ)) + main1)
             )
         )
         return result
@@ -208,8 +221,23 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         Predefined.XOR
     )
 
+    private fun quoteAtom(atom: Atom): Atom =
+        Expression(PredefinedAtoms.QUOTE, atom)
+
+    private fun rewriteMatchCall(expression: Expression): Expression =
+        expression.copy(
+            listOf(
+                expression.atoms[0],
+                expression.atoms[1],
+                quoteAtom(expression.atoms[2]),
+                quoteAtom(expression.atoms[3])
+            )
+        )
+
+
     private fun rewriteExpression(expression: Expression): Atom {
         val func = expression.atoms[0]
+        if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         return rewriteExpressionArguments(expression).let {
             if (func is Special && func.value == Predefined.ARROW) {
                 mkArrow(it)
