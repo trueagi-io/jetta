@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.toJvmType
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.commons.LocalVariablesSorter
 
 fun FunctionLike.getParameterIndex(variable: Variable): Int = params.getParameterIndex(variable)
 
@@ -157,4 +158,17 @@ fun mkLambdaInitDescriptor(capturedVariables: List<Variable>): String {
     }
     sb.append(")V")
     return sb.toString()
+}
+
+
+fun generateLoadInt(mv: LocalVariablesSorter, value: Int) {
+    when (value) {
+        0 -> mv.visitInsn(Opcodes.ICONST_0)
+        1 -> mv.visitInsn(Opcodes.ICONST_1)
+        2 -> mv.visitInsn(Opcodes.ICONST_2)
+        3 -> mv.visitInsn(Opcodes.ICONST_3)
+        4 -> mv.visitInsn(Opcodes.ICONST_4)
+        5 -> mv.visitInsn(Opcodes.ICONST_5)
+        else -> mv.visitIntInsn(Opcodes.BIPUSH, value)
+    }
 }

@@ -24,17 +24,7 @@ open class FunctionGenerator(
     protected var maxStack = 0
     protected var maxLocals = function.params.size
 
-    private fun generateLoadInt(value: Int) {
-        when (value) {
-            0 -> mv.visitInsn(Opcodes.ICONST_0)
-            1 -> mv.visitInsn(Opcodes.ICONST_1)
-            2 -> mv.visitInsn(Opcodes.ICONST_2)
-            3 -> mv.visitInsn(Opcodes.ICONST_3)
-            4 -> mv.visitInsn(Opcodes.ICONST_4)
-            5 -> mv.visitInsn(Opcodes.ICONST_5)
-            else -> mv.visitIntInsn(Opcodes.BIPUSH, value)
-        }
-    }
+    private fun generateLoadInt(value: Int) = generateLoadInt(mv, value)
 
     private fun generateLoadBoolean(value: Boolean) {
         when (value) {
