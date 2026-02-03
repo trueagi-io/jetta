@@ -115,7 +115,7 @@ class CanonicalFormRewriter(
 
     ```
     (@ foo multivalued)
-    (= (foo) (list 1 2 3))
+    (= (foo) (seq 1 2 3))
 
     (: f (-> Int Int))
     (= (f $x) (+ $x 1))

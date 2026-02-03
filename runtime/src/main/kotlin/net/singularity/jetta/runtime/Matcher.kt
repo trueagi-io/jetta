@@ -5,6 +5,6 @@ import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.runtime.space.Space
 
 object Matcher {
-    fun match(space: Space, src: Expression, dst: Atom): List<Expression> =
+    fun match(space: Space, src: Expression, dst: Atom): List<Atom> =
         space.match(src, dst)
 }

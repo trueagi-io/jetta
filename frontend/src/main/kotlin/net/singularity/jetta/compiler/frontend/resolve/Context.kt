@@ -511,7 +511,7 @@ class Context(
                         scope.functionDefinition.name == FunctionRewriter.MAIN
                     ) {
                         if (typeInferenceDone)
-                            space.put(expression)
+                            space.add(expression)
                     } else {
                         if (unresolvedElements.isEmpty()) {
                             messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
@@ -625,7 +625,7 @@ class Context(
                     scope.functionDefinition.name == FunctionRewriter.MAIN
                 ) {
                     if (typeInferenceDone)
-                        space.put(expression)
+                        space.add(expression)
                 } else TODO("atom=$atom")
             }
         }

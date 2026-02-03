@@ -36,7 +36,7 @@ class SpaceTest : GeneratorTestBase() {
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             assertEquals(1, classes.size)
-            classes["SimpleMatch"]!!.getMethod("__main").invoke(null)
+            val r = classes["SimpleMatch"]!!.getMethod("__main").invoke(null)
             return@let
         }
 

@@ -4,11 +4,13 @@ import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 
 interface Space {
-    fun put(expression: Expression)
+    fun add(expression: Expression)
 
     fun mkIndex(patterns: List<Expression>)
 
     fun contains(id: Int): Boolean
 
-    fun match(src: Expression, dst: Atom): List<Expression>
+    fun match(src: Expression, dst: Atom): List<Atom>
+
+    fun chunks(numberOfChunks: Int): List<Iterator<Expression>>
 }
