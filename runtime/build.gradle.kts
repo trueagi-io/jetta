@@ -1,5 +1,6 @@
 plugins {
-    kotlin("jvm") version "1.9.22"
+    kotlin("jvm") version "2.3.0"
+    kotlin("plugin.serialization") version "2.3.0"
 }
 
 group = "net.singularity.jetta"
@@ -11,6 +12,7 @@ repositories {
 
 dependencies {
     implementation(project(":frontend-api"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
 }
 

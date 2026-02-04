@@ -1,11 +1,11 @@
-
 package net.singularity.jetta.runtime.space
 
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
-import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toAtom
+import net.singularity.jetta.runtime.space.atoms.toSAtom
 
 class SpaceImpl : Space {
     private val store = mutableListOf<Expression>()
@@ -39,13 +39,30 @@ class SpaceImpl : Space {
             }
         }
 
-        // Get all matching bindings
-        val matchingBindings = indexer.match()
+        // Get packed index
+        val packedIndex = indexer.getPackedIndex()
 
-        // For each matching binding, substitute variables in dst with their bindings
-        return matchingBindings.map { bindings ->
+        // Resolve and substitute for each match
+        return (0 until packedIndex.size()).map { matchIndex ->
+            val bindings = packedIndex.resolve(matchIndex, this)
             substituteVariables(dst, bindings)
         }
+    }
+
+    /**
+     * Extract an atom from a stored expression using a packed binding.
+     */
+    fun extractAtom(packed: PackedBinding): SAtom {
+        var current: Atom = store[packed.storeIndex]
+
+        for (index in packed.atomPath) {
+            current = when (current) {
+                is Expression -> current.atoms[index]
+                else -> throw IllegalStateException("Invalid path in PackedBinding: cannot traverse non-expression")
+            }
+        }
+
+        return current.toSAtom()
     }
 
     private fun substituteVariables(atom: Atom, bindings: Bindings): Atom {
@@ -84,6 +101,11 @@ class SpaceImpl : Space {
             }
         }
     }
+
+    /**
+     * Get store size for indexing purposes.
+     */
+    internal fun getStoreSize(): Int = store.size
 
     companion object {
         private val instance = SpaceImpl()
