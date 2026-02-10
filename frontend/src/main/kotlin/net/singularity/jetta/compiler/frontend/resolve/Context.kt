@@ -36,6 +36,15 @@ class Context(
     private val mapSymbol = mapImpl?.let { ResolvedSymbol(it, null, false) }
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
     private val space = SpaceImpl()
+    private val matchPatterns = mutableSetOf<Expression>()
+
+    fun getSpace(): SpaceImpl {
+        if (matchPatterns.isNotEmpty()) {
+            space.mkIndex(matchPatterns.distinct())
+            matchPatterns.clear()
+        }
+        return space
+    }
 
     private fun cleanUp() {
         unresolvedElements.clear()
@@ -506,6 +515,17 @@ class Context(
                     }
                     expression.resolved = resolved
                     expression.type = resolved.arrowType().types.last()
+                    // Capture match patterns for pre-building indices
+                    if (atom.name == "match" && expression.arguments().size >= 2) {
+                        val quote = expression.arguments()[1]
+                        if (quote is Expression) {
+                            // (quote ...)
+                            val pattern = quote.arguments()[0]
+                            if (pattern is Expression) {
+                                matchPatterns.add(pattern)
+                            }
+                        }
+                    }
                 } else {
                     if (scope.functionDefinition is FunctionDefinition &&
                         scope.functionDefinition.name == FunctionRewriter.MAIN

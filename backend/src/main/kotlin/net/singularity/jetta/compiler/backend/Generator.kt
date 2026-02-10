@@ -52,6 +52,16 @@ class Generator(val generateMain: Boolean = false) {
                             null
                         )
                     )
+                    if (node.name == FunctionRewriter.MAIN) {
+                        mv.visitLdcInsn(className.substringAfterLast('/'))
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/JettaProgram",
+                            "init",
+                            "(Ljava/lang/String;)V",
+                            false
+                        )
+                    }
                     FunctionGenerator(mv, node, true, null).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
                         val mv = cw.visitMethod(
@@ -63,6 +73,7 @@ class Generator(val generateMain: Boolean = false) {
                         )
                         mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", "()V", false)
                         mv.visitInsn(Opcodes.RETURN)
+                        mv.visitMaxs(1, 1)
                     }
                 }
 

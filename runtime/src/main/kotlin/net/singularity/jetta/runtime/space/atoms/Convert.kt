@@ -11,7 +11,7 @@ fun Atom.toSAtom(): SAtom = when (this) {
     is Expression -> SExpression(this.atoms.map { it.toSAtom() })
     is Variable -> SVariable(this.name)
     is Grounded<*> -> SGrounded(this.value)
-    else -> throw IllegalArgumentException("Unsupported atom type: ${this::class.simpleName}")
+    else -> throw IllegalArgumentException("Unsupported atom type: $this")
 }
 
 fun SAtom.toAtom(): Atom = when (this) {

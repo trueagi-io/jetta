@@ -22,4 +22,12 @@ class Expression(
         append(")")
         if (type != null) append(":$type")
     }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Expression) return false
+        return toString() == other.toString()
+    }
+
+    override fun hashCode(): Int = toString().hashCode()
 }

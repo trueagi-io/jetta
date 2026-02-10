@@ -57,22 +57,10 @@ open class FunctionGenerator(
     }
 
     private fun generateSpaceSingleton(mv: LocalVariablesSorter) {
-        mv.visitFieldInsn(
-            Opcodes.GETSTATIC,
-            "net/singularity/jetta/runtime/Matcher",
-            "INSTANCE",
-            "Lnet/singularity/jetta/runtime/Matcher;"
-        )
-        mv.visitFieldInsn(
-            Opcodes.GETSTATIC,
-            "net/singularity/jetta/runtime/space/SpaceImpl",
-            "Companion",
-            "Lnet/singularity/jetta/runtime/space/SpaceImpl\$Companion;"
-        )
         mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL,
-            "net/singularity/jetta/runtime/space/SpaceImpl\$Companion",
-            "getInstance",
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/JettaProgram",
+            "getSpace",
             "()Lnet/singularity/jetta/runtime/space/Space;",
             false
         )
@@ -388,23 +376,13 @@ open class FunctionGenerator(
         arguments.forEachIndexed { index, arg ->
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
-        if (resolved.jvmMethod.name == "match") {
-            mv.visitMethodInsn(
-                Opcodes.INVOKEVIRTUAL,
-                jvmSymbol.owner,
-                jvmSymbol.name,
-                jvmSymbol.descriptor,
-                false
-            )
-        } else {
-            mv.visitMethodInsn(
-                Opcodes.INVOKESTATIC,
-                jvmSymbol.owner,
-                jvmSymbol.name,
-                jvmSymbol.descriptor,
-                false
-            )
-        }
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            jvmSymbol.owner,
+            jvmSymbol.name,
+            jvmSymbol.descriptor,
+            false
+        )
     }
 
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {

@@ -17,7 +17,10 @@ import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
+import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
+import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import java.io.File
+import kotlin.io.path.Path
 
 class Compiler(
     val files: List<String>,
@@ -67,12 +70,16 @@ class Compiler(
         }
         val resolved = parsed.map { context.resolve(it) }
 
+        val space = context.getSpace()
+        resolved.forEach {
+            val programName = it.getJvmClassName().substringAfterLast('/')
+            SpaceDirectorySerializer.save(space, Path(outputDir), programName)
+        }
+
         resolved.forEach {
             val generator = Generator(generateMain = true)
             val compiled = generator.generate(it)
-            compiled.forEach {
-                writeResult(it)
-            }
+            compiled.forEach(::writeResult)
         }
         return true to messageCollector.list()
     }

@@ -10,7 +10,11 @@ import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import net.singularity.jetta.runtime.JettaProgram
+import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import java.io.File
+import java.nio.file.Files
+import kotlin.io.path.Path
 
 abstract class GeneratorTestBase {
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
@@ -30,6 +34,13 @@ abstract class GeneratorTestBase {
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
+
+        // Save space and initialize JettaProgram so generated __main can use it
+        val outputDir = Path("/tmp/metta")
+        val programName = filename.substringBeforeLast('.')
+        SpaceDirectorySerializer.save(context.getSpace(), outputDir, programName = programName)
+        JettaProgram.setDataDir(outputDir)
+
         val generator = Generator()
         val compiled = generator.generate(result)
         compiled.forEach {

@@ -47,9 +47,9 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(Matcher::class.java),
+                owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "match",
-                descriptor = "(Lnet/singularity/jetta/runtime/space/Space;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
             ), null, false
         )
     )
