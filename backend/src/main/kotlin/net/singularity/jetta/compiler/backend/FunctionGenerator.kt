@@ -167,41 +167,6 @@ open class FunctionGenerator(
     private fun generateQuote(mv: LocalVariablesSorter, atom: Atom) {
         when (atom) {
             is Expression -> {
-                /*
-                    LINENUMBER 177 L2
-                    NEW net/singularity/jetta/compiler/frontend/ir/Expression
-                    DUP
-                    ICONST_2
-                    ANEWARRAY net/singularity/jetta/compiler/frontend/ir/Atom
-                    ASTORE 1
-                    ALOAD 1
-                    ICONST_0
-                    NEW net/singularity/jetta/compiler/frontend/ir/Symbol
-                    DUP
-                    LDC "hello"
-                    ACONST_NULL
-                    ICONST_2
-                    ACONST_NULL
-                    INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Symbol.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-                    AASTORE
-                    ALOAD 1
-                    ICONST_1
-                    NEW net/singularity/jetta/compiler/frontend/ir/Symbol
-                    DUP
-                    LDC "world"
-                    ACONST_NULL
-                    ICONST_2
-                    ACONST_NULL
-                    INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Symbol.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-                    AASTORE
-                    ALOAD 1
-                    ACONST_NULL
-                    ACONST_NULL
-                    BIPUSH 6
-                    ACONST_NULL
-                    INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Expression.<init> ([Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/ResolvedSymbol;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-                   L3
-                 */
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
                 mv.visitInsn(Opcodes.DUP)
                 generateLoadInt(atom.atoms.size)
@@ -228,17 +193,6 @@ open class FunctionGenerator(
                     false
                 )
             }
-
-            /*
-                NEW net/singularity/jetta/compiler/frontend/ir/Symbol
-                DUP
-                LDC "hello"
-                ACONST_NULL
-                ICONST_2
-                ACONST_NULL
-                INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Symbol.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-               L4
-             */
             is Symbol -> {
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Symbol::class.java))
                 mv.visitInsn(Opcodes.DUP)
@@ -260,38 +214,32 @@ open class FunctionGenerator(
             }
 
             is Variable -> {
-                /*
-                LINENUMBER 178 L3
-                NEW net/singularity/jetta/compiler/frontend/ir/Variable
-                DUP
-                LDC "x"
-                ACONST_NULL
-                ACONST_NULL
-                BIPUSH 6
-                ACONST_NULL
-                INVOKESPECIAL net/singularity/jetta/compiler/frontend/ir/Variable.<init> (Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-                CHECKCAST net/singularity/jetta/compiler/frontend/ir/Atom
-               L4
-                LINENUMBER 175 L4
-                INVOKEVIRTUAL net/singularity/jetta/runtime/Matcher.match (Lnet/singularity/jetta/runtime/space/Space;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;
-                POP
-               L5
-                 */
-                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
-                mv.visitInsn(Opcodes.DUP)
-                mv.visitLdcInsn(atom.name)
-                mv.visitInsn(Opcodes.ACONST_NULL)
-                mv.visitInsn(Opcodes.ACONST_NULL)
-                generateLoadInt(6)
-                mv.visitInsn(Opcodes.ACONST_NULL)
-                mv.visitMethodInsn(
-                    Opcodes.INVOKESPECIAL,
-                    Type.getInternalName(Variable::class.java),
-                    "<init>",
-                    "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
-                    false
-                )
-                mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Atom::class.java))
+                // Check if this variable is a function parameter — if so, load the argument
+                // instead of creating a new Variable (which would act as a wildcard)
+                val paramIndex = function.getParameterIndex(atom)
+                if (paramIndex >= 0) {
+                    // Use the param from function.params which has the correct type,
+                    // since the Variable inside quote may have type = null.
+                    val param = function.params.first { it.name == atom.name }
+                    generateLoadVar(mv, param, function.params, isStatic, className)
+
+                } else {
+                    mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
+                    mv.visitInsn(Opcodes.DUP)
+                    mv.visitLdcInsn(atom.name)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    generateLoadInt(6)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    mv.visitMethodInsn(
+                        Opcodes.INVOKESPECIAL,
+                        Type.getInternalName(Variable::class.java),
+                        "<init>",
+                        "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                        false
+                    )
+                    mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Atom::class.java))
+                }
             }
 
             else -> TODO()

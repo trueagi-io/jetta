@@ -50,7 +50,9 @@ fun registerExternals(context: Context) {
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "match",
                 descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
-            ), null, false
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
         )
     )
 }

@@ -13,7 +13,11 @@ fun List<Variable>.getParameterIndex(variable: Variable): Int {
     forEach {
         if (it.name == variable.name) return jvmIndex
         when (it.type) {
-            GroundedType.INT, GroundedType.BOOLEAN -> jvmIndex++
+            GroundedType.INT,
+            GroundedType.BOOLEAN,
+            GroundedType.STRING,
+            GroundedType.ATOM -> jvmIndex++
+
             GroundedType.DOUBLE -> jvmIndex += 2
             else -> TODO("type=" + it.type + " (" + it + ")")
         }
@@ -57,7 +61,15 @@ fun generateLoadVar(
                 mv.visitVarInsn(Opcodes.DLOAD, index + offset)
         }
 
-        else -> TODO("Not implemented yet " + variable)
+        GroundedType.ATOM -> {
+            val index = params.getParameterIndex(variable)
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.ALOAD, index + offset)
+        }
+
+        else -> TODO("Not implemented yet " + variable + " (" + variable.type + ")")
     }
 }
 
@@ -131,9 +143,10 @@ fun Lambda.capturedVariables(): List<Variable> {
 
             is Lambda -> {
                 when (val body = atom.body) {
-                    is  Expression -> body.atoms.forEach {
+                    is Expression -> body.atoms.forEach {
                         collect(params + atom.params, it)
                     }
+
                     else -> collect(params, atom.body)
                 }
             }
@@ -145,6 +158,7 @@ fun Lambda.capturedVariables(): List<Variable> {
         is Expression -> b.atoms.forEach {
             collect(params, it)
         }
+
         else -> collect(params, body)
     }
     return result

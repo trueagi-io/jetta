@@ -385,6 +385,19 @@ class Context(
                 scope.functionDefinition.arrowType = ArrowType(types)
             }
             addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
+        } else if (scope.functionDefinition.body.type != null) {
+            // Body type is known but some params couldn't be inferred
+            // (e.g., they only appear inside quote blocks).
+            // Default unresolved params to Atom.
+            val fallbackTypes = mutableListOf<Atom>()
+            scope.functionDefinition.params.forEach {
+                val type = scope.data[it.name]
+                fallbackTypes.add(type ?: GroundedType.ATOM)
+            }
+            fallbackTypes.add(scope.functionDefinition.body.type!!)
+            scope.functionDefinition.arrowType = ArrowType(fallbackTypes)
+            addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
+            isCompleted = true
         }
         return isCompleted
     }

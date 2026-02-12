@@ -79,6 +79,7 @@ class SpaceTest : GeneratorTestBase() {
             return@let
         }
 
+    // Tests to ensure space structure after compilation
     @OptIn(ExperimentalPathApi::class)
     @Test
     fun `space is saved after frontend with simple expressions`() {

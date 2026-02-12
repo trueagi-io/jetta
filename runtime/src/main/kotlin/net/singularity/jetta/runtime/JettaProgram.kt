@@ -10,7 +10,7 @@ import kotlin.io.path.exists
 
 open class JettaProgram {
     companion object {
-        private lateinit var space: Space
+        private var space: Space = SpaceImpl()
         private var dataDir: Path = Path.of(".")
 
         @JvmStatic
