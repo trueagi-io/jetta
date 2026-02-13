@@ -104,7 +104,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         val cond = mutableListOf<Expression>()
         if (pattern.atoms.size == 1) return null
         params.zip(pattern.atoms.drop(1)).forEach { (variable, atom) ->
-            if (atom is Grounded<*>) {
+            if (atom is Grounded<*> || atom is Symbol) {
                 cond.add(Expression(Special(Predefined.COND_EQ), variable, atom))
             }
         }
@@ -299,6 +299,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 "Boolean" -> GroundedType.BOOLEAN
                 "String" -> GroundedType.STRING
                 "Unit" -> GroundedType.UNIT
+                "Atom" -> GroundedType.ATOM
                 else -> TODO()
             }
 

@@ -1,6 +1,8 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
+import net.singularity.jetta.compiler.frontend.ir.Atom
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,5 +45,24 @@ class MatchGeneratorTest : GeneratorTestBase() {
             val classes = result.toMap().toClasses()
             val value = classes["TwoBranches1Arg"]!!.getMethod("foo", Int::class.java).invoke(null, 10)
             assertEquals(listOf(0, 11), value)
+        }
+
+    @Test
+    fun `symbol constant matching in branches`() =
+        compile(
+            "SymbolMatch.metta",
+            $$"""
+            (: myAnd (-> Atom Atom Atom))
+            (= (myAnd T T) T)
+            (= (myAnd $x $y) F)
+        """.trimIndent()
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            val m = classes["SymbolMatch"]!!.getMethod("myAnd", Atom::class.java, Atom::class.java)
+            val r = m.invoke(null, Symbol("T"), Symbol("T")) as List<*>
+            assertTrue(r.any { it.toString() == "T" })
         }
 }

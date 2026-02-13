@@ -468,7 +468,11 @@ class Context(
                 }
                 val def = definedFunctions[atom.name]
                 if (def == null) {
-                    messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                    // If no suggested type, this is just a plain symbol constant (e.g., T, F)
+                    // — not a function reference, so no error needed.
+                    if (suggestedType != null) {
+                        messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                    }
                     return
                 }
                 if (suggestedType != def.func.arrowType) {

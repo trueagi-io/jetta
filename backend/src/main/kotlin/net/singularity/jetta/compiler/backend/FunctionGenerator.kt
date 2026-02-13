@@ -47,9 +47,25 @@ open class FunctionGenerator(
             }
 
             is Symbol -> {
-                if (atom.name == Predefined.SELF) {
-                    generateSpaceSingleton(mv)
-                } else TODO("Not implemented " + atom.name)
+                when (atom.name) {
+                    Predefined.SELF -> generateSpaceSingleton(mv)
+                    else -> {
+                        // Create a Symbol object at runtime for comparison
+                        mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Symbol::class.java))
+                        mv.visitInsn(Opcodes.DUP)
+                        mv.visitLdcInsn(atom.name)
+                        mv.visitInsn(Opcodes.ACONST_NULL)
+                        generateLoadInt(mv, 2)
+                        mv.visitInsn(Opcodes.ACONST_NULL)
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESPECIAL,
+                            Type.getInternalName(Symbol::class.java),
+                            "<init>",
+                            "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                            false
+                        )
+                    }
+                }
             }
 
             else -> TODO("Not implemented yet $atom")
@@ -462,16 +478,43 @@ open class FunctionGenerator(
                     Predefined.COND_EQ -> {
                         if (left.type == GroundedType.DOUBLE) {
                             generateDoubleGt(left, right!!, Opcodes.IFEQ)
-                        } else {
+                        } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
                             generateIntComparison(left, right!!, Opcodes.IF_ICMPNE)
+                        } else {
+                            // Reference types (Atom, Symbol, etc.) — use Object.equals()
+                            generateAtom(mv, left, null, false)
+                            generateAtom(mv, right!!, null, false)
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKEVIRTUAL,
+                                "java/lang/Object",
+                                "equals",
+                                "(Ljava/lang/Object;)Z",
+                                false
+                            )
+                            // equals() returns boolean (0 or 1) — already matches the expected format
                         }
                     }
 
                     Predefined.COND_NEQ -> {
                         if (left.type == GroundedType.DOUBLE) {
                             generateDoubleGt(left, right!!, Opcodes.IFNE)
-                        } else {
+                        } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
                             generateIntComparison(left, right!!, Opcodes.IF_ICMPEQ)
+                        } else {
+                            // Reference types — use !Object.equals()
+                            generateAtom(mv, left, null, false)
+                            generateAtom(mv, right!!, null, false)
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKEVIRTUAL,
+                                "java/lang/Object",
+                                "equals",
+                                "(Ljava/lang/Object;)Z",
+                                false
+                            )
+                            // Invert: 1 - equals_result
+                            mv.visitInsn(Opcodes.ICONST_1)
+                            mv.visitInsn(Opcodes.SWAP)
+                            mv.visitInsn(Opcodes.ISUB)
                         }
                     }
 
