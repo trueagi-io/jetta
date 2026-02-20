@@ -263,6 +263,9 @@ open class FunctionGenerator(
     }
 
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
+        val returnType = match.returnType
+            ?: match.branches.firstNotNullOfOrNull { it.body.type }
+            ?: GroundedType.ATOM
         generateLoadInt(match.branches.size)
         mv.visitTypeInsn(Opcodes.NEW, "java/util/ArrayList")
         val resultVar = mv.newLocal(Type.getObjectType("java/util/ArrayList"))
@@ -270,7 +273,7 @@ open class FunctionGenerator(
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false)
         mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/List")
         mv.visitVarInsn(Opcodes.ASTORE, resultVar)
-        match.branches.forEach { branch -> generateMatchBranch(mv, branch, match.returnType!!, resultVar) }
+        match.branches.forEach { branch -> generateMatchBranch(mv, branch, returnType, resultVar) }
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
         mv.visitInsn(Opcodes.ARETURN)
     }
@@ -337,7 +340,10 @@ open class FunctionGenerator(
         resolved: ResolvedSymbol?
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
-        arguments.forEachIndexed { index, arg ->
+        val filteredArgs = arguments.filter {
+            !(it is Symbol && it.name == Predefined.SELF)
+        }
+        filteredArgs.forEachIndexed { index, arg ->
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
         mv.visitMethodInsn(

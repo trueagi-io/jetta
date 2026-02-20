@@ -27,6 +27,9 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         return ParsedSource(source.filename, mkFunctions() + mainPart)
     }
 
+    private fun hasConstantsInPattern(pattern: Expression): Boolean =
+        pattern.atoms.drop(1).any { it !is Variable }
+
     private fun extractFormalParams(expression: Expression): List<Variable> {
         val list = expression.atoms.drop(1).mapNotNull {
             // FIXME: it might be a value
@@ -73,7 +76,10 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
         fun rewriteAtom(atom: Atom): Atom =
             when (atom) {
-                is Variable -> Variable(changeVariables[atom.name]!!) // FIXME: handle error here
+                is Variable -> {
+                    val newName = changeVariables[atom.name]
+                    if (newName != null) Variable(newName) else atom
+                }
                 is Expression -> rewriteExpression(atom)
                 is Lambda -> rewriteLambda(atom)
                 else -> atom
@@ -118,7 +124,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
     private fun mkFunctions(): List<Atom> =
         patterns.map { (name, list) ->
-            if (list.size == 1) {
+            if (list.size == 1 && !hasConstantsInPattern(list[0].pattern)) {
                 val pattern = list[0]
                 FunctionDefinition(
                     name,

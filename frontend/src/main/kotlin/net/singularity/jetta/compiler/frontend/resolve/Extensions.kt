@@ -29,6 +29,7 @@ fun ArrowType.getJvmInterfaceName(): String {
     return "net/singularity/jetta/runtime/functions/Function$arity"
 }
 
+
 fun Atom.signature(): String {
     val sb = StringBuilder()
     when (this) {
@@ -41,10 +42,11 @@ fun Atom.signature(): String {
             sb.append(">;")
         }
 
-        is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
-        GroundedType.INT -> "Ljava/lang/Integer;"
-        GroundedType.DOUBLE -> "Ljava/lang/Integer;"
-        else -> TODO()
+        is SeqType -> sb.append("Ljava/util/List<${elementType.signature()}>;")
+        GroundedType.INT -> sb.append("Ljava/lang/Integer;")
+        GroundedType.DOUBLE -> sb.append("Ljava/lang/Double;")
+        GroundedType.ATOM -> sb.append("Lnet/singularity/jetta/compiler/frontend/ir/Atom;")
+        else -> TODO("Not implemented yet $this")
     }
     return sb.toString()
 }

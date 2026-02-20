@@ -43,10 +43,32 @@ fun generateLoadVar(
     }
 
     val offset = if (isStatic) 0 else 1
+    val index = params.getParameterIndex(variable)
+
+    // Variable not found in params and no class to load field from —
+    // this is a match-time variable (e.g., nested pattern variable).
+    // Generate a runtime Variable object so it can be resolved by the matcher.
+    if (index < 0 && className == null) {
+        mv.visitTypeInsn(Opcodes.NEW, "net/singularity/jetta/compiler/frontend/ir/Variable")
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitLdcInsn(variable.name)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitIntInsn(Opcodes.BIPUSH, 6)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESPECIAL,
+            "net/singularity/jetta/compiler/frontend/ir/Variable",
+            "<init>",
+            "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+            false
+        )
+        return
+    }
+
     when (variable.type) {
         GroundedType.INT,
         GroundedType.BOOLEAN -> {
-            val index = params.getParameterIndex(variable)
             if (index < 0)
                 generateField()
             else
@@ -54,7 +76,6 @@ fun generateLoadVar(
         }
 
         GroundedType.DOUBLE -> {
-            val index = params.getParameterIndex(variable)
             if (index < 0)
                 generateField()
             else
@@ -62,7 +83,6 @@ fun generateLoadVar(
         }
 
         GroundedType.ATOM -> {
-            val index = params.getParameterIndex(variable)
             if (index < 0)
                 generateField()
             else

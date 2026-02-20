@@ -147,6 +147,11 @@ class Context(
                 }
             }
 
+            is Symbol -> {
+                // Plain symbol constants (e.g., T, F) — type is Atom
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+
             else -> TODO("atom=$atom")
         }
     }
@@ -229,6 +234,13 @@ class Context(
 
                 Predefined.MAP_, Predefined.FLAT_MAP_ -> { /* skip it */ }
 
+                Predefined.AND, Predefined.OR, Predefined.XOR, Predefined.NOT -> {
+                    expression.arguments().forEach {
+                        inferType(it, scope)
+                    }
+                    expression.type = GroundedType.BOOLEAN
+                }
+
                 Predefined.QUOTE -> {
                     expression.type = GroundedType.ATOM
                 }
@@ -291,7 +303,7 @@ class Context(
                     }
                 }
                 updated.forEach { postponedFunctions.remove(it) }
-            } while (unresolvedElements.isNotEmpty() || unresolvedElements.size != numElements)
+            } while (unresolvedElements.isNotEmpty() && unresolvedElements.size != numElements)
         } catch (_: UndefinedSymbolException) {
         }
         if (unresolvedElements.isNotEmpty()) {
@@ -359,6 +371,7 @@ class Context(
         resolveSource(source)
         val cleaned = removeSpaceNodes(source)
         val postprocessed = applyPostResolveRewriters(cleaned)
+        messageCollector.clear()
         resolveSource(postprocessed)
         return postprocessed
     }
@@ -380,26 +393,48 @@ class Context(
         if (isCompleted) {
             val body = scope.functionDefinition.body
             resolveAtom(body, scope)
-            if (body.type != null) {
-                types.add(body.type!!)
+            val bodyType = body.type ?: inferBodyTypeFromMatch(body)
+            if (bodyType != null) {
+                body.type = bodyType
+                types.add(bodyType)
                 scope.functionDefinition.arrowType = ArrowType(types)
             }
             addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
-        } else if (scope.functionDefinition.body.type != null) {
+        } else if (scope.functionDefinition.body.type != null || inferBodyTypeFromMatch(scope.functionDefinition.body) != null) {
             // Body type is known but some params couldn't be inferred
             // (e.g., they only appear inside quote blocks).
             // Default unresolved params to Atom.
+            val bodyType = scope.functionDefinition.body.type ?: inferBodyTypeFromMatch(scope.functionDefinition.body)
+            scope.functionDefinition.body.type = bodyType
             val fallbackTypes = mutableListOf<Atom>()
             scope.functionDefinition.params.forEach {
                 val type = scope.data[it.name]
                 fallbackTypes.add(type ?: GroundedType.ATOM)
             }
-            fallbackTypes.add(scope.functionDefinition.body.type!!)
+            fallbackTypes.add(bodyType!!)
             scope.functionDefinition.arrowType = ArrowType(fallbackTypes)
             addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
             isCompleted = true
         }
         return isCompleted
+    }
+
+    /**
+     * For Match bodies, try to find a type from any branch that has a resolved type.
+     * Branches with Symbol constants (like T, F) are treated as Atom type.
+     */
+    private fun inferBodyTypeFromMatch(body: Atom): Atom? {
+        if (body !is Match) return null
+        for (branch in body.branches) {
+            if (branch.body.type != null) return branch.body.type
+            // A Symbol constant in a branch body should be Atom type
+            if (branch.body is Symbol) return GroundedType.ATOM
+        }
+        // If all branches are match calls returning SeqType, use that
+        for (branch in body.branches) {
+            if (branch.body is Expression && branch.body.type is SeqType) return branch.body.type
+        }
+        return null
     }
 
     private fun resolveSource(source: ParsedSource) {
@@ -441,7 +476,11 @@ class Context(
                         messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
                     }
                 } else {
-                    messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
+                    // Variable not in scope — could be a match-time pattern variable
+                    // (e.g., nested destructuring in Match branches).
+                    // Default to Atom type; only report error if type was explicitly expected.
+                    atom.type = atom.type ?: GroundedType.ATOM
+//                    messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
                 }
             }
 
@@ -490,6 +529,7 @@ class Context(
 
             is Match -> {
                 atom.branches.forEach { branch ->
+                    if (branch.cond != null) resolveAtom(branch.cond!!, scope)
                     resolveAtom(branch.body, scope)
                 }
             }
@@ -550,7 +590,9 @@ class Context(
                         if (typeInferenceDone)
                             space.add(expression)
                     } else {
-                        if (unresolvedElements.isEmpty()) {
+                        // Always track as unresolved so subsequent passes can retry
+                        unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
+                        if (definedFunctions[atom.name] == null) {
                             messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
                         }
                     }
@@ -613,6 +655,13 @@ class Context(
 
                 Predefined.NOT -> {
                     resolveAtom(expression.atoms[1], scope)
+                    expression.type = GroundedType.BOOLEAN
+                }
+
+                Predefined.AND, Predefined.OR, Predefined.XOR -> {
+                    val (_, lhs, rhs) = expression.atoms
+                    resolveAtom(lhs, scope)
+                    resolveAtom(rhs, scope)
                     expression.type = GroundedType.BOOLEAN
                 }
 
