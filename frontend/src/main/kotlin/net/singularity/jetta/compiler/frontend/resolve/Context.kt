@@ -593,7 +593,17 @@ class Context(
                         // Always track as unresolved so subsequent passes can retry
                         unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
                         if (definedFunctions[atom.name] == null) {
-                            messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                            // If the enclosing function has a Match body, unresolved symbols
+                            // in expression-head position are data constructors (e.g., And, Pair)
+                            // that should be quoted, not reported as errors.
+                            if (scope.functionDefinition is FunctionDefinition &&
+                                scope.functionDefinition.body is Match
+                            ) {
+                                expression.type = GroundedType.ATOM
+                                expression.arguments().forEach { resolveAtom(it, scope) }
+                            } else {
+                                messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                            }
                         }
                     }
                 }

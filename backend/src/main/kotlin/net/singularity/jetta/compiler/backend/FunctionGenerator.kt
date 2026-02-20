@@ -16,6 +16,8 @@ open class FunctionGenerator(
     private val isStatic: Boolean,
     private val className: String?
 ) {
+    private val destructuredLocals = mutableMapOf<String, Int>()
+
     fun generate() {
         generateAtom(mv, function.body, null, true)
         mv.visitMaxs(maxStack, maxLocals)
@@ -129,7 +131,16 @@ open class FunctionGenerator(
                         } else TODO("func=$func")
                     }
 
-                    is Symbol -> generateCall(mv, func.name, arguments, atom.resolved)
+                    is Symbol -> {
+                        if (atom.resolved != null) {
+                            generateCall(mv, func.name, arguments, atom.resolved)
+                        } else {
+                            // Unresolved symbol in function position — quote the whole expression
+                            // This handles MeTTa constructors like (And $a $b), (Pair $x $y), etc.
+                            generateQuote(mv, atom)
+                        }
+                    }
+
                     is Variable -> generateLambdaCall(mv, func, arguments)
 
                     else -> TODO("Not implemented yet $func")
@@ -137,7 +148,12 @@ open class FunctionGenerator(
             }
 
             is Variable -> {
-                generateLoadVar(mv, atom, function.params, isStatic, className)
+                val slot = destructuredLocals[atom.name]
+                if (slot != null) {
+                    mv.visitVarInsn(Opcodes.ALOAD, slot)
+                } else {
+                    generateLoadVar(mv, atom, function.params, isStatic, className)
+                }
             }
 
             is Lambda -> {
@@ -230,31 +246,31 @@ open class FunctionGenerator(
             }
 
             is Variable -> {
-                // Check if this variable is a function parameter — if so, load the argument
-                // instead of creating a new Variable (which would act as a wildcard)
-                val paramIndex = function.getParameterIndex(atom)
-                if (paramIndex >= 0) {
-                    // Use the param from function.params which has the correct type,
-                    // since the Variable inside quote may have type = null.
-                    val param = function.params.first { it.name == atom.name }
-                    generateLoadVar(mv, param, function.params, isStatic, className)
-
+                val slot = destructuredLocals[atom.name]
+                if (slot != null) {
+                    mv.visitVarInsn(Opcodes.ALOAD, slot)
                 } else {
-                    mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
-                    mv.visitInsn(Opcodes.DUP)
-                    mv.visitLdcInsn(atom.name)
-                    mv.visitInsn(Opcodes.ACONST_NULL)
-                    mv.visitInsn(Opcodes.ACONST_NULL)
-                    generateLoadInt(6)
-                    mv.visitInsn(Opcodes.ACONST_NULL)
-                    mv.visitMethodInsn(
-                        Opcodes.INVOKESPECIAL,
-                        Type.getInternalName(Variable::class.java),
-                        "<init>",
-                        "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
-                        false
-                    )
-                    mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Atom::class.java))
+                    val paramIndex = function.getParameterIndex(atom)
+                    if (paramIndex >= 0) {
+                        val param = function.params.first { it.name == atom.name }
+                        generateLoadVar(mv, param, function.params, isStatic, className)
+                    } else {
+                        mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
+                        mv.visitInsn(Opcodes.DUP)
+                        mv.visitLdcInsn(atom.name)
+                        mv.visitInsn(Opcodes.ACONST_NULL)
+                        mv.visitInsn(Opcodes.ACONST_NULL)
+                        generateLoadInt(6)
+                        mv.visitInsn(Opcodes.ACONST_NULL)
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESPECIAL,
+                            Type.getInternalName(Variable::class.java),
+                            "<init>",
+                            "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                            false
+                        )
+                        mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Atom::class.java))
+                    }
                 }
             }
 
@@ -278,9 +294,8 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.ARETURN)
     }
 
+    // ... existing code ...
     private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
-        // 1. generate condition for the pattern
-        // 2. generate function application
         val elseLabel = Label()
         if (branch.cond != null) {
             val label = Label()
@@ -289,11 +304,39 @@ open class FunctionGenerator(
             mv.visitInsn(Opcodes.ICONST_1)
             mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
         }
+
+        // Extract destructured bindings into local variable slots
+        val savedLocals = destructuredLocals.toMap()
+        for (binding in branch.destructuredBindings) {
+            val localSlot = mv.newLocal(Type.getObjectType("net/singularity/jetta/compiler/frontend/ir/Atom"))
+            val paramOffset = if (isStatic) 0 else 1
+            mv.visitVarInsn(Opcodes.ALOAD, binding.paramIndex + paramOffset)
+            for (pathIndex in binding.extractionPath) {
+                mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Expression")
+                mv.visitMethodInsn(
+                    Opcodes.INVOKEVIRTUAL,
+                    "net/singularity/jetta/compiler/frontend/ir/Expression",
+                    "getAtoms",
+                    "()Ljava/util/List;",
+                    false
+                )
+                generateLoadInt(mv, pathIndex)
+                mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "get", "(I)Ljava/lang/Object;", true)
+                mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Atom")
+            }
+            mv.visitVarInsn(Opcodes.ASTORE, localSlot)
+            destructuredLocals[binding.syntheticName] = localSlot
+        }
+
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
         generateAtom(mv, branch.body, null, false)
         generateBoxingIfNeeded(resultType)
         mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
         mv.visitInsn(Opcodes.POP)
+
+        destructuredLocals.clear()
+        destructuredLocals.putAll(savedLocals)
+
         if (branch.cond != null) {
             mv.visitLabel(elseLabel)
         }
@@ -387,6 +430,12 @@ open class FunctionGenerator(
             is SeqType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")
         }
+    }
+
+    private fun containsVariable(atom: Atom): Boolean = when (atom) {
+        is Variable -> true
+        is Expression -> atom.atoms.any { containsVariable(it) }
+        else -> false
     }
 
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
@@ -487,17 +536,33 @@ open class FunctionGenerator(
                         } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
                             generateIntComparison(left, right!!, Opcodes.IF_ICMPNE)
                         } else {
-                            // Reference types (Atom, Symbol, etc.) — use Object.equals()
-                            generateAtom(mv, left, null, false)
-                            generateAtom(mv, right!!, null, false)
-                            mv.visitMethodInsn(
-                                Opcodes.INVOKEVIRTUAL,
-                                "java/lang/Object",
-                                "equals",
-                                "(Ljava/lang/Object;)Z",
-                                false
-                            )
-                            // equals() returns boolean (0 or 1) — already matches the expected format
+                            // Reference types (Atom, Symbol, etc.)
+                            // If the right side is an Expression containing Variables,
+                            // use Matcher.match for structural pattern matching
+                            // (e.g., (== $var0 (And $a $b)) should match (And X Y))
+                            if (right is Expression && containsVariable(right)) {
+                                // Use Matcher.match(left, pattern) -> boolean
+                                generateAtom(mv, left, null, false)
+                                generateQuote(mv, right)
+                                mv.visitMethodInsn(
+                                    Opcodes.INVOKESTATIC,
+                                    Type.getInternalName(Matcher::class.java),
+                                    "structuralMatch",
+                                    "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Z",
+                                    false
+                                )
+                            } else {
+                                generateAtom(mv, left, null, false)
+                                generateAtom(mv, right!!, null, false)
+                                mv.visitMethodInsn(
+                                    Opcodes.INVOKEVIRTUAL,
+                                    "java/lang/Object",
+                                    "equals",
+                                    "(Ljava/lang/Object;)Z",
+                                    false
+                                )
+                            }
+                            // equals()/structuralMatch() returns boolean (0 or 1)
                         }
                     }
 
