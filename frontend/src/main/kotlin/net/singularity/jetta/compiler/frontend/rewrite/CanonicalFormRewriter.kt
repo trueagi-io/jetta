@@ -192,7 +192,16 @@ class CanonicalFormRewriter(
         })
         // check the expression is a scope
         val replacement = multivaluedCallsInverse[expression.id]
-        if (replacement != null) return createMaps(replacement, body)
+        if (replacement != null) {
+            // Determine the innermost op: if the body expression calls
+            // a multivalued function, use FLAT_MAP_ so its List results
+            // are flattened rather than nested.
+            val innermostOp = if (body is Expression
+                && body.atoms[0] is Symbol
+                && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+            ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
+            return createMaps(replacement, body, innermostOp)
+        }
         return body
     }
 
@@ -275,11 +284,21 @@ class CanonicalFormRewriter(
                         }
                         val def = context.definedFunctions[f.name]
                         if (def != null && def.func.isMultivalued()) {
-                            val scopeId = reducedScopeId ?: getScopeId(atom)
-                            multivaluedCalls[atom.id] = variableCount
-                            multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }.add(variableCount to atom)
-                            variableCount++
-                            isMultivalued = true
+                            // Check if arguments contain multivalued sub-calls.
+                            // If so, don't register this call at the parent scope —
+                            // instead, let the children be scoped to this call.
+                            val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
+                                arg is Expression && arg.atoms[0] is Symbol &&
+                                        context.definedFunctions[(arg.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+                            }
+                            if (!hasMultivaluedArgs) {
+                                val scopeId = reducedScopeId ?: getScopeId(atom)
+                                multivaluedCalls[atom.id] = variableCount
+                                multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
+                                    .add(variableCount to atom)
+                                variableCount++
+                                isMultivalued = true
+                            }
                         }
                     }
 
@@ -303,12 +322,19 @@ class CanonicalFormRewriter(
                         atom.atoms[3].id
                     )
                 } else {
+                    // When the current expression is a function call,
+                    // scope any multivalued children to THIS expression
+                    // so the flatMap chain wraps this call.
+                    val childScope = if (atom.atoms[0] is Symbol
+                        && context.definedFunctions[(atom.atoms[0] as Symbol).name] != null
+                    ) atom.id else reducedScopeId
+
                     // other specials and symbols
                     atom.atoms.drop(1).forEach {
                         if (collectNonDeterministicAtomsRecursively(
                                 it,
                                 functionDefinition,
-                                reducedScopeId
+                                childScope
                             )
                         ) isMultivalued = true
                     }
@@ -331,9 +357,13 @@ class CanonicalFormRewriter(
 
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
         context.definedFunctions[name]?.func?.arrowType?.types?.let { types ->
+            val returnType = types.last()
+            // If the function is multivalued (returns SeqType), the map/flatMap
+            // lambda receives individual elements, not the whole list.
+            val elementType = if (returnType is SeqType) returnType.elementType else returnType
             ArrowType(
-                types.last(),
-                if (op == PredefinedAtoms.FLAT_MAP_) SeqType(types.last()) else types.last()
+                elementType,
+                if (op == PredefinedAtoms.FLAT_MAP_) SeqType(elementType) else elementType
             )
         }
 

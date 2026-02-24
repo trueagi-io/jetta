@@ -311,12 +311,14 @@ class Context(
         }
         if (unresolvedElements.isNotEmpty()) {
             unresolvedElements.forEach { (_, data) ->
-                messageCollector.add(
-                    CannotInferTypeMessage(
-                        data.atom,
-                        data.info.functionDefinition as FunctionDefinition
+                if (data.info.functionDefinition is FunctionDefinition) {
+                    messageCollector.add(
+                        CannotInferTypeMessage(
+                            data.atom,
+                            data.info.functionDefinition as FunctionDefinition
+                        )
                     )
-                )
+                }
             }
         }
         typeInferenceDone = true

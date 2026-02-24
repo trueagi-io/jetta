@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.ir.Atom
+import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.runtime.JettaProgram
@@ -129,6 +130,174 @@ class MatchNestedEvalTest : GeneratorTestBase() {
             val reachC = reachMethod.invoke(null, Symbol("C")) as List<*>
             assertTrue(reachC.isNotEmpty(), "reach(C) should chain C->B->A")
             assertTrue(reachC.any { it.toString() == "T" })
+        }
+    }
+
+    /**
+     * A function body calls another user-defined function with TWO multivalued
+     * arguments. This requires the compiler to produce a Cartesian-product
+     * flatMap — evaluate both args independently, then call the combining
+     * function on every (a, b) pair.
+     *
+     *   (= (f X) A)
+     *   (= (f Y) B)
+     *   (= (myPair $a $b) (Pair $a $b))   — quotes into an Expression
+     *   (= (combine $x $y) (myPair (f $x) (f $y)))
+     *
+     * combine(X, Y) should yield [(Pair A B)] — f(X)=[A], f(Y)=[B], myPair(A,B)=[(Pair A B)]
+     */
+    @Test
+    fun `function body with two multivalued arguments`() {
+        compile(
+            "TwoMultivaluedArgs.metta",
+            $$"""
+                (= (f X) A)
+                (= (f Y) B)
+
+                (: myPair (-> Atom Atom Atom))
+                (= (myPair $a $b) (Pair $a $b))
+
+                (= (combine $x $y) (myPair (f $x) (f $y)))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+//            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("TwoMultivaluedArgs")
+
+            val combineMethod = classes["TwoMultivaluedArgs"]!!.getMethod(
+                "combine", Atom::class.java, Atom::class.java
+            )
+
+            // combine(X, Y): f(X)=[A], f(Y)=[B], myPair(A, B)=[(Pair A B)]
+            val results = combineMethod.invoke(null, Symbol("X"), Symbol("Y")) as List<*>
+            assertTrue(results.isNotEmpty(), "combine(X, Y) should produce results from both f calls")
+            assertTrue(
+                results.any { it.toString() == "(Pair A B)" },
+                "Expected (Pair A B) in results but got: $results"
+            )
+        }
+    }
+
+    /**
+     * Cartesian product: both multivalued arguments return MULTIPLE results.
+     * The combining function must be called on every (a, b) pair.
+     *
+     *   (= (f X) A)
+     *   (= (f X) B)       — f(X) is multivalued: [A, B]
+     *   (= (g Y) C)
+     *   (= (g Y) D)       — g(Y) is multivalued: [C, D]
+     *   (= (myPair $a $b) (Pair $a $b))
+     *   (= (combine $x $y) (myPair (f $x) (g $y)))
+     *
+     * combine(X, Y) should yield all 4 pairs: [(Pair A C), (Pair A D), (Pair B C), (Pair B D)]
+     */
+    @Test
+    fun `function body with two multivalued arguments - cartesian product`() {
+        compile(
+            "CartesianProduct.metta",
+            $$"""
+                (= (f X) A)
+                (= (f X) B)
+
+                (= (g Y) C)
+                (= (g Y) D)
+
+                (: myPair (-> Atom Atom Atom))
+                (= (myPair $a $b) (Pair $a $b))
+
+                (= (combine $x $y) (myPair (f $x) (g $y)))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+//            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("CartesianProduct")
+
+            val combineMethod = classes["CartesianProduct"]!!.getMethod(
+                "combine", Atom::class.java, Atom::class.java
+            )
+
+            // combine(X, Y): f(X)=[A, B], g(Y)=[C, D]
+            // Expected: all 4 pairs from the cartesian product
+            val results = combineMethod.invoke(null, Symbol("X"), Symbol("Y")) as List<*>
+            println("combine(X, Y) results: $results")
+            println("combine(X, Y) results size: ${results.size}")
+            results.forEachIndexed { i, r -> println("  result[$i] = $r (${r?.javaClass})") }
+            assertTrue(results.isNotEmpty(), "combine(X, Y) should produce results from both f calls")
+            val resultStrings = results.map { it.toString() }.toSet()
+
+            assertEquals(4, results.size, "Expected 4 pairs from 2×2 cartesian product but got: $results")
+            assertTrue("(Pair A C)" in resultStrings, "Missing (Pair A C) in $results")
+            assertTrue("(Pair A D)" in resultStrings, "Missing (Pair A D) in $results")
+            assertTrue("(Pair B C)" in resultStrings, "Missing (Pair B C) in $results")
+            assertTrue("(Pair B D)" in resultStrings, "Missing (Pair B D) in $results")
+        }
+    }
+
+    /**
+     * Minimal backward chaining with an And-combiner — the core pattern from
+     * the Plato-is-mortal test, stripped to its essence.
+     *
+     * Two facts reachable via single-step deduction, combined with And:
+     *
+     *   (Direct P)
+     *   (Direct Q)
+     *   (= (ded $x) (match &self (Direct $x) T))
+     *   (= (ded (And $a $b)) (myAnd (ded $a) (ded $b)))
+     *   (= (myAnd T T) T)
+     *
+     * ded(And P Q) should: destructure → myAnd(ded(P), ded(Q)) → myAnd(T, T) → T
+     */
+    @Test
+    fun `destructured And with two recursive multivalued calls`() {
+        compile(
+            "NestedEvalAnd.metta",
+            $$"""
+                (Direct P)
+                (Direct Q)
+
+                (= (ded $x) (match &self (Direct $x) T))
+
+                (= (ded (And $a $b)) (myAnd (ded $a) (ded $b)))
+
+                (= (myAnd T T) T)
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+//            assertTrue(messageCollector.list().isEmpty())
+            messageCollector.list().forEach { println(it) }
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("NestedEvalAnd")
+
+            val dedMethod = classes["NestedEvalAnd"]!!.getMethod("ded", Atom::class.java)
+
+            // ded(P) -> direct match -> [T]
+            val dedP = dedMethod.invoke(null, Symbol("P")) as List<*>
+            assertTrue(dedP.any { it.toString() == "T" }, "ded(P) should return [T]")
+
+            // ded(Q) -> direct match -> [T]
+            val dedQ = dedMethod.invoke(null, Symbol("Q")) as List<*>
+            assertTrue(dedQ.any { it.toString() == "T" }, "ded(Q) should return [T]")
+
+            // ded(And P Q) -> myAnd(ded(P), ded(Q)) -> myAnd(T, T) -> T
+            val andExpr = Expression(Symbol("And"), Symbol("P"), Symbol("Q"))
+            val dedAnd = dedMethod.invoke(null, andExpr) as List<*>
+            assertTrue(
+                dedAnd.isNotEmpty(),
+                "ded(And P Q) should evaluate both ded(P) and ded(Q), then combine with myAnd"
+            )
+            assertTrue(
+                dedAnd.any { it.toString() == "T" },
+                "Expected T from myAnd(T, T) but got: $dedAnd"
+            )
         }
     }
 }
