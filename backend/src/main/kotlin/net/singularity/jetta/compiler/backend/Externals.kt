@@ -55,4 +55,15 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchEval",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/util/function/Function;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)), SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
 }

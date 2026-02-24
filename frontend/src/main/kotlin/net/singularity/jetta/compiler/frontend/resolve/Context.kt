@@ -275,12 +275,15 @@ class Context(
                     logger.debug("----------------------------------")
                 }
                 unresolvedElements
+                unresolvedElements
                     .toList()
                     .map { (_, data) -> data.info }
                     .toSet()
                     .forEach {
-                        if (!updateFunction(owner, it)) {
-                            postponedFunctions[(it.functionDefinition as FunctionDefinition).name] = it
+                        if (it.functionDefinition is FunctionDefinition) {
+                            if (!updateFunction(owner, it)) {
+                                postponedFunctions[(it.functionDefinition as FunctionDefinition).name] = it
+                            }
                         }
                     }
                 val resolved = mutableListOf<Pair<Int, Atom>>()
@@ -762,7 +765,8 @@ class Context(
                     val lambda = expression.arguments()[0] as Lambda
                     resolveAtom(lambda, scope)
                     expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
-                    expression.type = SeqType(lambda.body.type!!, lambda.body.position)
+                    val bodyType = lambda.body.type ?: GroundedType.ATOM
+                    expression.type = SeqType(bodyType, lambda.body.position)
                     expression.resolved = mapSymbol
                 }
 
@@ -770,7 +774,8 @@ class Context(
                     val lambda = expression.arguments()[0] as Lambda
                     resolveAtom(lambda, scope)
                     expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
-                    expression.type = SeqType(lambda.body.type!!, lambda.body.position)
+                    val bodyType = lambda.body.type ?: GroundedType.ATOM
+                    expression.type = SeqType(bodyType, lambda.body.position)
                     expression.resolved = flatMapSymbol
                 }
 

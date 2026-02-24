@@ -294,7 +294,6 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.ARETURN)
     }
 
-    // ... existing code ...
     private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
         val elseLabel = Label()
         if (branch.cond != null) {
@@ -330,8 +329,16 @@ open class FunctionGenerator(
 
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
         generateAtom(mv, branch.body, null, false)
-        generateBoxingIfNeeded(resultType)
-        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
+
+        // If the branch body produces a List (SeqType), flatten it into the result
+        // using addAll instead of add. This handles match/flat-map branches that
+        // return multiple results.
+        if (branch.body.type is SeqType) {
+            mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "addAll", "(Ljava/util/Collection;)Z", true)
+        } else {
+            generateBoxingIfNeeded(resultType)
+            mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
+        }
         mv.visitInsn(Opcodes.POP)
 
         destructuredLocals.clear()

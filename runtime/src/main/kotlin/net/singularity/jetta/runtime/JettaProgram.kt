@@ -34,5 +34,20 @@ open class JettaProgram {
         @JvmStatic
         fun match(src: Expression, dst: Atom): List<Atom> =
             space.match(src, dst)
+
+
+        /**
+         * Match with a template function for nested evaluation.
+         * Instead of returning substituted data, this calls the template function
+         * for each match result, allowing compiled function calls in templates.
+         *
+         * The template function receives the fully substituted template atom
+         * (same as what `match` would return) and evaluates it, returning results.
+         */
+        @JvmStatic
+        fun matchEval(src: Expression, dst: Atom, templateFn: java.util.function.Function<Atom, List<Atom>>): List<Atom> =
+            space.match(src, dst).flatMap { substituted ->
+                templateFn.apply(substituted)
+            }
     }
 }

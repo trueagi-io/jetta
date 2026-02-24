@@ -291,8 +291,43 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
     private fun quoteAtom(atom: Atom): Atom =
         Expression(PredefinedAtoms.QUOTE, atom)
 
-    private fun rewriteMatchCall(expression: Expression): Expression =
-        expression.copy(
+
+    /**
+     * Check if an atom is a call to a known defined function (top-level).
+     */
+    private fun isFunctionCall(atom: Atom): Boolean {
+        if (atom !is Expression) return false
+        val head = atom.atoms[0]
+        return head is Symbol && patterns.containsKey(head.name)
+    }
+
+    private fun rewriteMatchCall(expression: Expression): Expression {
+        val template = expression.atoms[3]
+
+        if (isFunctionCall(template)) {
+            val templateExpr = template as Expression
+            val funcSymbol = templateExpr.atoms[0]
+            val funcArgs = templateExpr.atoms.drop(1)
+
+            if (funcArgs.size == 1 && funcArgs[0] is Variable) {
+                val lambdaVar = Variable("__matchEvalArg")
+                val matchCall = Expression(
+                    expression.atoms[0],  // match
+                    expression.atoms[1],  // &self
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(funcArgs[0])
+                )
+                val lambdaBody = Expression(funcSymbol, lambdaVar)
+                val lambda = Lambda(
+                    listOf(lambdaVar),
+                    null,
+                    lambdaBody
+                )
+                return Expression(Special(Predefined.FLAT_MAP_), lambda, matchCall)
+            }
+        }
+
+        return expression.copy(
             listOf(
                 expression.atoms[0],
                 expression.atoms[1],
@@ -300,7 +335,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 quoteAtom(expression.atoms[3])
             )
         )
-
+    }
 
     private fun rewriteExpression(expression: Expression): Atom {
         val func = expression.atoms[0]
