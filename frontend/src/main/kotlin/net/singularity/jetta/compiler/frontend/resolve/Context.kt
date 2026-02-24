@@ -373,7 +373,53 @@ class Context(
         val postprocessed = applyPostResolveRewriters(cleaned)
         messageCollector.clear()
         resolveSource(postprocessed)
+        defaultUntypedToAtom(postprocessed)
         return postprocessed
+    }
+
+    /**
+     * Walk the entire IR tree and default any remaining null types to Atom.
+     * In MeTTa, untyped values are dynamically typed — Atom on the JVM.
+     * This guarantees the backend never sees null types.
+     */
+    private fun defaultUntypedToAtom(source: ParsedSource) {
+        source.code.forEach { defaultUntypedToAtom(it) }
+    }
+
+    private fun defaultUntypedToAtom(atom: Atom) {
+        when (atom) {
+            is FunctionDefinition -> {
+                atom.params.forEach { it.type = it.type ?: GroundedType.ATOM }
+                defaultUntypedToAtom(atom.body)
+            }
+            is Lambda -> {
+                atom.params.forEach { it.type = it.type ?: GroundedType.ATOM }
+                if (atom.arrowType == null) {
+                    val paramTypes = atom.params.map { it.type!! }
+                    val returnType = atom.body.type ?: GroundedType.ATOM
+                    atom.arrowType = ArrowType(paramTypes + returnType)
+                }
+                atom.type = atom.type ?: atom.arrowType
+                defaultUntypedToAtom(atom.body)
+            }
+            is Expression -> {
+                atom.atoms.forEach { defaultUntypedToAtom(it) }
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+            is Variable -> {
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+            is Match -> {
+                atom.branches.forEach { branch ->
+                    branch.cond?.let { defaultUntypedToAtom(it) }
+                    defaultUntypedToAtom(branch.body)
+                }
+            }
+            is Symbol -> {
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+            else -> { /* Grounded literals, etc. — already typed */ }
+        }
     }
 
     private fun updateFunction(owner: String, scope: Scope): Boolean {
@@ -400,23 +446,40 @@ class Context(
                 scope.functionDefinition.arrowType = ArrowType(types)
             }
             addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
-        } else if (scope.functionDefinition.body.type != null || inferBodyTypeFromMatch(scope.functionDefinition.body) != null) {
+        } else {
             // Body type is known but some params couldn't be inferred
-            // (e.g., they only appear inside quote blocks).
+            // (e.g., they only appear inside quote blocks or are purely symbolic).
             // Default unresolved params to Atom.
-            val bodyType = scope.functionDefinition.body.type ?: inferBodyTypeFromMatch(scope.functionDefinition.body)
-            scope.functionDefinition.body.type = bodyType
-            val fallbackTypes = mutableListOf<Atom>()
-            scope.functionDefinition.params.forEach {
-                val type = scope.data[it.name]
-                fallbackTypes.add(type ?: GroundedType.ATOM)
+            val body = scope.functionDefinition.body
+            resolveAtom(body, scope)
+            val bodyType = body.type ?: inferBodyTypeFromMatch(body) ?: inferBodyType(body)
+            if (bodyType != null) {
+                body.type = bodyType
+                val fallbackTypes = mutableListOf<Atom>()
+                scope.functionDefinition.params.forEach {
+                    val type = scope.data[it.name]
+                    fallbackTypes.add(type ?: GroundedType.ATOM)
+                }
+                fallbackTypes.add(bodyType)
+                scope.functionDefinition.arrowType = ArrowType(fallbackTypes)
+                addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
+                isCompleted = true
             }
-            fallbackTypes.add(bodyType!!)
-            scope.functionDefinition.arrowType = ArrowType(fallbackTypes)
-            addResolvedFunction(owner, scope.functionDefinition as FunctionDefinition)
-            isCompleted = true
         }
         return isCompleted
+    }
+
+    /**
+     * Try to determine the body type from simple expressions.
+     * For Symbol constants (like T, F), the type is Atom.
+     */
+    private fun inferBodyType(body: Atom): Atom? {
+        return when (body) {
+            is Symbol -> GroundedType.ATOM
+            is Variable -> body.type
+            is Expression -> body.type
+            else -> null
+        }
     }
 
     /**
@@ -429,6 +492,8 @@ class Context(
             if (branch.body.type != null) return branch.body.type
             // A Symbol constant in a branch body should be Atom type
             if (branch.body is Symbol) return GroundedType.ATOM
+            // A Variable with no inferred type defaults to Atom
+            if (branch.body is Variable) return GroundedType.ATOM
         }
         // If all branches are match calls returning SeqType, use that
         for (branch in body.branches) {
@@ -455,6 +520,20 @@ class Context(
             functionDefinition.body,
             Scope(functionDefinition)
         )
+        // If arrowType is still null after resolving, try to infer it.
+        // This handles purely symbolic functions like (= (And T T) T)
+        // where body type is known but no explicit type annotation exists.
+        if (functionDefinition.arrowType == null && functionDefinition.name != FunctionRewriter.MAIN) {
+            val bodyType = functionDefinition.body.type
+                ?: inferBodyTypeFromMatch(functionDefinition.body)
+                ?: inferBodyType(functionDefinition.body)
+            if (bodyType != null) {
+                functionDefinition.body.type = bodyType
+                val types = functionDefinition.params.map { it.type ?: GroundedType.ATOM } + bodyType
+                functionDefinition.arrowType = ArrowType(types)
+                addResolvedFunction(owner, functionDefinition)
+            }
+        }
         definedFunctions[functionDefinition.name] = SymbolDef(owner, functionDefinition)
     }
 
@@ -682,6 +761,7 @@ class Context(
                 Predefined.MAP_ -> {
                     val lambda = expression.arguments()[0] as Lambda
                     resolveAtom(lambda, scope)
+                    expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
                     expression.type = SeqType(lambda.body.type!!, lambda.body.position)
                     expression.resolved = mapSymbol
                 }
@@ -689,6 +769,7 @@ class Context(
                 Predefined.FLAT_MAP_ -> {
                     val lambda = expression.arguments()[0] as Lambda
                     resolveAtom(lambda, scope)
+                    expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
                     expression.type = SeqType(lambda.body.type!!, lambda.body.position)
                     expression.resolved = flatMapSymbol
                 }

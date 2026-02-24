@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toSAtom
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -12,7 +13,8 @@ class IndexerImpl(val pattern: Expression) : Indexer {
 
     private val schema: VariableSchema = VariableSchema.fromPattern(pattern)
     private val packedMatches = mutableListOf<PackedMatch>()
-    private var cachedSpace: SpaceImpl? = null  // Cache the space for lazy resolution
+    private val spaceVarSubstitutions = mutableListOf<Map<String, SAtom>>()
+    private var cachedSpace: SpaceImpl? = null
 
     override fun match(expr: Expression, bindings: Bindings): Boolean {
         if (!matchAndUnify(expr, bindings)) {
@@ -30,23 +32,22 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                     when (val a = expr.atoms[it]) {
                         is Symbol -> if (a.name != atom.name) return false
                         is Variable -> {
-                            val b = bindings[a.name]
-                            if (b == null) {
-                                bindings[a.name] = atom.toSAtom()
-                            } else {
-                                if (b != atom.toSAtom()) return false
-                            }
+                            // Space variable unifies with pattern symbol — always matches
                         }
-
                         else -> return false
                     }
                 }
 
                 is Expression -> {
                     val a = expr.atoms[it]
-                    if (a !is Expression) return false
-                    val indexer = IndexerImpl(atom)
-                    if (!indexer.matchAndUnify(a, bindings)) return false
+                    if (a is Variable) {
+                        // Space variable unifies with pattern expression
+                    } else if (a !is Expression) {
+                        return false
+                    } else {
+                        val indexer = IndexerImpl(atom)
+                        if (!indexer.matchAndUnify(a, bindings)) return false
+                    }
                 }
 
                 is Variable -> {
@@ -63,8 +64,13 @@ class IndexerImpl(val pattern: Expression) : Indexer {
 
                 is Grounded<*> -> {
                     val a = expr.atoms[it]
-                    if (a !is Grounded<*>) return false
-                    if (a.value != atom.value) return false
+                    if (a is Variable) {
+                        // Space variable unifies with pattern grounded value
+                    } else if (a !is Grounded<*>) {
+                        return false
+                    } else if (a.value != atom.value) {
+                        return false
+                    }
                 }
 
                 else -> return false
@@ -76,7 +82,6 @@ class IndexerImpl(val pattern: Expression) : Indexer {
     override fun index(space: Space, expr: Expression) {
         require(space is SpaceImpl) { "Space must be SpaceImpl for packed indexing" }
 
-        // Cache space reference for later resolution
         cachedSpace = space
 
         val k = 8
@@ -86,19 +91,18 @@ class IndexerImpl(val pattern: Expression) : Indexer {
             val chunks = space.chunks(k)
             val chunkSize = (space.getStoreSize() + k - 1) / k
 
-            // Process each chunk in parallel
-            val futures = mutableListOf<Future<List<PackedMatch>>>()
+            val futures = mutableListOf<Future<List<Pair<PackedMatch, Map<String, SAtom>>>>>()
 
             chunks.forEachIndexed { chunkIndex, chunk ->
-                val future = threadPool.submit<List<PackedMatch>> {
-                    val chunkResults = mutableListOf<PackedMatch>()
+                val future = threadPool.submit<List<Pair<PackedMatch, Map<String, SAtom>>>> {
+                    val chunkResults = mutableListOf<Pair<PackedMatch, Map<String, SAtom>>>()
 
                     var localIndex = 0
                     chunk.forEach { spaceExpr ->
                         val globalStoreIndex = chunkIndex * chunkSize + localIndex
-                        val packedMatch = tryMatch(spaceExpr, globalStoreIndex, space)
-                        if (packedMatch != null) {
-                            chunkResults.add(packedMatch)
+                        val result = tryMatch(spaceExpr, globalStoreIndex, space)
+                        if (result != null) {
+                            chunkResults.add(result)
                         }
                         localIndex++
                     }
@@ -108,10 +112,13 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                 futures.add(future)
             }
 
-            // Collect and merge all results
             packedMatches.clear()
+            spaceVarSubstitutions.clear()
             futures.forEach { future ->
-                packedMatches.addAll(future.get())
+                future.get().forEach { (match, subs) ->
+                    packedMatches.add(match)
+                    spaceVarSubstitutions.add(subs)
+                }
             }
 
         } finally {
@@ -119,12 +126,13 @@ class IndexerImpl(val pattern: Expression) : Indexer {
         }
     }
 
-    private fun tryMatch(expr: Expression, storeIndex: Int, space: SpaceImpl): PackedMatch? {
+    private fun tryMatch(expr: Expression, storeIndex: Int, space: SpaceImpl): Pair<PackedMatch, Map<String, SAtom>>? {
         val bindings = Array<PackedBinding?>(schema.size()) { null }
+        val spaceVarBindings = mutableMapOf<String, SAtom>()
 
-        if (matchAndCapture(pattern, expr, storeIndex, intArrayOf(), bindings, space)) {
+        if (matchAndCapture(pattern, expr, storeIndex, intArrayOf(), bindings, space, spaceVarBindings)) {
             @Suppress("UNCHECKED_CAST")
-            return PackedMatch(bindings as Array<PackedBinding>)
+            return PackedMatch(bindings as Array<PackedBinding>) to spaceVarBindings
         }
 
         return null
@@ -136,7 +144,8 @@ class IndexerImpl(val pattern: Expression) : Indexer {
         storeIndex: Int,
         currentPath: IntArray,
         bindings: Array<PackedBinding?>,
-        space: SpaceImpl
+        space: SpaceImpl,
+        spaceVarBindings: MutableMap<String, SAtom>
     ): Boolean {
         if (patternExpr.atoms.size != expr.atoms.size) return false
 
@@ -154,7 +163,6 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                     if (existing == null) {
                         bindings[varIndex] = current
                     } else {
-                        // Variable appears multiple times - check if values are the same
                         val existingValue = space.extractAtom(existing)
                         val currentValue = space.extractAtom(current)
                         if (existingValue != currentValue) {
@@ -164,20 +172,45 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                 }
 
                 is Symbol -> {
-                    if (exprAtom !is Symbol || exprAtom.name != patternAtom.name) {
+                    if (exprAtom is Variable) {
+                        val patternSAtom = patternAtom.toSAtom()
+                        val existing = spaceVarBindings[exprAtom.name]
+                        if (existing == null) {
+                            spaceVarBindings[exprAtom.name] = patternSAtom
+                        } else if (existing != patternSAtom) {
+                            return false
+                        }
+                    } else if (exprAtom !is Symbol || exprAtom.name != patternAtom.name) {
                         return false
                     }
                 }
 
                 is Expression -> {
-                    if (exprAtom !is Expression) return false
-                    if (!matchAndCapture(patternAtom, exprAtom, storeIndex, newPath, bindings, space)) {
+                    if (exprAtom is Variable) {
+                        val patternSAtom = patternAtom.toSAtom()
+                        val existing = spaceVarBindings[exprAtom.name]
+                        if (existing == null) {
+                            spaceVarBindings[exprAtom.name] = patternSAtom
+                        } else if (existing != patternSAtom) {
+                            return false
+                        }
+                    } else if (exprAtom !is Expression) {
+                        return false
+                    } else if (!matchAndCapture(patternAtom, exprAtom, storeIndex, newPath, bindings, space, spaceVarBindings)) {
                         return false
                     }
                 }
 
                 is Grounded<*> -> {
-                    if (exprAtom !is Grounded<*> || exprAtom.value != patternAtom.value) {
+                    if (exprAtom is Variable) {
+                        val patternSAtom = patternAtom.toSAtom()
+                        val existing = spaceVarBindings[exprAtom.name]
+                        if (existing == null) {
+                            spaceVarBindings[exprAtom.name] = patternSAtom
+                        } else if (existing != patternSAtom) {
+                            return false
+                        }
+                    } else if (exprAtom !is Grounded<*> || exprAtom.value != patternAtom.value) {
                         return false
                     }
                 }
@@ -197,10 +230,7 @@ class IndexerImpl(val pattern: Expression) : Indexer {
         return getPackedIndex().resolveAll(space)
     }
 
-    /**
-     * Get the packed index containing all matches.
-     */
     fun getPackedIndex(): PackedIndex {
-        return PackedIndex(schema, packedMatches.toList())
+        return PackedIndex(schema, packedMatches.toList(), spaceVarSubstitutions.toList())
     }
 }

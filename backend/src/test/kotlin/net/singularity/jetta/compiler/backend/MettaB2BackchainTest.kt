@@ -8,6 +8,7 @@ import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Symbol
+import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.runtime.JettaProgram
 
 class MettaB2BackchainTest : GeneratorTestBase() {
@@ -48,6 +49,20 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             assertTrue(fritzResult.isEmpty())
         }
     }
+
+    private val mapImpl = JvmMethod(
+        owner = "net/singularity/jetta/runtime/UtilKt",
+        name = "simpleMap",
+        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
+        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;TR;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+    )
+
+    private val flatMapImpl = JvmMethod(
+        owner = "net/singularity/jetta/runtime/UtilKt",
+        name = "simpleFlatMap",
+        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
+        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;Ljava/util/List<TR;>;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+    )
 
     @Test
     fun `backward chaining deduction - Plato is mortal`() {
@@ -92,7 +107,8 @@ class MettaB2BackchainTest : GeneratorTestBase() {
 
                 ; True & True = True
                 (= (And T T) T)
-            """.trimIndent()
+            """.trimIndent(),
+            mapImpl, flatMapImpl
         ) { context ->
             registerExternals(context)
         }.let { (result, messageCollector) ->
@@ -152,7 +168,8 @@ class MettaB2BackchainTest : GeneratorTestBase() {
 
                 ; Helper to extract value when deduction succeeds
                 (= (ift T $then) $then)
-            """.trimIndent()
+            """.trimIndent(),
+            mapImpl, flatMapImpl
         ) { context ->
             registerExternals(context)
         }.let { (result, messageCollector) ->
@@ -162,7 +179,15 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             JettaProgram.init("BackchainWho")
-
+            // Debug: print space contents
+            val space = JettaProgram.getSpace()
+            println("=== Space contents ===")
+            space.chunks(1)[0].let { iter ->
+                while (iter.hasNext()) {
+                    println("  ${iter.next()}")
+                }
+            }
+            println("=== End space ===")
             // ift(T, Plato) should return Plato
             val iftMethod = classes["BackchainWho"]!!.getMethod("ift", Atom::class.java, Atom::class.java)
             val iftResult = iftMethod.invoke(null, Symbol("T"), Symbol("Plato")) as List<*>
@@ -176,6 +201,7 @@ class MettaB2BackchainTest : GeneratorTestBase() {
                 Expression(Symbol("mortal"), Symbol("Plato"))
             )
             val deduceResult = deduceMethod.invoke(null, mortalPlato) as List<*>
+            println("deduceResult: $deduceResult")
             assertTrue(deduceResult.isNotEmpty())
             assertTrue(deduceResult.any { it.toString() == "T" })
         }

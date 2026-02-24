@@ -426,6 +426,7 @@ open class FunctionGenerator(
             GroundedType.INT, GroundedType.BOOLEAN -> mv.visitInsn(Opcodes.IRETURN)
             GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DRETURN)
             GroundedType.UNIT -> mv.visitInsn(Opcodes.RETURN)
+            GroundedType.ATOM -> mv.visitInsn(Opcodes.ARETURN)
             GroundedType.LIST -> mv.visitInsn(Opcodes.ARETURN)
             is SeqType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")

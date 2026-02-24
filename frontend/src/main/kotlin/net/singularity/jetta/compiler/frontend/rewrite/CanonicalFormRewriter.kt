@@ -40,9 +40,29 @@ class CanonicalFormRewriter(
 
     private fun rewriteFunction(owner: String, functionDefinition: FunctionLike): Atom =
         if (functionDefinition is FunctionDefinition && functionDefinition.name != FunctionRewriter.MAIN) {
-            val newBody = extractIfStatementsIfNeeded(owner, functionDefinition.body, root = true)
-            collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
-            rewriteAtom(newBody)
+            when (val body = functionDefinition.body) {
+                is Match -> {
+                    Match(
+                        branches = body.branches.map { branch ->
+                            val newBody = extractIfStatementsIfNeeded(owner, branch.body, root = true)
+                            collectNonDeterministicAtomsRecursively(newBody, functionDefinition, newBody.id)
+                            val rewritten = rewriteAtom(newBody)
+                            // Reset state for next branch
+                            multivaluedCalls.clear()
+                            multivaluedCallsInverse.clear()
+                            multivaluedAtoms.clear()
+                            MatchBranch(branch.cond, rewritten, branch.destructuredBindings)
+                        },
+                        returnType = body.returnType,
+                        position = body.position
+                    )
+                }
+                else -> {
+                    val newBody = extractIfStatementsIfNeeded(owner, body, root = true)
+                    collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
+                    rewriteAtom(newBody)
+                }
+            }
         } else functionDefinition.body
 
     private fun extractIfStatementsIfNeeded(owner: String, atom: Atom, root: Boolean): Atom {
@@ -238,7 +258,8 @@ class CanonicalFormRewriter(
         fun getScopeId(call: Expression): Int =
             call.atoms.drop(1)
                 .mapNotNull { it as? Variable }
-                .minOfOrNull { it.scope!!.id }
+                .mapNotNull { it.scope?.id }
+                .minOrNull()
                 ?: functionDefinition.body.id
 
         var isMultivalued = false
@@ -246,6 +267,12 @@ class CanonicalFormRewriter(
             is Expression -> {
                 when (val f = atom.atoms[0]) {
                     is Symbol -> {
+                        // match expressions have their own variable scope —
+                        // the result template is evaluated per match result,
+                        // so multivalued calls inside should not be lifted out
+                        if (f.name == "match") {
+                            return false
+                        }
                         val def = context.definedFunctions[f.name]
                         if (def != null && def.func.isMultivalued()) {
                             val scopeId = reducedScopeId ?: getScopeId(atom)

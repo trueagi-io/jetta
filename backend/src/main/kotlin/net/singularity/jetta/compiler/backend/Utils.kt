@@ -16,7 +16,8 @@ fun List<Variable>.getParameterIndex(variable: Variable): Int {
             GroundedType.INT,
             GroundedType.BOOLEAN,
             GroundedType.STRING,
-            GroundedType.ATOM -> jvmIndex++
+            GroundedType.ATOM,
+            is SeqType -> jvmIndex++
 
             GroundedType.DOUBLE -> jvmIndex += 2
             else -> TODO("type=" + it.type + " (" + it + ")")
@@ -89,6 +90,13 @@ fun generateLoadVar(
                 mv.visitVarInsn(Opcodes.ALOAD, index + offset)
         }
 
+        is SeqType -> {
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.ALOAD, index + offset)
+        }
+
         else -> TODO("Not implemented yet " + variable + " (" + variable.type + ")")
     }
 }
@@ -117,9 +125,11 @@ fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             )
         }
 
+        GroundedType.ATOM,
+        null -> {
+        }
 
-        null -> {}
-        else -> TODO()
+        else -> TODO("Not implemented yet $type")
     }
 }
 
@@ -141,18 +151,22 @@ fun boxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             false
         )
 
-        null -> {}
-        else -> TODO()
+        GroundedType.ATOM,
+        null -> {
+        }
+
+        else -> TODO("Not implemented yet $type")
     }
 }
 
 fun Lambda.capturedVariables(): List<Variable> {
     val result = mutableListOf<Variable>()
+    val seen = mutableSetOf<String>()
     fun collect(params: List<Variable>, atom: Atom) {
         when (atom) {
             is Variable -> {
                 val found = params.find { it.name == atom.name }
-                if (found == null) result.add(atom)
+                if (found == null && seen.add(atom.name)) result.add(atom)
             }
 
             is Expression -> {

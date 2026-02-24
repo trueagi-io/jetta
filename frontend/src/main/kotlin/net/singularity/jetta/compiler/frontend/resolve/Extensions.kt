@@ -90,7 +90,10 @@ fun FunctionDefinition.getJvmDescriptor(): String =
     } else {
         val sb = StringBuilder()
         sb.append("(")
-        arrowType!!.types.dropLast(1).map {
+        if (arrowType == null) {
+            println("STOP: " + this)
+        }
+        arrowType!!.types.dropLast(1).forEach {
             sb.append(it.toJvmType())
         }
         sb.append(")")

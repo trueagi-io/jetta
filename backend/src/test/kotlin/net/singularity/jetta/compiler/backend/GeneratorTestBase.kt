@@ -34,7 +34,7 @@ abstract class GeneratorTestBase {
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
-
+        println("RESULT:$result")
         // Save space and initialize JettaProgram so generated __main can use it
         val outputDir = Path("/tmp/metta")
         val programName = filename.substringBeforeLast('.')

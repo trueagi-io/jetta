@@ -42,10 +42,28 @@ class SpaceImpl : Space {
         // Get packed index
         val packedIndex = indexer.getPackedIndex()
 
-        // Resolve and substitute for each match
+        println("[MATCH] pattern=$src template=$dst matches=${packedIndex.size()}")
+
         return (0 until packedIndex.size()).map { matchIndex ->
             val bindings = packedIndex.resolve(matchIndex, this)
-            substituteVariables(dst, bindings)
+            val result = substituteVariables(dst, bindings)
+            val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)
+            val final = applySpaceVarSubstitutions(result, spaceVarSubs)
+            println("[MATCH]   result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)")
+            final
+        }
+    }
+
+    private fun applySpaceVarSubstitutions(atom: Atom, subs: Map<String, SAtom>): Atom {
+        if (subs.isEmpty()) return atom
+        return when (atom) {
+            is Variable -> subs[atom.name]?.toAtom() ?: atom
+            is Expression -> Expression(
+                atoms = atom.atoms.map { applySpaceVarSubstitutions(it, subs) },
+                type = atom.type,
+                resolved = atom.resolved
+            )
+            else -> atom
         }
     }
 
@@ -61,7 +79,6 @@ class SpaceImpl : Space {
                 else -> throw IllegalStateException("Invalid path in PackedBinding: cannot traverse non-expression")
             }
         }
-
         return current.toSAtom()
     }
 
