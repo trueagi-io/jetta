@@ -128,6 +128,8 @@ class TypeInferenceTest : BaseFrontendTest() {
             assertEquals(ArrowType(GroundedType.INT, GroundedType.INT), factorial.arrowType)
         }
 
+    // TODO: implement the strict mode first, otherwise it fails for the sake of MeTTa compatibility
+    @Ignore
     @Test
     fun cannotInferTypeIfCallableIsNotResolved() =
         resolve(

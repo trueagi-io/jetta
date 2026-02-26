@@ -161,7 +161,20 @@ open class FunctionGenerator(
                 mv.visitInsn(Opcodes.DUP)
                 val capturedVariables = atom.capturedVariables()
                 capturedVariables.forEach {
-                    generateLoadVar(mv, it, function.params, isStatic, className)
+                    // Captured variables may come from destructured pattern bindings
+                    // (e.g., $destr_0_1 from a match branch like `(= (f (And $a $b)) ...)`).
+                    // These are stored as local variable slots in the enclosing match branch,
+                    // not as formal function parameters. When a lambda created by the
+                    // flat-map? rewrite references such a variable (because its source
+                    // expression like `(f $destr_0_1)` ended up inside the lambda body),
+                    // we must load it from the destructuredLocals map rather than from
+                    // the function's parameter list.
+                    val destrSlot = destructuredLocals[it.name]
+                    if (destrSlot != null) {
+                        mv.visitVarInsn(Opcodes.ALOAD, destrSlot)
+                    } else {
+                        generateLoadVar(mv, it, function.params, isStatic, className)
+                    }
                 }
                 mv.visitMethodInsn(
                     Opcodes.INVOKESPECIAL,

@@ -80,6 +80,7 @@ class ReplTest {
             (= (bar _x) (foo _x 2))
             (bar 2)
         """.trimIndent().replace('_', '$')).let {
+            it.messages.forEach { println(it) }
             assertTrue(it.isSuccess)
         }
         repl.eval("""

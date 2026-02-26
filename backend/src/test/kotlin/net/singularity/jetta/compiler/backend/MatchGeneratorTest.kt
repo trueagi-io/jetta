@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Symbol
+import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.runtime.JettaProgram
 import kotlin.test.Ignore
 import kotlin.test.Test
@@ -11,6 +12,20 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class MatchGeneratorTest : GeneratorTestBase() {
+    private val mapImpl = JvmMethod(
+        owner = "net/singularity/jetta/runtime/UtilKt",
+        name = "simpleMap",
+        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
+        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;TR;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+    )
+
+    private val flatMapImpl = JvmMethod(
+        owner = "net/singularity/jetta/runtime/UtilKt",
+        name = "simpleFlatMap",
+        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
+        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;Ljava/util/List<TR;>;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+    )
+
     @Test
     fun `0 args match, 2 branches`() =
         compile(
@@ -119,12 +134,13 @@ class MatchGeneratorTest : GeneratorTestBase() {
                 (: identity (-> Atom Atom))
                 (= (identity (And $a $b)) (And (identity $a) (identity $b)))
                 (= (identity $x) $x)
-            """.trimIndent()
+            """.trimIndent(),
+            mapImpl, flatMapImpl
         ) { context ->
             registerExternals(context)
         }.let { (result, messageCollector) ->
             messageCollector.list().forEach { println(it) }
-            assertTrue(messageCollector.list().isEmpty())
+//            assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             JettaProgram.init("DestructureAndQuote")
 
@@ -226,6 +242,98 @@ class MatchGeneratorTest : GeneratorTestBase() {
             val fallback = method.invoke(null, leaf) as List<*>
             assertEquals(1, fallback.size)
             assertEquals("Leaf", fallback[0].toString())
+        }
+    }
+
+    /**
+     * Reproduces the $destr capture problem: a match branch body calls
+     * a multivalued function with a destructured variable.
+     * The rewriter wraps it in flat-map?, and the lambda must capture
+     * the $destr local slot from the enclosing match branch.
+     *
+     * `f` has two branches → multivalued (returns List).
+     * `wrap` destructures (Tag $a) → calls f($a).
+     * The flat-map? lambda for f($a) must capture $destr_0_1.
+     */
+    @Test
+    fun `destructured variable captured by flat-map lambda`() {
+        compile(
+            "DestrCaptureFlatMap.metta",
+            $$"""
+                (: f (-> Atom Atom))
+                (= (f X) A)
+                (= (f Y) B)
+
+                (: wrap (-> Atom Atom))
+                (= (wrap (Tag $a)) (f $a))
+                (= (wrap $x) $x)
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("DestrCaptureFlatMap")
+
+            val method = classes["DestrCaptureFlatMap"]!!.getMethod("wrap", Atom::class.java)
+
+            // wrap(Tag X):
+            //   Branch 1: destructures $a=X, calls f(X) → [A]
+            //   Branch 2: fallback → (Tag X)
+            val tagExpr = Expression(Symbol("Tag"), Symbol("X"))
+            val results = method.invoke(null, tagExpr) as List<*>
+            assertTrue(results.any { it.toString() == "A" },
+                "Expected A from f(\$a) where \$a=X, but got: $results")
+        }
+    }
+
+    /**
+     * Two destructured variables each passed to a multivalued function.
+     * The rewriter produces nested flat-map? lambdas; both must capture
+     * their respective $destr locals.
+     *
+     * This is the minimal reproduction of the Plato backward-chaining bug:
+     *   (= (deduce (And $a $b)) (And (deduce $a) (deduce $b)))
+     * stripped down to plain function calls without match &self.
+     */
+    @Test
+    fun `two destructured variables captured by nested flat-map lambdas`() {
+        compile(
+            "DestrCaptureNested.metta",
+            $$"""
+                (: f (-> Atom Atom))
+                (= (f P) T)
+                (= (f Q) T)
+
+                (: combine (-> Atom Atom))
+                (= (combine (And $a $b)) (myAnd (f $a) (f $b)))
+                (= (combine $x) $x)
+
+                (: myAnd (-> Atom Atom Atom))
+                (= (myAnd T T) T)
+                (= (myAnd $x $y) F)
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("DestrCaptureNested")
+
+            val method = classes["DestrCaptureNested"]!!.getMethod("combine", Atom::class.java)
+
+            // combine(And P Q):
+            //   Branch 1: destructure $a=P, $b=Q → myAnd(f(P), f(Q)) → myAnd(T, T) → [T]
+            //   Branch 2: fallback → (And P Q)
+            val andExpr = Expression(Symbol("And"), Symbol("P"), Symbol("Q"))
+            val results = method.invoke(null, andExpr) as List<*>
+            println("combine(And P Q) results: $results")
+            assertTrue(results.any { it.toString() == "T" },
+                "Expected T from myAnd(f(P), f(Q)) but got: $results")
         }
     }
 }

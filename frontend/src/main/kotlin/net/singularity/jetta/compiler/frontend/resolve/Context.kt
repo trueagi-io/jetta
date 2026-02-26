@@ -261,6 +261,7 @@ class Context(
         return resolveRecursively(source)
     }
 
+
     fun typeInferenceLoop(source: ParsedSource) {
         val postponedFunctions = mutableMapOf<String, Scope>()
         val owner = source.getJvmClassName()
@@ -324,6 +325,55 @@ class Context(
         typeInferenceDone = true
     }
 
+    private fun refineFunctionArrowTypes() {
+        resolvedFunctions.forEach { (_, def) ->
+            val arrowType = def.func.arrowType ?: return@forEach
+            val paramTypes = arrowType.types.dropLast(1)
+            if (paramTypes.none { it == GroundedType.ATOM }) return@forEach
+
+            val inferredParamTypes = mutableMapOf<String, Atom>()
+            collectVariableTypes(def.func.body, inferredParamTypes)
+
+            val refinedTypes = def.func.params.mapIndexed { index, param ->
+                if (paramTypes[index] == GroundedType.ATOM) {
+                    val inferred = inferredParamTypes[param.name]
+                    if (inferred != null && inferred != GroundedType.ATOM) {
+                        param.type = inferred
+                        inferred
+                    } else {
+                        paramTypes[index]
+                    }
+                } else {
+                    paramTypes[index]
+                }
+            }
+            if (refinedTypes != paramTypes) {
+                def.func.arrowType = ArrowType(refinedTypes + arrowType.types.last())
+                addResolvedFunction(def.owner, def.func)
+            }
+        }
+    }
+
+    private fun collectVariableTypes(atom: Atom, result: MutableMap<String, Atom>) {
+        when (atom) {
+            is Variable -> {
+                if (atom.type != null && atom.type != GroundedType.ATOM) {
+                    result[atom.name] = atom.type!!
+                }
+            }
+            is Expression -> atom.atoms.forEach { collectVariableTypes(it, result) }
+            is Match -> atom.branches.forEach { branch ->
+                branch.cond?.let { collectVariableTypes(it, result) }
+                collectVariableTypes(branch.body, result)
+            }
+            is Lambda -> {
+                atom.params.forEach { collectVariableTypes(it, result) }
+                collectVariableTypes(atom.body, result)
+            }
+            else -> { }
+        }
+    }
+
     private fun removeSpaceNodes(source: ParsedSource): ParsedSource {
         fun removeNodesFromFunction(func: FunctionDefinition): FunctionDefinition {
             val atoms = (func.body as Expression).atoms.filter { !space.contains(it.id) }
@@ -373,6 +423,7 @@ class Context(
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
         resolveSource(source)
         typeInferenceLoop(source)
+        refineFunctionArrowTypes()
         resolveSource(source)
         val cleaned = removeSpaceNodes(source)
         val postprocessed = applyPostResolveRewriters(cleaned)
@@ -557,7 +608,12 @@ class Context(
                     atom.type = data.second
                     atom.scope = data.first.body as? Expression
                     if (suggestedType != null && atom.type != null && !isAssignableFrom(suggestedType, atom.type!!)) {
-                        messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
+                        if (atom.type == GroundedType.ATOM) {
+                            atom.type = suggestedType
+                            scope.data[atom.name] = suggestedType
+                        } else {
+                            messageCollector.add(IncompatibleTypesMessage(suggestedType, atom.type!!, atom.position))
+                        }
                     }
                 } else {
                     // Variable not in scope — could be a match-time pattern variable
