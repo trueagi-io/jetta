@@ -17,6 +17,8 @@ import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
+import net.singularity.jetta.compiler.frontend.ParsedSource
+import net.singularity.jetta.compiler.frontend.ir.formatter.TextIrFormatter
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
@@ -27,7 +29,8 @@ class Compiler(
     val files: List<String>,
     val outputDir: String,
     val runtime: JettaRuntime = DefaultRuntime(),
-    val logLevel: LogLevel = LogLevel.DEBUG
+    val logLevel: LogLevel = LogLevel.DEBUG,
+    val dumpIr: Boolean = false
 ) {
 
 
@@ -77,6 +80,10 @@ class Compiler(
         }
         val resolved = parsed.map { context.resolve(it) }
 
+        if (dumpIr) {
+            dumpIrFiles(resolved)
+        }
+
         val space = context.getSpace()
         resolved.forEach {
             val programName = it.getJvmClassName().substringAfterLast('/')
@@ -97,5 +104,19 @@ class Compiler(
         val file = File(outputDir + File.separator + "${result.className}.class")
         if (!file.parentFile.exists()) file.parentFile.mkdirs()
         file.writeBytes(result.bytecode)
+    }
+
+    private fun dumpIrFiles(sources: List<ParsedSource>) {
+        val formatter = TextIrFormatter()
+        sources.forEach { source ->
+            val irText = formatter.format(source)
+            val baseName = source.filename
+                .substringAfterLast(File.separatorChar)
+                .substringBeforeLast('.')
+            val irFile = File(outputDir + File.separator + "$baseName.jir")
+            if (!irFile.parentFile.exists()) irFile.parentFile.mkdirs()
+            irFile.writeText(irText)
+            println("IR dumped: ${irFile.path}")
+        }
     }
 }
