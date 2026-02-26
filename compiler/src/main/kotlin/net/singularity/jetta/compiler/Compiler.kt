@@ -18,6 +18,7 @@ import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
+import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import java.io.File
 import kotlin.io.path.Path
@@ -28,6 +29,12 @@ class Compiler(
     val runtime: JettaRuntime = DefaultRuntime(),
     val logLevel: LogLevel = LogLevel.DEBUG
 ) {
+
+
+    init {
+        LogConfig.level = logLevel
+    }
+
     fun compile(): Int {
         val sources = files.map {
             Source(it, File(it).readText())
@@ -49,7 +56,7 @@ class Compiler(
 
     fun compileMultipleSources(sources: List<Source>): Pair<Boolean, List<Message>> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, logLevel)
+        val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
         addSystemFunctions(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()

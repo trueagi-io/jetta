@@ -21,10 +21,9 @@ import kotlin.collections.component2
 class Context(
     private val messageCollector: MessageCollector,
     mapImpl: JvmMethod? = null,
-    flatMapImpl: JvmMethod? = null,
-    logLevel: LogLevel = LogLevel.DEBUG,
+    flatMapImpl: JvmMethod? = null
 ) {
-    private val logger = Logger.getLogger(Context::class.java, logLevel)
+    private val logger = Logger.getLogger(Context::class.java)
     val definedFunctions = mutableMapOf<String, SymbolDef>()
     private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
     private val functions = mutableMapOf<String, FunctionDefinition>()
@@ -95,7 +94,7 @@ class Context(
     )
 
     private fun addResolvedFunction(owner: String, func: FunctionDefinition) {
-        logger.debug("Add function ${func.name}")
+        logger.debug { "Add function ${func.name}" }
         resolvedFunctions[func.name] = SymbolDef(owner, func)
         main?.let {
             val lastCall = when (it.body) {
@@ -130,7 +129,7 @@ class Context(
     }
 
     private fun inferType(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
-        logger.debug("Infer type for atom $atom")
+        logger.debug { "Infer type for atom $atom" }
         when (atom) {
             is Expression -> inferTypeForExpression(atom, scope)
             is Variable -> {
@@ -157,7 +156,7 @@ class Context(
     }
 
     private fun inferTypeForExpression(expression: Expression, scope: Scope) {
-        logger.debug("Infer type for expression: $expression")
+        logger.debug { "Infer type for expression: $expression" }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val functionName = atom.name
@@ -232,7 +231,8 @@ class Context(
                     }
                 }
 
-                Predefined.MAP_, Predefined.FLAT_MAP_ -> { /* skip it */ }
+                Predefined.MAP_, Predefined.FLAT_MAP_ -> { /* skip it */
+                }
 
                 Predefined.AND, Predefined.OR, Predefined.XOR, Predefined.NOT -> {
                     expression.arguments().forEach {
@@ -270,10 +270,10 @@ class Context(
                 val numElements = unresolvedElements.size
                 unresolvedElements.forEach { (_, data) ->
                     inferType(data.atom, data.info)
-                    logger.debug("----------------------------------")
-                    logger.debug(data.atom.toString())
-                    logger.debug(data.info.toString())
-                    logger.debug("----------------------------------")
+                    logger.debug { "----------------------------------" }
+                    logger.debug { data.atom.toString() }
+                    logger.debug { data.info.toString() }
+                    logger.debug { "----------------------------------" }
                 }
                 unresolvedElements
                 unresolvedElements
@@ -289,20 +289,20 @@ class Context(
                     }
                 val resolved = mutableListOf<Pair<Int, Atom>>()
                 HashMap(unresolvedElements).forEach { (id, data) ->
-                    logger.debug("Resolving ${data.atom}")
+                    logger.debug { "Resolving ${data.atom}" }
                     resolveAtom(data.atom, data.info)
                     if (data.atom.type != null) resolved.add(id to data.atom)
                 }
                 resolved.forEach {
-                    logger.debug("Remove resolved: ${it.second}")
+                    logger.debug { "Remove resolved: ${it.second}" }
                     unresolvedElements.remove(it.first)
-                    logger.debug("Remaining unresolved elements: ${unresolvedElements.size}")
+                    logger.debug {"Remaining unresolved elements: ${unresolvedElements.size}" }
                 }
                 val updated = mutableListOf<String>()
                 postponedFunctions.forEach { (name, info) ->
-                    logger.debug("Try to update $name")
+                    logger.debug {"Try to update $name" }
                     if (updateFunction(owner, info)) {
-                        logger.debug("Updated $name")
+                        logger.debug {"Updated $name" }
                         updated.add(name)
                     }
                 }
@@ -361,16 +361,19 @@ class Context(
                     result[atom.name] = atom.type!!
                 }
             }
+
             is Expression -> atom.atoms.forEach { collectVariableTypes(it, result) }
             is Match -> atom.branches.forEach { branch ->
                 branch.cond?.let { collectVariableTypes(it, result) }
                 collectVariableTypes(branch.body, result)
             }
+
             is Lambda -> {
                 atom.params.forEach { collectVariableTypes(it, result) }
                 collectVariableTypes(atom.body, result)
             }
-            else -> { }
+
+            else -> {}
         }
     }
 
@@ -385,7 +388,7 @@ class Context(
             if (it is FunctionDefinition && it.name == FunctionRewriter.MAIN) {
                 // FIXME: Can it be optimized sometimes to avoid additional functions?
                 val bag = removeNodesFromFunction(it)
-                val atoms =(bag.body as Expression).atoms
+                val atoms = (bag.body as Expression).atoms
                 if (atoms.size != 1) {
                     var count = 0
 
@@ -411,8 +414,7 @@ class Context(
 //                    addResolvedFunction(source.getJvmClassName(), def)
                     code.add(def)
                 }
-            }
-            else
+            } else
                 code.add(it)
         }
 
@@ -448,6 +450,7 @@ class Context(
                 atom.params.forEach { it.type = it.type ?: GroundedType.ATOM }
                 defaultUntypedToAtom(atom.body)
             }
+
             is Lambda -> {
                 atom.params.forEach { it.type = it.type ?: GroundedType.ATOM }
                 if (atom.arrowType == null) {
@@ -458,28 +461,34 @@ class Context(
                 atom.type = atom.type ?: atom.arrowType
                 defaultUntypedToAtom(atom.body)
             }
+
             is Expression -> {
                 atom.atoms.forEach { defaultUntypedToAtom(it) }
                 atom.type = atom.type ?: GroundedType.ATOM
             }
+
             is Variable -> {
                 atom.type = atom.type ?: GroundedType.ATOM
             }
+
             is Match -> {
                 atom.branches.forEach { branch ->
                     branch.cond?.let { defaultUntypedToAtom(it) }
                     defaultUntypedToAtom(branch.body)
                 }
             }
+
             is Symbol -> {
                 atom.type = atom.type ?: GroundedType.ATOM
             }
-            else -> { /* Grounded literals, etc. — already typed */ }
+
+            else -> { /* Grounded literals, etc. — already typed */
+            }
         }
     }
 
     private fun updateFunction(owner: String, scope: Scope): Boolean {
-        logger.debug("Update: $scope")
+        logger.debug { "Update: $scope" }
         if (scope.functionDefinition.arrowType != null) return true
 
         var isCompleted = true
@@ -599,7 +608,7 @@ class Context(
     }
 
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
-        logger.debug("Resolving atom: $atom")
+        logger.debug {"Resolving atom: $atom" }
         when (atom) {
             is Expression -> resolveExpression(atom, scope)
             is Variable -> {
@@ -694,12 +703,12 @@ class Context(
     private fun createLambdaTypeInfo(parentScope: Scope, lambda: Lambda): Scope = parentScope.join(lambda)
 
     private fun resolveExpression(expression: Expression, scope: Scope) {
-        logger.debug("Resolving expression: $expression")
+        logger.debug {"Resolving expression: $expression" }
         if (!scope.isProvided &&
             scope.functionDefinition is FunctionDefinition &&
             scope.functionDefinition.name != FunctionRewriter.MAIN
         ) {
-            logger.debug("Add $expression >> $scope")
+            logger.debug {"Add $expression >> $scope" }
             unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
         }
         when (val atom = expression.atoms[0]) {
