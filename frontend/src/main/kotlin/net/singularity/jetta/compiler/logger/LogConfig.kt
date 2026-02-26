@@ -7,7 +7,12 @@ object LogConfig {
     @Volatile var colorMode: ColorMode = ColorMode.AUTO
     @Volatile var output: PrintStream = System.err
 
+    private val startTime: Long = System.nanoTime()
+
     enum class ColorMode { AUTO, ON, OFF }
+
+    /** Milliseconds since the logger was first loaded. */
+    fun elapsedMs(): Long = (System.nanoTime() - startTime) / 1_000_000
 
     fun colorsEnabled(): Boolean = when (colorMode) {
         ColorMode.ON -> true
