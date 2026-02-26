@@ -736,8 +736,11 @@ class Context(
                             // If the enclosing function has a Match body, unresolved symbols
                             // in expression-head position are data constructors (e.g., And, Pair)
                             // that should be quoted, not reported as errors.
-                            if (scope.functionDefinition is FunctionDefinition &&
-                                scope.functionDefinition.body is Match
+                            // Also skip error if any param is typed Atom — the function accepts
+                            // dynamic values so unresolved symbols are constructors.
+                            if ((scope.functionDefinition is FunctionDefinition &&
+                                        scope.functionDefinition.body is Match) ||
+                                scope.functionDefinition.params.any { it.type == GroundedType.ATOM }
                             ) {
                                 expression.type = GroundedType.ATOM
                                 expression.arguments().forEach { resolveAtom(it, scope) }

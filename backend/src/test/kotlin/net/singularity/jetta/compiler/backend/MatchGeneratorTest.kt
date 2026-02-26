@@ -140,7 +140,7 @@ class MatchGeneratorTest : GeneratorTestBase() {
             registerExternals(context)
         }.let { (result, messageCollector) ->
             messageCollector.list().forEach { println(it) }
-//            assertTrue(messageCollector.list().isEmpty())
+            assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             JettaProgram.init("DestructureAndQuote")
 

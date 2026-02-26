@@ -163,7 +163,7 @@ class MatchNestedEvalTest : GeneratorTestBase() {
         ) { context ->
             registerExternals(context)
         }.let { (result, messageCollector) ->
-//            assertTrue(messageCollector.list().isEmpty())
+            assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             JettaProgram.init("TwoMultivaluedArgs")
 
@@ -215,7 +215,7 @@ class MatchNestedEvalTest : GeneratorTestBase() {
             registerExternals(context)
         }.let { (result, messageCollector) ->
             messageCollector.list().forEach { println(it) }
-//            assertTrue(messageCollector.list().isEmpty())
+            assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             JettaProgram.init("CartesianProduct")
 
@@ -272,7 +272,7 @@ class MatchNestedEvalTest : GeneratorTestBase() {
         ) { context ->
             registerExternals(context)
         }.let { (result, messageCollector) ->
-//            assertTrue(messageCollector.list().isEmpty())
+            assertTrue(messageCollector.list().isEmpty())
             messageCollector.list().forEach { println(it) }
             val classes = result.toMap().toClasses()
             JettaProgram.init("NestedEvalAnd")
