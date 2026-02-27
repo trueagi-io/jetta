@@ -64,6 +64,7 @@ class Generator(val generateMain: Boolean = false) {
                     }
                     FunctionGenerator(mv, node, true, null).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
+                        val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(
                             Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
                             "main",
@@ -71,7 +72,10 @@ class Generator(val generateMain: Boolean = false) {
                             null,
                             null
                         )
-                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", "()V", false)
+                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", mainDesc, false)
+                        if (!mainDesc.endsWith("V")) {
+                            mv.visitInsn(Opcodes.POP)
+                        }
                         mv.visitInsn(Opcodes.RETURN)
                         mv.visitMaxs(1, 1)
                     }

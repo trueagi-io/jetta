@@ -416,6 +416,12 @@ open class FunctionGenerator(
             jvmSymbol.descriptor,
             false
         )
+        // If the called function returns void but we're inside a context that
+        // needs a value on the stack (e.g., a lambda body), push null as a
+        // placeholder so the stack isn't empty for areturn.
+        if (jvmSymbol.descriptor.endsWith(")V")) {
+            mv.visitInsn(Opcodes.ACONST_NULL)
+        }
     }
 
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {

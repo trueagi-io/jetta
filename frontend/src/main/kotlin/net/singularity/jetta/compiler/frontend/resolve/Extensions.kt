@@ -78,6 +78,7 @@ fun Atom.toJvmGenericType(box: Boolean = false): String =
         GroundedType.INT -> if (box) "Ljava/lang/Integer;" else "I"
         GroundedType.BOOLEAN -> if (box) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (box) "Ljava/lang/Double;" else "D"
+        GroundedType.UNIT -> if (box) "Ljava/lang/Void;" else "V"
         GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
         is ArrowType -> this.signature()
         is SeqType -> "Ljava/util/List<${elementType.signature()}>;"

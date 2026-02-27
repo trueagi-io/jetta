@@ -608,7 +608,15 @@ class Context(
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
         logger.trace {"Resolving atom: $atom" }
         when (atom) {
-            is Expression -> resolveExpression(atom, scope)
+            is Expression -> {
+                // If the expected type is Atom, this expression is data (a constructor),
+                // not a function call — don't try to resolve its head symbol.
+                if (suggestedType == GroundedType.ATOM && resolve((atom.atoms.firstOrNull() as? Symbol)?.name ?: "") == null) {
+                    atom.type = GroundedType.ATOM
+                } else {
+                    resolveExpression(atom, scope)
+                }
+            }
             is Variable -> {
                 val data = scope[atom.name]
                 if (data != null) {
