@@ -14,15 +14,6 @@ object Matcher {
     fun getBindings(): MutableMap<String, Atom> = bindingContext.get()
 
     @JvmStatic
-    fun saveBindings(): Map<String, Atom> = HashMap(bindingContext.get())
-
-    @JvmStatic
-    fun restoreBindings(saved: Map<String, Atom>) {
-        bindingContext.get().clear()
-        bindingContext.get().putAll(saved)
-    }
-
-    @JvmStatic
     fun setBinding(name: String, value: Atom) {
         bindingContext.get()[name] = value
     }

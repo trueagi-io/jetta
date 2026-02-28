@@ -50,20 +50,7 @@ fun generateLoadVar(
     // this is a match-time variable (e.g., nested pattern variable).
     // Generate a runtime Variable object so it can be resolved by the matcher.
     if (index < 0 && className == null) {
-        mv.visitTypeInsn(Opcodes.NEW, "net/singularity/jetta/compiler/frontend/ir/Variable")
-        mv.visitInsn(Opcodes.DUP)
-        mv.visitLdcInsn(variable.name)
-        mv.visitInsn(Opcodes.ACONST_NULL)
-        mv.visitInsn(Opcodes.ACONST_NULL)
-        mv.visitIntInsn(Opcodes.BIPUSH, 6)
-        mv.visitInsn(Opcodes.ACONST_NULL)
-        mv.visitMethodInsn(
-            Opcodes.INVOKESPECIAL,
-            "net/singularity/jetta/compiler/frontend/ir/Variable",
-            "<init>",
-            "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
-            false
-        )
+        generateNewVariable(mv, variable.name)
         return
     }
 
@@ -219,4 +206,24 @@ fun generateLoadInt(mv: LocalVariablesSorter, value: Int) {
         5 -> mv.visitInsn(Opcodes.ICONST_5)
         else -> mv.visitIntInsn(Opcodes.BIPUSH, value)
     }
+}
+
+/**
+ * Emits bytecode to create a new runtime [Variable].
+ */
+fun generateNewVariable(mv: MethodVisitor, name: String) {
+    mv.visitTypeInsn(Opcodes.NEW, "net/singularity/jetta/compiler/frontend/ir/Variable")
+    mv.visitInsn(Opcodes.DUP)
+    mv.visitLdcInsn(name)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitIntInsn(Opcodes.BIPUSH, 6)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitMethodInsn(
+        Opcodes.INVOKESPECIAL,
+        "net/singularity/jetta/compiler/frontend/ir/Variable",
+        "<init>",
+        "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+        false
+    )
 }

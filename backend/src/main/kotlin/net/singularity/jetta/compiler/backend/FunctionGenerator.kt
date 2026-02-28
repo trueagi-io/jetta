@@ -3,7 +3,6 @@ package net.singularity.jetta.compiler.backend
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.*
 import net.singularity.jetta.runtime.Matcher
-import net.singularity.jetta.runtime.space.SpaceImpl
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
@@ -17,6 +16,17 @@ open class FunctionGenerator(
     private val className: String?
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
+
+    /**
+     * Check whether the given variable is a captured variable in the current
+     * lambda class (i.e., it was a free variable in the lambda body and is
+     * stored as a field in the generated lambda class).
+     */
+    private fun isLambdaCapturedVariable(variable: Variable): Boolean {
+        if (function !is Lambda) return false
+        val lambda = function as Lambda
+        return lambda.capturedVariables().any { it.name == variable.name }
+    }
 
     fun generate() {
         generateAtom(mv, function.body, null, true)
@@ -152,7 +162,16 @@ open class FunctionGenerator(
                 if (slot != null) {
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
                 } else {
-                    generateLoadVar(mv, atom, function.params, isStatic, className)
+                    val paramIndex = function.getParameterIndex(atom)
+                    if (paramIndex >= 0) {
+                        generateLoadVar(mv, atom, function.params, isStatic, className)
+                    } else if (isLambdaCapturedVariable(atom)) {
+                        // Captured variable from enclosing scope — load via GETFIELD
+                        generateLoadVar(mv, atom, function.params, isStatic, className)
+                    } else {
+                        // True free variable — create a raw Variable for match unification
+                        generateNewVariable(mv, atom.name)
+                    }
                 }
             }
 
@@ -200,13 +219,6 @@ open class FunctionGenerator(
                 mv.visitJumpInsn(Opcodes.GOTO, exit)
             }
         }
-    }
-
-    fun test() {
-        Matcher.match(
-            SpaceImpl.getInstance(),
-            Expression(Symbol("leaf2")), Variable("x")
-        )
     }
 
     private fun generateQuote(mv: LocalVariablesSorter, atom: Atom) {
@@ -263,30 +275,10 @@ open class FunctionGenerator(
                 if (slot != null) {
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
                 } else {
-                    val paramIndex = function.getParameterIndex(atom)
-                    if (paramIndex >= 0) {
-                        val param = function.params.first { it.name == atom.name }
-                        generateLoadVar(mv, param, function.params, isStatic, className)
-                    } else {
-                        // Free variable in a quoted context: create a raw Variable
-                        // Do NOT call resolveBinding here — quoted variables must
-                        // remain as Variable objects so Space.match() can unify them.
-                        mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
-                        mv.visitInsn(Opcodes.DUP)
-                        mv.visitLdcInsn(atom.name)
-                        mv.visitInsn(Opcodes.ACONST_NULL)
-                        mv.visitInsn(Opcodes.ACONST_NULL)
-                        generateLoadInt(mv, 6)
-                        mv.visitInsn(Opcodes.ACONST_NULL)
-                        mv.visitMethodInsn(
-                            Opcodes.INVOKESPECIAL,
-                            Type.getInternalName(Variable::class.java),
-                            "<init>",
-                            "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
-                            false
-                        )
-                        mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Atom::class.java))
-                    }
+                    // Use generateLoadVar which handles function params, captured
+                    // lambda fields, AND falls back to generateNewVariable for
+                    // truly free pattern variables (when className == null).
+                    generateLoadVar(mv, atom, function.params, isStatic, className)
                 }
             }
 

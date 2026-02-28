@@ -325,7 +325,6 @@ class PerCallBindingTest : GeneratorTestBase() {
      * pair() should produce combinations like [(Pair L1 R1), (Pair L2 R1)]
      * NOT [(Pair L1 L1)] — which would happen if getRight sees getLeft's binding.
      */
-    @Ignore
     @Test
     fun `same variable name in sibling calls does not cross-pollinate`() {
         compile(
@@ -383,7 +382,6 @@ class PerCallBindingTest : GeneratorTestBase() {
      * pair() should produce combinations containing R1 on the right side.
      * $x and $y are different variables, so getRight's match is independent.
      */
-    @Ignore
     @Test
     fun `scoped bindings - same variable name in sibling calls are isolated`() {
         compile(
