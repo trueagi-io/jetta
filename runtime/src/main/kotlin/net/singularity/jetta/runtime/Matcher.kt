@@ -8,6 +8,34 @@ import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.space.Space
 
 object Matcher {
+    private val bindingContext = ThreadLocal.withInitial<MutableMap<String, Atom>> { mutableMapOf() }
+
+    @JvmStatic
+    fun getBindings(): MutableMap<String, Atom> = bindingContext.get()
+
+    @JvmStatic
+    fun saveBindings(): Map<String, Atom> = HashMap(bindingContext.get())
+
+    @JvmStatic
+    fun restoreBindings(saved: Map<String, Atom>) {
+        bindingContext.get().clear()
+        bindingContext.get().putAll(saved)
+    }
+
+    @JvmStatic
+    fun setBinding(name: String, value: Atom) {
+        bindingContext.get()[name] = value
+    }
+
+    @JvmStatic
+    fun resolveBinding(atom: Atom): Atom {
+        if (atom is Variable) {
+            val bound = bindingContext.get()[atom.name]
+            if (bound != null) return bound
+        }
+        return atom
+    }
+
     fun match(space: Space, src: Expression, dst: Atom): List<Atom> =
         space.match(src, dst)
 
@@ -37,4 +65,5 @@ object Matcher {
             else -> candidate == pattern
         }
     }
+
 }

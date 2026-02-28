@@ -168,6 +168,11 @@ class MettaB2BackchainTest : GeneratorTestBase() {
 
                 ; Helper to extract value when deduction succeeds
                 (= (ift T $then) $then)
+
+                ; Top-level query: who is mortal?
+                ; $x should be unified with Plato during deduction
+
+                (ift (deduce (Evaluation (mortal $x))) $x)
             """.trimIndent(),
             mapImpl, flatMapImpl
         ) { context ->
@@ -179,31 +184,18 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             JettaProgram.init("BackchainWho")
-            // Debug: print space contents
-            val space = JettaProgram.getSpace()
-            println("=== Space contents ===")
-            space.chunks(1)[0].let { iter ->
-                while (iter.hasNext()) {
-                    println("  ${iter.next()}")
-                }
-            }
-            println("=== End space ===")
-            // ift(T, Plato) should return Plato
-            val iftMethod = classes["BackchainWho"]!!.getMethod("ift", Atom::class.java, Atom::class.java)
-            val iftResult = iftMethod.invoke(null, Symbol("T"), Symbol("Plato")) as List<*>
-            assertTrue(iftResult.isNotEmpty())
-            assertEquals("Plato", iftResult[0].toString())
 
-            // Full chain: deduce then ift
-            val deduceMethod = classes["BackchainWho"]!!.getMethod("deduce", Atom::class.java)
-            val mortalPlato = Expression(
-                Symbol("Evaluation"),
-                Expression(Symbol("mortal"), Symbol("Plato"))
+            // The top-level expression (ift (deduce (Evaluation (mortal $x))) $x)
+            // should evaluate to [Plato] — $x gets unified with Plato
+            // during the backward chaining deduction
+            val mainResult = classes["BackchainWho"]!!.getMethod("__main").invoke(null)
+            println("mainResult: $mainResult")
+            val results = mainResult as List<*>
+            assertTrue(results.isNotEmpty(), "Expected Plato but got empty result")
+            assertTrue(
+                results.any { it.toString() == "Plato" },
+                "Expected Plato in results but got: $results"
             )
-            val deduceResult = deduceMethod.invoke(null, mortalPlato) as List<*>
-            println("deduceResult: $deduceResult")
-            assertTrue(deduceResult.isNotEmpty())
-            assertTrue(deduceResult.any { it.toString() == "T" })
         }
     }
 }

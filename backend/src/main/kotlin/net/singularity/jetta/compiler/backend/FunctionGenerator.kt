@@ -268,12 +268,15 @@ open class FunctionGenerator(
                         val param = function.params.first { it.name == atom.name }
                         generateLoadVar(mv, param, function.params, isStatic, className)
                     } else {
+                        // Free variable in a quoted context: create a raw Variable
+                        // Do NOT call resolveBinding here — quoted variables must
+                        // remain as Variable objects so Space.match() can unify them.
                         mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Variable::class.java))
                         mv.visitInsn(Opcodes.DUP)
                         mv.visitLdcInsn(atom.name)
                         mv.visitInsn(Opcodes.ACONST_NULL)
                         mv.visitInsn(Opcodes.ACONST_NULL)
-                        generateLoadInt(6)
+                        generateLoadInt(mv, 6)
                         mv.visitInsn(Opcodes.ACONST_NULL)
                         mv.visitMethodInsn(
                             Opcodes.INVOKESPECIAL,
@@ -310,6 +313,22 @@ open class FunctionGenerator(
     private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
         val elseLabel = Label()
         if (branch.cond != null) {
+            // Resolve bindings on parameters before evaluating conditions.
+            // This ensures that shared Variables passed from callers have
+            // their bindings applied before pattern matching.
+            for (i in function.params.indices) {
+                if (function.params[i].type != GroundedType.ATOM) continue
+                val paramOffset = if (isStatic) 0 else 1
+                mv.visitVarInsn(Opcodes.ALOAD, i + paramOffset)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESTATIC,
+                    Type.getInternalName(Matcher::class.java),
+                    "resolveBinding",
+                    "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                    false
+                )
+                mv.visitVarInsn(Opcodes.ASTORE, i + paramOffset)
+            }
             val label = Label()
             generateBooleanExpr(mv, branch.cond!!, label)
             mv.visitLabel(label)

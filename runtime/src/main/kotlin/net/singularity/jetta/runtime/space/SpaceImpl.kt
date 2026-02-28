@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime.space
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toAtom
 import net.singularity.jetta.runtime.space.atoms.toSAtom
@@ -32,6 +33,8 @@ class SpaceImpl : Space {
         src: Expression,
         dst: Atom
     ): List<Atom> {
+        // No save/restore here — bindings must be visible to the caller after match returns
+
         // Get or create indexer for this pattern
         val indexer = indexers.getOrPut(src) {
             IndexerImpl(src).also {
@@ -49,8 +52,24 @@ class SpaceImpl : Space {
             val result = substituteVariables(dst, bindings)
             val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)
             val final = applySpaceVarSubstitutions(result, spaceVarSubs)
+            writeBindingsToVariables(src, bindings)
             println("[MATCH]   result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)")
             final
+        }
+    }
+
+    private fun writeBindingsToVariables(pattern: Atom, bindings: Bindings) {
+        when (pattern) {
+            is Variable -> {
+                bindings[pattern.name]?.let {
+                    val bound = it.toAtom()
+                    Matcher.setBinding(pattern.name, bound)
+                }
+            }
+            is Expression -> {
+                pattern.atoms.forEach { writeBindingsToVariables(it, bindings) }
+            }
+            else -> {}
         }
     }
 

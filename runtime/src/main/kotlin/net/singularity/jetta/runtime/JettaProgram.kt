@@ -22,6 +22,8 @@ open class JettaProgram {
         fun init(programName: String) {
             // Clear the space, it's important for test
             space = SpaceImpl()
+            // Clear stale bindings from previous program runs
+            Matcher.getBindings().clear()
             val manifestFile = dataDir.resolve("$programName.manifest.json")
             if (manifestFile.exists()) {
                 space = SpaceDirectorySerializer.load(dataDir, programName)
