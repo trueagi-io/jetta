@@ -18,6 +18,8 @@ object Matcher {
         bindingContext.get()[name] = value
     }
 
+    // called only from JeTTa programs
+    @Suppress("unused")
     @JvmStatic
     fun resolveBinding(atom: Atom): Atom {
         if (atom is Variable) {

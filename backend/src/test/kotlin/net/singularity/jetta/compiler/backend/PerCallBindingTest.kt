@@ -71,7 +71,7 @@ class PerCallBindingTest : GeneratorTestBase() {
         }
     }
 
-    /**
+    /*
      * Shared variable: $x appears in two arguments of a top-level call.
      * The first arg triggers a match that binds $x, and the second arg
      * should see that binding.
@@ -114,7 +114,7 @@ class PerCallBindingTest : GeneratorTestBase() {
         }
     }
 
-    /**
+    /*
      * Binding propagates through a function that wraps match.
      * This is one step closer to the deduce pattern.
      *
@@ -154,7 +154,7 @@ class PerCallBindingTest : GeneratorTestBase() {
         }
     }
 
-    /**
+    /*
      * Bindings from one call must NOT leak into a subsequent independent call.
      *
      *   (Color red)
@@ -206,7 +206,7 @@ class PerCallBindingTest : GeneratorTestBase() {
         }
     }
 
-    /**
+    /*
      * Two independent top-level expressions that each use $x.
      * The $x in the first expression must not pollute the second.
      *

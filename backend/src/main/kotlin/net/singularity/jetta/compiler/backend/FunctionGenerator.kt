@@ -24,7 +24,7 @@ open class FunctionGenerator(
      */
     private fun isLambdaCapturedVariable(variable: Variable): Boolean {
         if (function !is Lambda) return false
-        val lambda = function as Lambda
+        val lambda = function
         return lambda.capturedVariables().any { it.name == variable.name }
     }
 
