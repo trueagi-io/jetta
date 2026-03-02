@@ -29,7 +29,29 @@ open class FunctionGenerator(
     }
 
     fun generate() {
+        val matcherType = Type.getInternalName(Matcher::class.java)
+
+        // Matcher.push()
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, matcherType, "push", "()V", false)
+
+        val tryStart = Label()
+        val tryEnd = Label()
+        val finallyHandler = Label()
+
+        mv.visitTryCatchBlock(tryStart, tryEnd, finallyHandler, null)
+
+        mv.visitLabel(tryStart)
         generateAtom(mv, function.body, null, true)
+        mv.visitLabel(tryEnd)
+
+        // finally handler: catch any throwable, call pop(), rethrow
+        mv.visitLabel(finallyHandler)
+        val exVar = mv.newLocal(Type.getObjectType("java/lang/Throwable"))
+        mv.visitVarInsn(Opcodes.ASTORE, exVar)
+        generatePop(mv)
+        mv.visitVarInsn(Opcodes.ALOAD, exVar)
+        mv.visitInsn(Opcodes.ATHROW)
+
         mv.visitMaxs(maxStack, maxLocals)
     }
 
@@ -299,6 +321,7 @@ open class FunctionGenerator(
         mv.visitVarInsn(Opcodes.ASTORE, resultVar)
         match.branches.forEach { branch -> generateMatchBranch(mv, branch, returnType, resultVar) }
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
+        generatePop(mv)
         mv.visitInsn(Opcodes.ARETURN)
     }
 
@@ -455,6 +478,13 @@ open class FunctionGenerator(
     }
 
     private fun generateReturn(mv: MethodVisitor) {
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            Type.getInternalName(Matcher::class.java),
+            "pop",
+            "()V",
+            false
+        )
         if (function is FunctionDefinition && function.isMultivalued()) {
             mv.visitInsn(Opcodes.ARETURN)
             return
@@ -768,4 +798,14 @@ open class FunctionGenerator(
         }
         if (doReturn) generateReturn(mv)
     }
+}
+
+private fun generatePop(mv: LocalVariablesSorter) {
+    mv.visitMethodInsn(
+        Opcodes.INVOKESTATIC,
+        Type.getInternalName(Matcher::class.java),
+        "pop",
+        "()V",
+        false
+    )
 }

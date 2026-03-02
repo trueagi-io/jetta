@@ -221,7 +221,6 @@ class PerCallBindingTest : GeneratorTestBase() {
      *
      * __main should contain results from both, with correct scoping.
      */
-    @Ignore
     @Test
     fun `independent top-level expressions have isolated scopes`() {
         compile(
@@ -274,7 +273,6 @@ class PerCallBindingTest : GeneratorTestBase() {
      * greetAll() should return [(Hello Alice), (Hello Bob)]
      * Each resolve call binds $x independently.
      */
-    @Ignore
     @Test
     fun `nested calls produce independent bindings per match result`() {
         compile(
@@ -284,9 +282,10 @@ class PerCallBindingTest : GeneratorTestBase() {
             (Name Bob)
 
             (= (resolve $x) (match &self (Name $x) $x))
+            (: greet (-> Atom Atom))
             (= (greet $name) (Hello $name))
             (= (greetAll) (greet (resolve $x)))
-        """.trimIndent(),
+        """.trimIndent(), // TODO: (: greet (-> Atom Atom)) is required (we need to improve type inference here)
             mapImpl, flatMapImpl
         ) { context ->
             registerExternals(context)
@@ -440,7 +439,6 @@ class PerCallBindingTest : GeneratorTestBase() {
      * findAll() should return [Alice, Bob] — $x is bound by check's match
      * and the same binding is used for the second $x in ift's $then position.
      */
-    @Ignore
     @Test
     fun `scoped bindings - propagation within same scope`() {
         compile(

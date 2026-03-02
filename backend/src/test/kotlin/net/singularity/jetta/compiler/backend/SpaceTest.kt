@@ -4,6 +4,7 @@ package net.singularity.jetta.compiler.backend
 import net.singularity.jetta.compiler.backend.utils.toClasses
 import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.Source
+import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
@@ -118,7 +119,7 @@ class SpaceTest : GeneratorTestBase() {
                 Variable("x")
             )
             assertEquals(1, results.size)
-            assertEquals("world", (results[0] as Symbol).name)
+            assertEquals("world", ((results[0] as BoundAtom).atom as Symbol).name)
         } finally {
             tempDir.deleteRecursively()
         }
@@ -161,7 +162,7 @@ class SpaceTest : GeneratorTestBase() {
                 Variable("x")
             )
             assertEquals(3, colorResults.size)
-            val colorNames = colorResults.map { (it as Symbol).name }.toSet()
+            val colorNames = colorResults.map { ((it as BoundAtom).atom as Symbol).name }.toSet()
             assertEquals(setOf("red", "green", "blue"), colorNames)
 
             val shapeResults = loaded.match(
@@ -169,7 +170,7 @@ class SpaceTest : GeneratorTestBase() {
                 Variable("y")
             )
             assertEquals(2, shapeResults.size)
-            val shapeNames = shapeResults.map { (it as Symbol).name }.toSet()
+            val shapeNames = shapeResults.map { ((it as BoundAtom).atom as Symbol).name }.toSet()
             assertEquals(setOf("circle", "square"), shapeNames)
         } finally {
             tempDir.deleteRecursively()

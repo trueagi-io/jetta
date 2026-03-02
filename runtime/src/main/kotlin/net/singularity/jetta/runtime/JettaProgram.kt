@@ -1,6 +1,7 @@
 package net.singularity.jetta.runtime
 
 import net.singularity.jetta.compiler.frontend.ir.Atom
+import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.runtime.space.Space
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
@@ -49,7 +50,11 @@ open class JettaProgram {
         @JvmStatic
         fun matchEval(src: Expression, dst: Atom, templateFn: java.util.function.Function<Atom, List<Atom>>): List<Atom> =
             space.match(src, dst).flatMap { substituted ->
-                templateFn.apply(substituted)
+                val unwrapped = if (substituted is BoundAtom) {
+                    Matcher.getBindings().putAll(substituted.bindings)
+                    substituted.atom
+                } else substituted
+                templateFn.apply(unwrapped)
             }
     }
 }

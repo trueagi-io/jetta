@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime.space
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toAtom
@@ -52,9 +53,20 @@ class SpaceImpl : Space {
             val result = substituteVariables(dst, bindings)
             val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)
             val final = applySpaceVarSubstitutions(result, spaceVarSubs)
+            // Capture per-result bindings as a foliation leaf
+            val snapshot = mutableMapOf<String, Atom>()
+            collectBindings(src, bindings, snapshot)
             writeBindingsToVariables(src, bindings)
             println("[MATCH]   result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)")
-            final
+            BoundAtom(final, snapshot)
+        }
+    }
+
+    private fun collectBindings(pattern: Atom, bindings: Bindings, out: MutableMap<String, Atom>) {
+        when (pattern) {
+            is Variable -> bindings[pattern.name]?.let { out[pattern.name] = it.toAtom() }
+            is Expression -> pattern.atoms.forEach { collectBindings(it, bindings, out) }
+            else -> {}
         }
     }
 
