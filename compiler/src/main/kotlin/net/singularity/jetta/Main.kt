@@ -22,6 +22,7 @@ class Compile : CliktCommand("jettac") {
     private val noGreetings by option("-n", "--no-greetings", help = "Do not show greetings").flag()
     private val interactive by option("-i", "--interactive", help = "Interactive mode").flag()
     private val debug  by option("-D", "--debug", help = "Debug mode").flag()
+    private val dumpIr by option("--ir", help = "Dump fully typed IR to .jir files").flag()
 
     init {
         versionOption(VersionInfo.VERSION, names = setOf("--version"))
@@ -72,13 +73,13 @@ class Compile : CliktCommand("jettac") {
                     printError(e.message!!)
                 }
                 if (readyToEvaluate) {
-                    if (input == code.toString()) {
-                        eval(code.toString())
-                        code.clear()
-                    } else {
+//                    if (input == code.toString()) {
+//                        eval(code.toString())
+//                        code.clear()
+//                    } else {
                         println("Press ENTER to evaluate")
-                        continue
-                    }
+//                        continue
+//                    }
                 }
             } else {
                 if (code.isEmpty()) continue
@@ -95,7 +96,7 @@ class Compile : CliktCommand("jettac") {
     private fun runCompiler() {
         if (!noGreetings) println(greetings())
         val logLevel = if (debug) LogLevel.DEBUG else LogLevel.INFO
-        val compiler = Compiler(sources, output, logLevel = logLevel)
+        val compiler = Compiler(sources, output, logLevel = logLevel, dumpIr = dumpIr)
         val code = compiler.compile()
         if (code != 0) exitProcess(code)
     }

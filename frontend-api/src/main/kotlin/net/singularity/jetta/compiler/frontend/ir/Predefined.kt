@@ -32,6 +32,8 @@ object Predefined {
     const val SEQ = "seq"
     const val IMPORT = "import"
     const val PACKAGE = "package"
+    const val QUOTE = "quote"
+    const val SELF = "&self"
 }
 
 object PredefinedAtoms {
@@ -39,6 +41,7 @@ object PredefinedAtoms {
     val FLAT_MAP_ = Special(Predefined.FLAT_MAP_)
     val MULTIVALUED = Symbol("multivalued")
     val EXPORT = Symbol("export")
+    val QUOTE = Special(Predefined.QUOTE)
 }
 
 fun Atom.isBooleanExpression(): Boolean =

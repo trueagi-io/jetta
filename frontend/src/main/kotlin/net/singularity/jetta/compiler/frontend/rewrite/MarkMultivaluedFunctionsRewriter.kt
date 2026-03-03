@@ -43,6 +43,11 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                             return true
                         }
                     }
+                    // Also check if the call is to a resolved system function
+                    // that is multivalued (e.g., match)
+                    if (atom.resolved?.isMultiValued == true) {
+                        return true
+                    }
                     callsLocations.getOrPut(it.name) { mutableListOf() }.add(func)
                 }
                 atom.atoms.drop(1).forEach {

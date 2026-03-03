@@ -57,6 +57,10 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
         ctx.integer()?.let {
             return Grounded(it.text.toInt(), mkPosition(ctx.position))
         }
+        ctx.long()?.let {
+            return Grounded(it.text.substring(0, it.text.length - 1).toLong(),
+                mkPosition(ctx.position))
+        }
         ctx.double()?.let {
             return Grounded(it.text.toDouble(), mkPosition(ctx.position))
         }

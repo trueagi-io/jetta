@@ -11,9 +11,12 @@ fun ParsedSource.getJvmClassName(): String {
 fun Atom.toJvmType(boxing: Boolean = false): String =
     when (this) {
         GroundedType.INT -> if (boxing) "Ljava/lang/Integer;" else "I"
+        GroundedType.LONG -> if (boxing) "Ljava/lang/Long;" else "J"
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (boxing) throw RuntimeException("Should never happen") else "V"
+        GroundedType.LIST -> "Ljava/util/List;"
+        GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
         is ArrowType -> this.descriptor()
         is SeqType -> "Ljava/util/List;"
         else -> TODO("Not implemented yet $this")
@@ -25,6 +28,7 @@ fun ArrowType.getJvmInterfaceName(): String {
     val arity = this.types.size - 1
     return "net/singularity/jetta/runtime/functions/Function$arity"
 }
+
 
 fun Atom.signature(): String {
     val sb = StringBuilder()
@@ -38,9 +42,11 @@ fun Atom.signature(): String {
             sb.append(">;")
         }
 
-        is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
-        GroundedType.INT -> "Ljava/lang/Integer;"
-        else -> TODO()
+        is SeqType -> sb.append("Ljava/util/List<${elementType.signature()}>;")
+        GroundedType.INT -> sb.append("Ljava/lang/Integer;")
+        GroundedType.DOUBLE -> sb.append("Ljava/lang/Double;")
+        GroundedType.ATOM -> sb.append("Lnet/singularity/jetta/compiler/frontend/ir/Atom;")
+        else -> TODO("Not implemented yet $this")
     }
     return sb.toString()
 }
@@ -72,7 +78,10 @@ fun Atom.toJvmGenericType(box: Boolean = false): String =
         GroundedType.INT -> if (box) "Ljava/lang/Integer;" else "I"
         GroundedType.BOOLEAN -> if (box) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (box) "Ljava/lang/Double;" else "D"
+        GroundedType.UNIT -> if (box) "Ljava/lang/Void;" else "V"
+        GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
         is ArrowType -> this.signature()
+        is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
         else -> TODO("Not implemented yet $this")
     }
 
@@ -82,7 +91,10 @@ fun FunctionDefinition.getJvmDescriptor(): String =
     } else {
         val sb = StringBuilder()
         sb.append("(")
-        arrowType!!.types.dropLast(1).map {
+        if (arrowType == null) {
+            println("STOP: " + this)
+        }
+        arrowType!!.types.dropLast(1).forEach {
             sb.append(it.toJvmType())
         }
         sb.append(")")
@@ -138,11 +150,16 @@ fun JvmMethod.doesParameterHaveAnyType(index: Int) =
 private fun toType(jvmType: String): Atom =
     when (jvmType) {
         "I" -> GroundedType.INT
+        "J" -> GroundedType.LONG
         "D" -> GroundedType.DOUBLE
         "V" -> GroundedType.UNIT
         "Z" -> GroundedType.BOOLEAN
         "Ljava/lang/String;" -> GroundedType.STRING
         "Ljava/lang/Object;" -> GroundedType.ANY
+        "Lnet/singularity/jetta/runtime/space/Space;" -> GroundedType.SPACE
+        "Lnet/singularity/jetta/compiler/frontend/ir/Expression;" -> GroundedType.EXPRESSION
+        "Lnet/singularity/jetta/compiler/frontend/ir/Atom;" -> GroundedType.ATOM
+        "Ljava/util/List;" -> GroundedType.LIST
         else -> {
             jvmType.parseArrowType() ?: TODO("type=$jvmType")
         }
@@ -152,6 +169,7 @@ private fun String.parseArrowType(): ArrowType? =
     if (startsWith("Lnet/singularity/jetta/runtime/functions/Function")) {
         val bra = indexOf('<')
         val ket = length - 2
+        // FIXME: unused
         ArrowType(substring(bra + 1, ket).parseDescriptor().map {
             when (it) {
                 "Ljava/lang/Integer;" -> GroundedType.INT
@@ -179,7 +197,7 @@ fun String.parseDescriptor(): List<String> {
         } else {
             when (it) {
                 '(', ')' -> {}
-                'I', 'D', 'V', 'Z' -> list.add(it.toString())
+                'I', 'D', 'V', 'Z', 'J' -> list.add(it.toString())
                 'L' -> {
                     type.append(it)
                     isObject = true
@@ -191,5 +209,3 @@ fun String.parseDescriptor(): List<String> {
     }
     return list
 }
-
-

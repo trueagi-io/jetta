@@ -1,9 +1,9 @@
 plugins {
-    kotlin("jvm") version "2.1.0"
+    kotlin("jvm") version "2.3.0"
 }
 
 group = "net.singularity.jetta"
-version = "0.1-SNAPSHOT"
+version = "0.4-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -13,6 +13,7 @@ dependencies {
     implementation(project(":frontend-api"))
     implementation(project(":frontend"))
     implementation(project(":runtime"))
+    implementation(project(":logger"))
 
     implementation("org.ow2.asm:asm:9.4")
     implementation("org.ow2.asm:asm-commons:9.4")

@@ -24,7 +24,7 @@ class CanonicalFormRewriter(
         var i = 0
         while (i < functions.size) {
             val def = functions[i]
-            val expression = def.copy(body = rewriteFunction(source.getJvmClassName(), def))
+            val expression = def.copy(body = rewriteFunction(source.getJvmClassName(), def), position = def.position)
             result.add(expression)
             i++
         }
@@ -40,9 +40,29 @@ class CanonicalFormRewriter(
 
     private fun rewriteFunction(owner: String, functionDefinition: FunctionLike): Atom =
         if (functionDefinition is FunctionDefinition && functionDefinition.name != FunctionRewriter.MAIN) {
-            val newBody = extractIfStatementsIfNeeded(owner, functionDefinition.body, root = true)
-            collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
-            rewriteAtom(newBody)
+            when (val body = functionDefinition.body) {
+                is Match -> {
+                    Match(
+                        branches = body.branches.map { branch ->
+                            val newBody = extractIfStatementsIfNeeded(owner, branch.body, root = true)
+                            collectNonDeterministicAtomsRecursively(newBody, functionDefinition, newBody.id)
+                            val rewritten = rewriteAtom(newBody)
+                            // Reset state for next branch
+                            multivaluedCalls.clear()
+                            multivaluedCallsInverse.clear()
+                            multivaluedAtoms.clear()
+                            MatchBranch(branch.cond, rewritten, branch.destructuredBindings)
+                        },
+                        returnType = body.returnType,
+                        position = body.position
+                    )
+                }
+                else -> {
+                    val newBody = extractIfStatementsIfNeeded(owner, body, root = true)
+                    collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
+                    rewriteAtom(newBody)
+                }
+            }
         } else functionDefinition.body
 
     private fun extractIfStatementsIfNeeded(owner: String, atom: Atom, root: Boolean): Atom {
@@ -60,7 +80,7 @@ class CanonicalFormRewriter(
                     )
                     functions.add(def)
                     context.resolveFunctionDefinition(owner, def)
-                    val result = Expression(Symbol(functionName), *params.toTypedArray())
+                    val result = Expression(Symbol(functionName), *params.toTypedArray(), position = atom.position)
                     result.resolved = context.resolve(functionName)
                     // return function call
                     return result
@@ -69,7 +89,8 @@ class CanonicalFormRewriter(
                         atoms = atom.atoms.map { extractIfStatementsIfNeeded(owner, it, false) },
                         type = atom.type,
                         id = atom.id,
-                        resolved = atom.resolved
+                        resolved = atom.resolved,
+                        position = atom.position
                     )
                 }
             }
@@ -115,7 +136,7 @@ class CanonicalFormRewriter(
 
     ```
     (@ foo multivalued)
-    (= (foo) (list 1 2 3))
+    (= (foo) (seq 1 2 3))
 
     (: f (-> Int Int))
     (= (f $x) (+ $x 1))
@@ -152,11 +173,13 @@ class CanonicalFormRewriter(
                 replacement.drop(1), Expression(
                     op,
                     Lambda(
-                        listOf(mkVariable(replacement[0].first)),
+                        listOf(mkVariable(replacement[0].first, expression.position)),
                         getArrayTypeForFunc(op, funcName),
-                        expression
+                        expression,
+                        position = expression.position
                     ),
-                    replacement[0].second
+                    replacement[0].second,
+                    position = expression.position
                 ),
                 op = PredefinedAtoms.FLAT_MAP_
             )
@@ -164,15 +187,24 @@ class CanonicalFormRewriter(
         if (!expression.isNonDeterministic()) return expression
 
         val body = multivaluedCalls[expression.id]?.let {
-            mkVariable(it)
+            mkVariable(it, expression.position)
         } ?: Expression(atoms = expression.atoms.map { atom ->
             multivaluedCalls[atom.id]?.let {
-                mkVariable(it)
+                mkVariable(it, expression.position)
             } ?: rewriteAtom(atom)
-        })
+        }, position = expression.position)
         // check the expression is a scope
         val replacement = multivaluedCallsInverse[expression.id]
-        if (replacement != null) return createMaps(replacement, body)
+        if (replacement != null) {
+            // Determine the innermost op: if the body expression calls
+            // a multivalued function, use FLAT_MAP_ so its List results
+            // are flattened rather than nested.
+            val innermostOp = if (body is Expression
+                && body.atoms[0] is Symbol
+                && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+            ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
+            return createMaps(replacement, body, innermostOp)
+        }
         return body
     }
 
@@ -219,9 +251,10 @@ class CanonicalFormRewriter(
             return Expression(
                 op,
                 Lambda(
-                    listOf(mkVariable(replacement[0].first)),
+                    listOf(mkVariable(replacement[0].first, expression.position)),
                     getArrayTypeForFunc(op, funcName),
-                    newExpression
+                    newExpression,
+                    position = expression.position
                 ),
                 replacement[0].second
             )
@@ -238,7 +271,8 @@ class CanonicalFormRewriter(
         fun getScopeId(call: Expression): Int =
             call.atoms.drop(1)
                 .mapNotNull { it as? Variable }
-                .minOfOrNull { it.scope!!.id }
+                .mapNotNull { it.scope?.id }
+                .minOrNull()
                 ?: functionDefinition.body.id
 
         var isMultivalued = false
@@ -246,13 +280,29 @@ class CanonicalFormRewriter(
             is Expression -> {
                 when (val f = atom.atoms[0]) {
                     is Symbol -> {
+                        // match expressions have their own variable scope —
+                        // the result template is evaluated per match result,
+                        // so multivalued calls inside should not be lifted out
+                        if (f.name == "match") {
+                            return false
+                        }
                         val def = context.definedFunctions[f.name]
                         if (def != null && def.func.isMultivalued()) {
-                            val scopeId = reducedScopeId ?: getScopeId(atom)
-                            multivaluedCalls[atom.id] = variableCount
-                            multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }.add(variableCount to atom)
-                            variableCount++
-                            isMultivalued = true
+                            // Check if arguments contain multivalued sub-calls.
+                            // If so, don't register this call at the parent scope —
+                            // instead, let the children be scoped to this call.
+                            val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
+                                arg is Expression && arg.atoms[0] is Symbol &&
+                                        context.definedFunctions[(arg.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+                            }
+                            if (!hasMultivaluedArgs) {
+                                val scopeId = reducedScopeId ?: getScopeId(atom)
+                                multivaluedCalls[atom.id] = variableCount
+                                multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
+                                    .add(variableCount to atom)
+                                variableCount++
+                                isMultivalued = true
+                            }
                         }
                     }
 
@@ -276,12 +326,19 @@ class CanonicalFormRewriter(
                         atom.atoms[3].id
                     )
                 } else {
+                    // When the current expression is a function call,
+                    // scope any multivalued children to THIS expression
+                    // so the flatMap chain wraps this call.
+                    val childScope = if (atom.atoms[0] is Symbol
+                        && context.definedFunctions[(atom.atoms[0] as Symbol).name] != null
+                    ) atom.id else reducedScopeId
+
                     // other specials and symbols
                     atom.atoms.drop(1).forEach {
                         if (collectNonDeterministicAtomsRecursively(
                                 it,
                                 functionDefinition,
-                                reducedScopeId
+                                childScope
                             )
                         ) isMultivalued = true
                     }
@@ -304,14 +361,18 @@ class CanonicalFormRewriter(
 
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
         context.definedFunctions[name]?.func?.arrowType?.types?.let { types ->
+            val returnType = types.last()
+            // If the function is multivalued (returns SeqType), the map/flatMap
+            // lambda receives individual elements, not the whole list.
+            val elementType = if (returnType is SeqType) returnType.elementType else returnType
             ArrowType(
-                types.last(),
-                if (op == PredefinedAtoms.FLAT_MAP_) SeqType(types.last()) else types.last()
+                elementType,
+                if (op == PredefinedAtoms.FLAT_MAP_) SeqType(elementType) else elementType
             )
         }
 
-    private fun mkVariable(i: Int): Variable =
-        Variable("__var$i")
+    private fun mkVariable(i: Int, position: SourcePosition?): Variable =
+        Variable("__var$i", position = position)
 
     private fun Atom.isNonDeterministic(): Boolean = multivaluedAtoms.contains(id)
 }

@@ -26,6 +26,27 @@ class CompilerSupport {
     }
 
     fun compile(vararg sources: Source): Map<String, ByteArray> {
+        return compile(sources.toList(), dumpIr = false)
+    }
+
+    fun compileWithIr(vararg sources: Source): Pair<Map<String, ByteArray>, Map<String, String>> {
+        val classes = compile(sources.toList(), dumpIr = true)
+        val irFiles = mutableMapOf<String, String>()
+        collectIrFiles(outputDir, irFiles)
+        return classes to irFiles
+    }
+
+    private fun collectIrFiles(root: File, acc: MutableMap<String, String>) {
+        root.listFiles()?.forEach {
+            if (it.isDirectory) {
+                collectIrFiles(it, acc)
+            } else if (it.extension == "jir") {
+                acc[it.nameWithoutExtension] = it.readText()
+            }
+        }
+    }
+
+    private fun compile(sources: List<Source>, dumpIr: Boolean): Map<String, ByteArray> {
         fun collect(root: File, acc: MutableMap<String, ByteArray>) {
             root.listFiles()?.forEach {
                 if (it.isDirectory) {
@@ -43,7 +64,12 @@ class CompilerSupport {
         val result = mutableMapOf<String, ByteArray>()
 
         val classpath = System.getProperty("java.class.path")
-        val builder = ProcessBuilder("java", "-cp", classpath, jettaCompilerMainClass, *sources.map { it.filename }.toTypedArray(), "-d", outputDir.absolutePath)
+        val args = mutableListOf("java", "-cp", classpath, jettaCompilerMainClass)
+        args.addAll(sources.map { it.filename })
+        args.addAll(listOf("-d", outputDir.absolutePath))
+        if (dumpIr) args.add("--ir")
+
+        val builder = ProcessBuilder(args)
             .directory(sourceDir)
             .redirectOutput(ProcessBuilder.Redirect.INHERIT)
             .redirectError(ProcessBuilder.Redirect.INHERIT)

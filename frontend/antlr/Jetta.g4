@@ -19,6 +19,7 @@ atom
 
 number
     : integer
+    | long
     | double
     ;
 
@@ -28,6 +29,10 @@ string
 
 integer
     : INTEGER
+    ;
+
+long
+    : LONG
     ;
 
 double
@@ -158,7 +163,7 @@ WS
     ;
 
 COMMENT
-    : ';' .*? '\n' -> skip
+    : ';' .*? ( '\n' | EOF ) -> skip
     ;
 
 fragment NON_NEGATIVE_INTEGER
@@ -173,6 +178,11 @@ IDENT_WITH_ID
 INTEGER
     : ZERO
     | ('-' | '+')? NON_ZERO_DIGIT DIGIT*
+    ;
+
+LONG
+    : ZERO
+    | ('-' | '+')? NON_ZERO_DIGIT DIGIT* 'L'
     ;
 
 DOUBLE
@@ -280,5 +290,5 @@ RPAREN
     ;
 
 IDENT
-    : [a-zA-Z_] [a-zA-Z0-9_\-]*
+    : [a-zA-Z_&] [a-zA-Z0-9_\-]*
     ;

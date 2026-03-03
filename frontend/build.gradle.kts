@@ -1,15 +1,15 @@
 import com.strumenta.antlrkotlin.gradle.AntlrKotlinTask
-import org.jetbrains.kotlin.gradle.dsl.KotlinCompile
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 
 plugins {
-    kotlin("jvm") version "1.9.22"
+    kotlin("jvm") version "2.3.0"
     id("com.strumenta.antlr-kotlin") version "1.0.0-RC2"
 }
 
 val antlrKotlinVersion: String by project
 
 group = "net.singularity.jetta"
-version = "0.1-SNAPSHOT"
+version = "0.4-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -18,6 +18,7 @@ repositories {
 dependencies {
     implementation(project(":frontend-api"))
     implementation(project(":runtime"))
+    implementation(project(":logger"))
     implementation("com.strumenta:antlr-kotlin-runtime:$antlrKotlinVersion")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
 }
@@ -57,6 +58,6 @@ val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotli
     outputDirectory = layout.buildDirectory.dir(outDir).get().asFile
 }
 
-tasks.withType<KotlinCompile<*>> {
+tasks.withType<KotlinCompilationTask<*>> {
     dependsOn(generateKotlinGrammarSource)
 }

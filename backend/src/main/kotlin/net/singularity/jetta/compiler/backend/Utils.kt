@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.toJvmType
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.commons.LocalVariablesSorter
 
 fun FunctionLike.getParameterIndex(variable: Variable): Int = params.getParameterIndex(variable)
 
@@ -12,7 +13,12 @@ fun List<Variable>.getParameterIndex(variable: Variable): Int {
     forEach {
         if (it.name == variable.name) return jvmIndex
         when (it.type) {
-            GroundedType.INT, GroundedType.BOOLEAN -> jvmIndex++
+            GroundedType.INT,
+            GroundedType.BOOLEAN,
+            GroundedType.STRING,
+            GroundedType.ATOM,
+            is SeqType -> jvmIndex++
+
             GroundedType.DOUBLE -> jvmIndex += 2
             else -> TODO("type=" + it.type + " (" + it + ")")
         }
@@ -38,10 +44,19 @@ fun generateLoadVar(
     }
 
     val offset = if (isStatic) 0 else 1
+    val index = params.getParameterIndex(variable)
+
+    // Variable not found in params and no class to load field from —
+    // this is a match-time variable (e.g., nested pattern variable).
+    // Generate a runtime Variable object so it can be resolved by the matcher.
+    if (index < 0 && className == null) {
+        generateNewVariable(mv, variable.name)
+        return
+    }
+
     when (variable.type) {
         GroundedType.INT,
         GroundedType.BOOLEAN -> {
-            val index = params.getParameterIndex(variable)
             if (index < 0)
                 generateField()
             else
@@ -49,14 +64,27 @@ fun generateLoadVar(
         }
 
         GroundedType.DOUBLE -> {
-            val index = params.getParameterIndex(variable)
             if (index < 0)
                 generateField()
             else
                 mv.visitVarInsn(Opcodes.DLOAD, index + offset)
         }
 
-        else -> TODO("Not implemented yet " + variable)
+        GroundedType.ATOM -> {
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.ALOAD, index + offset)
+        }
+
+        is SeqType -> {
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.ALOAD, index + offset)
+        }
+
+        else -> TODO("Not implemented yet " + variable + " (" + variable.type + ")")
     }
 }
 
@@ -73,8 +101,22 @@ fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             )
         }
 
-        null -> {}
-        else -> TODO()
+        GroundedType.DOUBLE -> {
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Number")
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                "java/lang/Number",
+                "doubleValue",
+                "()D",
+                false
+            )
+        }
+
+        GroundedType.ATOM,
+        null -> {
+        }
+
+        else -> TODO("Not implemented yet $type")
     }
 }
 
@@ -88,18 +130,30 @@ fun boxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             false
         )
 
-        null -> {}
-        else -> TODO()
+        GroundedType.DOUBLE -> mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/lang/Double",
+            "valueOf",
+            "(D)Ljava/lang/Double;",
+            false
+        )
+
+        GroundedType.ATOM,
+        null -> {
+        }
+
+        else -> TODO("Not implemented yet $type")
     }
 }
 
 fun Lambda.capturedVariables(): List<Variable> {
     val result = mutableListOf<Variable>()
+    val seen = mutableSetOf<String>()
     fun collect(params: List<Variable>, atom: Atom) {
         when (atom) {
             is Variable -> {
                 val found = params.find { it.name == atom.name }
-                if (found == null) result.add(atom)
+                if (found == null && seen.add(atom.name)) result.add(atom)
             }
 
             is Expression -> {
@@ -110,9 +164,10 @@ fun Lambda.capturedVariables(): List<Variable> {
 
             is Lambda -> {
                 when (val body = atom.body) {
-                    is  Expression -> body.atoms.forEach {
+                    is Expression -> body.atoms.forEach {
                         collect(params + atom.params, it)
                     }
+
                     else -> collect(params, atom.body)
                 }
             }
@@ -124,6 +179,7 @@ fun Lambda.capturedVariables(): List<Variable> {
         is Expression -> b.atoms.forEach {
             collect(params, it)
         }
+
         else -> collect(params, body)
     }
     return result
@@ -137,4 +193,37 @@ fun mkLambdaInitDescriptor(capturedVariables: List<Variable>): String {
     }
     sb.append(")V")
     return sb.toString()
+}
+
+
+fun generateLoadInt(mv: LocalVariablesSorter, value: Int) {
+    when (value) {
+        0 -> mv.visitInsn(Opcodes.ICONST_0)
+        1 -> mv.visitInsn(Opcodes.ICONST_1)
+        2 -> mv.visitInsn(Opcodes.ICONST_2)
+        3 -> mv.visitInsn(Opcodes.ICONST_3)
+        4 -> mv.visitInsn(Opcodes.ICONST_4)
+        5 -> mv.visitInsn(Opcodes.ICONST_5)
+        else -> mv.visitIntInsn(Opcodes.BIPUSH, value)
+    }
+}
+
+/**
+ * Emits bytecode to create a new runtime [Variable].
+ */
+fun generateNewVariable(mv: MethodVisitor, name: String) {
+    mv.visitTypeInsn(Opcodes.NEW, "net/singularity/jetta/compiler/frontend/ir/Variable")
+    mv.visitInsn(Opcodes.DUP)
+    mv.visitLdcInsn(name)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitIntInsn(Opcodes.BIPUSH, 6)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitMethodInsn(
+        Opcodes.INVOKESPECIAL,
+        "net/singularity/jetta/compiler/frontend/ir/Variable",
+        "<init>",
+        "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+        false
+    )
 }

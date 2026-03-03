@@ -1,10 +1,10 @@
 plugins {
-    kotlin("jvm") version "2.1.0"
+    kotlin("jvm") version "2.3.0"
     id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "metta"
-version = "0.1-SNAPSHOT"
+version = "0.4-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -15,6 +15,7 @@ dependencies {
     implementation(project(":frontend"))
     implementation(project(":backend"))
     implementation(project(":runtime"))
+    implementation(project(":logger"))
 
     implementation("org.ow2.asm:asm:9.4")
     implementation("org.ow2.asm:asm-commons:9.4")
@@ -87,4 +88,8 @@ tasks.register<Copy>("copyShadowJar") {
     into(layout.projectDirectory.dir("../bin")) // Destination directory
 
     rename { "jettac.jar" } // Rename the jar file
+}
+
+tasks.build {
+    finalizedBy("copyShadowJar")
 }

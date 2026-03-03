@@ -28,6 +28,7 @@ class Generator(val generateMain: Boolean = false) {
             Type.getInternalName(Object::class.java),
             null
         )
+        cw.visitSource(source.filename, null)
         val result = findLambdas(source).toList().sortedBy {
             val ind = it.first.indexOf('$')
             if (ind >= 0) it.first.substring(ind + 1).toInt() else 0
@@ -52,8 +53,19 @@ class Generator(val generateMain: Boolean = false) {
                             null
                         )
                     )
+                    if (node.name == FunctionRewriter.MAIN) {
+                        mv.visitLdcInsn(className.substringAfterLast('/'))
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/JettaProgram",
+                            "init",
+                            "(Ljava/lang/String;)V",
+                            false
+                        )
+                    }
                     FunctionGenerator(mv, node, true, null).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
+                        val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(
                             Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
                             "main",
@@ -61,8 +73,12 @@ class Generator(val generateMain: Boolean = false) {
                             null,
                             null
                         )
-                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", "()V", false)
+                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", mainDesc, false)
+                        if (!mainDesc.endsWith("V")) {
+                            mv.visitInsn(Opcodes.POP)
+                        }
                         mv.visitInsn(Opcodes.RETURN)
+                        mv.visitMaxs(1, 1)
                     }
                 }
 

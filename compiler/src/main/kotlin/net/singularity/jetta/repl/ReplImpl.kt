@@ -12,6 +12,9 @@ import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import net.singularity.jetta.compiler.backend.registerExternals
+import net.singularity.jetta.compiler.logger.LogConfig
+import java.io.File
 
 class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = LogLevel.DEBUG) : Repl {
     private var counter = 0
@@ -19,7 +22,12 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
 
     private val messageCollector = MessageCollector()
 
-    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, logLevel)
+    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
+
+    init {
+        LogConfig.level = logLevel
+        registerExternals(context)
+    }
 
     override fun eval(code: String): EvalResult {
         context.clearMessages()
@@ -29,6 +37,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
         } catch (e: Exception) {
             return EvalResult(null, listOf(e.stackTraceToString()), false)
         }
+        writeFiles(result)
         val renderer = createMessageRenderer()
         val messages = messageCollector.list().map { renderer.render(it) }
         if (messageCollector.hasErrors()) {
@@ -43,6 +52,11 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
         } catch (_: NoSuchMethodException) { }
         return EvalResult(null, messages, true)
     }
+
+    private fun writeFiles(result: List<CompilationResult>) =
+        result.forEach {
+            File("/tmp/metta/${it.className}.class").writeBytes(it.bytecode)
+        }
 
     private fun compile(filename: String, code: String): List<CompilationResult> {
         val parser = createParserFacade()

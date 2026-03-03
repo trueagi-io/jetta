@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.ir.MatchBranch
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOrConstantButFoundMessage
+import kotlin.math.exp
 
 class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
@@ -25,6 +26,9 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         val mainPart = if (main.isNotEmpty()) mkMain() else listOf()
         return ParsedSource(source.filename, mkFunctions() + mainPart)
     }
+
+    private fun hasConstantsInPattern(pattern: Expression): Boolean =
+        pattern.atoms.drop(1).any { it !is Variable }
 
     private fun extractFormalParams(expression: Expression): List<Variable> {
         val list = expression.atoms.drop(1).mapNotNull {
@@ -47,6 +51,50 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
     private fun mkParamName(index: Int) = "var${index}"
 
+    /**
+     * Recursively collects variables from a nested pattern expression,
+     * recording their extraction paths relative to the formal parameter.
+     *
+     * For `(And $a $b)` with paramIndex=0:
+     *   $a -> DestructureBinding("a", 0, [1])
+     *   $b -> DestructureBinding("b", 0, [2])
+     *
+     * For `(And (Pair $x $y) $b)` with paramIndex=0:
+     *   $x -> DestructureBinding("x", 0, [1, 1])
+     *   $y -> DestructureBinding("y", 0, [1, 2])
+     *   $b -> DestructureBinding("b", 0, [2])
+     */
+    private fun collectNestedVariables(
+        atom: Atom,
+        paramIndex: Int,
+        currentPath: IntArray,
+        bindings: MutableList<DestructureBinding>,
+        changeVariables: ChangeVariables
+    ) {
+        when (atom) {
+            is Variable -> {
+                bindings.add(DestructureBinding(atom.name, paramIndex, currentPath.copyOf()))
+                // Give each destructured variable a unique name based on param index and path
+                // e.g., $a from param 0 path [1] becomes $destr_0_1
+                //        $b from param 0 path [2] becomes $destr_0_2
+                val syntheticName = "destr_${paramIndex}_${currentPath.joinToString("_")}"
+                changeVariables[atom.name] = syntheticName
+            }
+            is Expression -> {
+                atom.atoms.forEachIndexed { index, child ->
+                    collectNestedVariables(
+                        child,
+                        paramIndex,
+                        currentPath + index,
+                        bindings,
+                        changeVariables
+                    )
+                }
+            }
+            else -> { /* Symbol, Grounded — nothing to collect */ }
+        }
+    }
+
     private fun isConstantExpression(atom: Atom): Boolean {
         when (atom) {
             is Variable -> return false
@@ -55,6 +103,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     if (!isConstantExpression(it)) return false
                 }
             }
+
             else -> return true
         }
         return true
@@ -71,7 +120,10 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
         fun rewriteAtom(atom: Atom): Atom =
             when (atom) {
-                is Variable -> Variable(changeVariables[atom.name]!!) // FIXME: handle error here
+                is Variable -> {
+                    val newName = changeVariables[atom.name]
+                    if (newName != null) Variable(newName) else atom
+                }
                 is Expression -> rewriteExpression(atom)
                 is Lambda -> rewriteLambda(atom)
                 else -> atom
@@ -82,28 +134,43 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         }
     }
 
-    private fun substitute(arrowType: ArrowType?, pattern: Pattern): Atom {
+    private fun substitute(arrowType: ArrowType?, pattern: Pattern): Pair<Atom, List<DestructureBinding>> {
         val changeVariables = ChangeVariables()
+        val destructuredBindings = mutableListOf<DestructureBinding>()
 
-        if (isConstantExpression(pattern.value)) return pattern.value
-        val lambdaParams = mutableListOf<Variable>()
+        if (isConstantExpression(pattern.value)) return pattern.value to emptyList()
         val types = mutableListOf<Atom>()
         pattern.pattern.atoms.drop(1).forEachIndexed { index, atom ->
-            if (atom is Variable) {
-                changeVariables[atom.name] = mkParamName(index)
-                lambdaParams.add(atom)
+            when (atom) {
+                is Variable -> {
+                    changeVariables[atom.name] = mkParamName(index)
+                }
+                is Expression -> {
+                    // Nested pattern — collect variables with extraction paths
+                    collectNestedVariables(atom, index, intArrayOf(), destructuredBindings, changeVariables)
+                }
+                else -> { /* constant — nothing to rename */ }
             }
         }
         if (arrowType != null) types.add(arrowType.types.last())
-        return changeVariables.rewriteAtom(pattern.value)
+        return changeVariables.rewriteAtom(pattern.value) to destructuredBindings
     }
 
     private fun mkCond(params: List<Variable>, pattern: Expression): Expression? {
         val cond = mutableListOf<Expression>()
         if (pattern.atoms.size == 1) return null
         params.zip(pattern.atoms.drop(1)).forEach { (variable, atom) ->
-            if (atom is Grounded<*>) {
-                cond.add(Expression(Special(Predefined.COND_EQ), variable, atom))
+            when (atom) {
+                is Grounded<*>, is Symbol -> {
+                    cond.add(Expression(Special(Predefined.COND_EQ), variable, atom, position = pattern.position))
+                }
+                is Expression -> {
+                    // For nested patterns like (And $a $b), generate structural match conditions.
+                    // Compare the formal param against the full pattern expression
+                    // (the condition uses == which the Match evaluator handles structurally).
+                    cond.add(Expression(Special(Predefined.COND_EQ), variable, atom, position = pattern.position))
+                }
+                else -> { /* Variable — no condition needed */ }
             }
         }
         if (cond.isEmpty()) return null
@@ -116,14 +183,15 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
     private fun mkFunctions(): List<Atom> =
         patterns.map { (name, list) ->
-            if (list.size == 1) {
+            if (list.size == 1 && !hasConstantsInPattern(list[0].pattern)) {
                 val pattern = list[0]
                 FunctionDefinition(
                     name,
                     extractFormalParams(pattern.pattern),
                     typeInfo[name] as? ArrowType,
                     pattern.value,
-                    annotations[name]?.toMutableList() ?: mutableListOf()
+                    annotations[name]?.toMutableList() ?: mutableListOf(),
+                    position = pattern.pattern.position
                 )
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
@@ -134,12 +202,15 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     params,
                     arrowType,
                     Match(list.map {
+                        val (body, bindings) = substitute(arrowType, it)
                         MatchBranch(
                             mkCond(params, it.pattern),
-                            substitute(arrowType, it)
+                            body,
+                            bindings
                         )
                     }, returnType = arrowType?.types?.last()),
-                    annotations[name]?.toMutableList() ?: mutableListOf()
+                    annotations[name]?.toMutableList() ?: mutableListOf(),
+                    position = list[0].pattern.position
                 )
             }
         }
@@ -152,26 +223,38 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
     private fun mkMain(): List<Atom> {
         val result = mutableListOf<Atom>()
-        var count = 0
-
-        val calls = main.map {
-            val fnName = "__main_${count++}"
-            result.add(
-                FunctionDefinition(
-                    fnName,
-                    listOf(),
-                    null,
-                    it
-                )
-            )
-            Expression(Symbol(fnName))
-        }
+        // FIXME: turn it back
+//        var count = 0
+//
+//        val calls = main.map {
+//            val fnName = "__main_${count++}"
+//            result.add(
+//                FunctionDefinition(
+//                    fnName,
+//                    listOf(),
+//                    null,
+//                    it
+//                )
+//            )
+//            Expression(Symbol(fnName))
+//        }
+//        result.add(
+//            FunctionDefinition(
+//                MAIN,
+//                listOf(),
+//                null,
+//                Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+//            )
+//        )
+        val fnName = MAIN
+        val main1 = main.map { rewriteAtom(it) }
         result.add(
             FunctionDefinition(
-                MAIN,
+                fnName,
                 listOf(),
                 null,
-                Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+                Expression(listOf(Special(Predefined.RUN_SEQ)) + main1),
+                position = main.first().position
             )
         )
         return result
@@ -208,8 +291,59 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         Predefined.XOR
     )
 
+    private fun quoteAtom(atom: Atom): Atom =
+        Expression(PredefinedAtoms.QUOTE, atom)
+
+
+    /**
+     * Check if an atom is a call to a known defined function (top-level).
+     */
+    private fun isFunctionCall(atom: Atom): Boolean {
+        if (atom !is Expression) return false
+        val head = atom.atoms[0]
+        return head is Symbol && patterns.containsKey(head.name)
+    }
+
+    private fun rewriteMatchCall(expression: Expression): Expression {
+        val template = expression.atoms[3]
+
+        if (isFunctionCall(template)) {
+            val templateExpr = template as Expression
+            val funcSymbol = templateExpr.atoms[0]
+            val funcArgs = templateExpr.atoms.drop(1)
+
+            if (funcArgs.size == 1 && funcArgs[0] is Variable) {
+                val lambdaVar = Variable("__matchEvalArg")
+                val matchCall = Expression(
+                    expression.atoms[0],  // match
+                    expression.atoms[1],  // &self
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(funcArgs[0])
+                )
+                val lambdaBody = Expression(funcSymbol, lambdaVar)
+                val lambda = Lambda(
+                    listOf(lambdaVar),
+                    null,
+                    lambdaBody,
+                    position = expression.position
+                )
+                return Expression(Special(Predefined.FLAT_MAP_), lambda, matchCall)
+            }
+        }
+
+        return expression.copy(
+            listOf(
+                expression.atoms[0],
+                expression.atoms[1],
+                quoteAtom(expression.atoms[2]),
+                quoteAtom(expression.atoms[3])
+            )
+        )
+    }
+
     private fun rewriteExpression(expression: Expression): Atom {
         val func = expression.atoms[0]
+        if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         return rewriteExpressionArguments(expression).let {
             if (func is Special && func.value == Predefined.ARROW) {
                 mkArrow(it)
@@ -271,6 +405,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 "Boolean" -> GroundedType.BOOLEAN
                 "String" -> GroundedType.STRING
                 "Unit" -> GroundedType.UNIT
+                "Atom" -> GroundedType.ATOM
                 else -> TODO()
             }
 
