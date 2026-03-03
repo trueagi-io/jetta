@@ -14,7 +14,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class SpaceImplTest {
-    fun createSpace(): Space = SpaceImpl()
+    fun createSpace(): Space = SpaceImpl().apply { enablePerCallBindings = false }
 
     @Test
     fun `chunks with empty space`() {

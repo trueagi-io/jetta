@@ -33,10 +33,11 @@ object Matcher {
         val d = depth.get() - 1
         depth.set(d)
         val stack = bindingStack.get()
-        println("[STACK] ${stack.map { it.values }.joinToString(" <- ")}")
         val childFrame = stack.removeLast()
         // Propagate bindings from child to parent so callers can see
-        // bindings produced by callees (e.g., match results)
+        // bindings produced by callees (e.g., match results).
+        // This is still needed for cases where a captured Variable in a lambda
+        // must resolve to a value bound deep in a callee chain.
         if (stack.isNotEmpty()) {
             stack.last().putAll(childFrame)
         }
@@ -46,7 +47,7 @@ object Matcher {
             e.stackTrace.getOrNull(1)
         }
         val indent = "  ".repeat(d)
-        println("[CALL] ${indent}pop  #$d <- ${caller ?: "unknown"} (propagated: ${childFrame.keys} -> ${stack.last().values})")
+        println("[CALL] ${indent}pop  #$d <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})")
     }
 
     @JvmStatic

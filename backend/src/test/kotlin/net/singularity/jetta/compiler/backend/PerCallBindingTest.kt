@@ -8,6 +8,7 @@ import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.runtime.JettaProgram
 import kotlin.test.Ignore
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class PerCallBindingTest : GeneratorTestBase() {
@@ -206,36 +207,21 @@ class PerCallBindingTest : GeneratorTestBase() {
         }
     }
 
-    /*
-     * Two independent top-level expressions that each use $x.
-     * The $x in the first expression must not pollute the second.
-     *
-     *   (Fruit apple)
-     *   (City Paris)
-     *   (= (findFruit $x) (match &self (Fruit $x) $x))
-     *   (= (findCity $x) (match &self (City $x) $x))
-     *   (= (ift T $then) $then)
-     *
-     *   (ift (findFruit $x) $x)   → should produce [apple]
-     *   (ift (findCity $x) $x)    → should produce [Paris], not [apple]
-     *
-     * __main should contain results from both, with correct scoping.
-     */
     @Test
     fun `independent top-level expressions have isolated scopes`() {
         compile(
             "ScopedTopLevel1.metta",
             $$"""
-            (Fruit apple)
-            (City Paris)
+                (Fruit apple)
+                (City Paris)
 
-            (= (findFruit $x) (match &self (Fruit $x) $x))
-            (= (findCity $x) (match &self (City $x) $x))
-            (= (ift T $then) $then)
+                (= (checkFruit $x) (match &self (Fruit $x) T))
+                (= (checkCity $y) (match &self (City $y) T))
+                (= (ift T $then) $then)
 
-            (ift (findFruit $x) $x)
-            (ift (findCity $y) $y)
-        """.trimIndent(),
+                (ift (checkFruit $x) $x)
+                (ift (checkCity $y) $y)
+            """.trimIndent(),
             mapImpl, flatMapImpl
         ) { context ->
             registerExternals(context)
@@ -244,17 +230,16 @@ class PerCallBindingTest : GeneratorTestBase() {
             val classes = result.toMap().toClasses()
             JettaProgram.init("ScopedTopLevel1")
 
-            val mainResult = classes["ScopedTopLevel1"]!!.getMethod("__main").invoke(null)
-            val results = mainResult as List<*>
-
-            assertTrue(
-                results.any { it.toString() == "apple" },
-                "Expected apple in results but got: $results"
-            )
-            assertTrue(
-                results.any { it.toString() == "Paris" },
-                "Expected Paris in results but got: $results"
-            )
+            classes["ScopedTopLevel1"]!!.getMethod("__main_0").invoke(null).let {
+                val results = it as List<*>
+                assertEquals(1, results.size)
+                assertEquals("apple", results[0].toString())
+            }
+            classes["ScopedTopLevel1"]!!.getMethod("__main_1").invoke(null).let {
+                val results = it as List<*>
+                assertEquals(1, results.size)
+                assertEquals("Paris", results[0].toString())
+            }
         }
     }
 

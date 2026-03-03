@@ -13,6 +13,12 @@ class SpaceImpl : Space {
     private val store = mutableListOf<Expression>()
     private val indexers = mutableMapOf<Expression, IndexerImpl>()
 
+    /**
+     * When true, match() wraps results in BoundAtom carrying per-result
+     * binding snapshots (stack foliation). Required for per-call binding
+     * semantics in the compiled pipeline.
+     */
+    var enablePerCallBindings: Boolean = true
 
     override fun add(expression: Expression) {
         store.add(expression)
@@ -54,11 +60,15 @@ class SpaceImpl : Space {
             val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)
             val final = applySpaceVarSubstitutions(result, spaceVarSubs)
             // Capture per-result bindings as a foliation leaf
-            val snapshot = mutableMapOf<String, Atom>()
-            collectBindings(src, bindings, snapshot)
-            writeBindingsToVariables(src, bindings)
-            println("[MATCH]   result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)")
-            BoundAtom(final, snapshot)
+            if (enablePerCallBindings) {
+                val snapshot = mutableMapOf<String, Atom>()
+                collectBindings(src, bindings, snapshot)
+                writeBindingsToVariables(src, bindings)
+                println("[MATCH]   result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)")
+                BoundAtom(final, snapshot)
+            } else {
+                final
+            }
         }
     }
 
