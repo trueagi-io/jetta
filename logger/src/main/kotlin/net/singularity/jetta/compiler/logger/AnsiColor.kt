@@ -8,6 +8,7 @@ internal object AnsiColor {
     const val CYAN = "\u001B[36m"
     const val GRAY = "\u001B[90m"
     const val DIM_GRAY = "\u001B[2;37m"
+    const val WHITE = "\u001B[37m"
 
     fun forLevel(level: LogLevel): String = when (level) {
         LogLevel.TRACE -> DIM_GRAY

@@ -11,7 +11,7 @@ internal class ConsoleLogger(private val tag: String) : Logger {
     override fun info(msg: () -> String)  { if (isInfoEnabled)  emit(LogLevel.INFO, msg()) }
     override fun warn(msg: () -> String)  { if (isWarnEnabled)  emit(LogLevel.WARN, msg()) }
     override fun error(msg: () -> String) { if (isErrorEnabled) emit(LogLevel.ERROR, msg()) }
-    override fun trace(msg: () -> String) { if (isErrorEnabled) emit(LogLevel.TRACE, msg()) }
+    override fun trace(msg: () -> String) { if (isTraceEnabled) emit(LogLevel.TRACE, msg()) }
 
     private fun emit(level: LogLevel, msg: String) {
         val out = LogConfig.output

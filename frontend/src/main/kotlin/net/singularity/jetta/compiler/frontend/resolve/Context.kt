@@ -7,13 +7,11 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
-import net.singularity.jetta.compiler.frontend.resolve.messages.UndefinedVariableMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.runtime.space.SpaceImpl
-import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.logger.Logger
 import kotlin.collections.component1
 import kotlin.collections.component2
@@ -283,7 +281,7 @@ class Context(
                     .forEach {
                         if (it.functionDefinition is FunctionDefinition) {
                             if (!updateFunction(owner, it)) {
-                                postponedFunctions[(it.functionDefinition as FunctionDefinition).name] = it
+                                postponedFunctions[it.functionDefinition.name] = it
                             }
                         }
                     }
@@ -314,7 +312,7 @@ class Context(
                     messageCollector.add(
                         CannotInferTypeMessage(
                             data.atom,
-                            data.info.functionDefinition as FunctionDefinition
+                            data.info.functionDefinition
                         )
                     )
                 }

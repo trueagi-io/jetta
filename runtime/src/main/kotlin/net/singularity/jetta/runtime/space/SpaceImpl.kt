@@ -1,9 +1,10 @@
 package net.singularity.jetta.runtime.space
 
 import net.singularity.jetta.compiler.frontend.ir.Atom
+import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Variable
-import net.singularity.jetta.compiler.frontend.ir.BoundAtom
+import net.singularity.jetta.compiler.logger.Logger
 import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toAtom
@@ -12,6 +13,7 @@ import net.singularity.jetta.runtime.space.atoms.toSAtom
 class SpaceImpl : Space {
     private val store = mutableListOf<Expression>()
     private val indexers = mutableMapOf<Expression, IndexerImpl>()
+    private val logger = Logger.getLogger(SpaceImpl::class.java)
 
     /**
      * When true, match() wraps results in BoundAtom carrying per-result
@@ -52,7 +54,7 @@ class SpaceImpl : Space {
         // Get packed index
         val packedIndex = indexer.getPackedIndex()
 
-        println("[MATCH] pattern=$src template=$dst matches=${packedIndex.size()}")
+        logger.trace { "|match| pattern=$src template=$dst matches=${packedIndex.size()}" }
 
         return (0 until packedIndex.size()).map { matchIndex ->
             val bindings = packedIndex.resolve(matchIndex, this)
@@ -64,7 +66,7 @@ class SpaceImpl : Space {
                 val snapshot = mutableMapOf<String, Atom>()
                 collectBindings(src, bindings, snapshot)
                 writeBindingsToVariables(src, bindings)
-                println("[MATCH]   result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)")
+                logger.trace { "|match| result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)" }
                 BoundAtom(final, snapshot)
             } else {
                 final
@@ -88,9 +90,11 @@ class SpaceImpl : Space {
                     Matcher.setBinding(pattern.name, bound)
                 }
             }
+
             is Expression -> {
                 pattern.atoms.forEach { writeBindingsToVariables(it, bindings) }
             }
+
             else -> {}
         }
     }
@@ -104,6 +108,7 @@ class SpaceImpl : Space {
                 type = atom.type,
                 resolved = atom.resolved
             )
+
             else -> atom
         }
     }
@@ -128,6 +133,7 @@ class SpaceImpl : Space {
             is Variable -> {
                 bindings[atom.name]!!.toAtom()
             }
+
             is Expression -> {
                 Expression(
                     atoms = atom.atoms.map { substituteVariables(it, bindings) },
@@ -135,6 +141,7 @@ class SpaceImpl : Space {
                     resolved = atom.resolved
                 )
             }
+
             else -> atom
         }
     }

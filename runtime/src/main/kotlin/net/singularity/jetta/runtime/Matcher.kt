@@ -6,26 +6,30 @@ import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.compiler.logger.Logger
 import net.singularity.jetta.runtime.space.Space
 
 object Matcher {
-    private val bindingStack = ThreadLocal.withInitial<ArrayDeque<MutableMap<String, Atom>>> {
+    private val bindingStack = ThreadLocal.withInitial {
         ArrayDeque<MutableMap<String, Atom>>().also { it.addLast(mutableMapOf()) }
     }
     private val depth = ThreadLocal.withInitial { 0 }
+    private val log = Logger.getLogger(Matcher::class.java)
 
     @JvmStatic
     fun push() {
         val d = depth.get()
         depth.set(d + 1)
         bindingStack.get().addLast(mutableMapOf())
-        val caller = try {
-            throw Exception()
-        } catch (e: Exception) {
-            e.stackTrace.getOrNull(1)
+        log.trace {
+            val caller = try {
+                throw Exception()
+            } catch (e: Exception) {
+                e.stackTrace.getOrNull(3)
+            }
+            val indent = "  ".repeat(d)
+            "|call| ${indent}push #$d -> ${caller ?: "unknown"}"
         }
-        val indent = "  ".repeat(d)
-        println("[CALL] ${indent}push #$d -> ${caller ?: "unknown"}")
     }
 
     @JvmStatic
@@ -41,13 +45,15 @@ object Matcher {
         if (stack.isNotEmpty()) {
             stack.last().putAll(childFrame)
         }
-        val caller = try {
-            throw Exception()
-        } catch (e: Exception) {
-            e.stackTrace.getOrNull(1)
+        log.trace {
+            val caller = try {
+                throw Exception()
+            } catch (e: Exception) {
+                e.stackTrace.getOrNull(3)
+            }
+            val indent = "  ".repeat(d)
+            "|call| ${indent}pop  #$d <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})"
         }
-        val indent = "  ".repeat(d)
-        println("[CALL] ${indent}pop  #$d <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})")
     }
 
     @JvmStatic
@@ -55,7 +61,7 @@ object Matcher {
 
     @JvmStatic
     fun setBinding(name: String, value: Atom) {
-        println("[BIND] $name = $value")
+        log.trace { "|bind| $name = $value" }
         bindingStack.get().last()[name] = value
     }
 
