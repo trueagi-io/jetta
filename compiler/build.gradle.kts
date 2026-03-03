@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "metta"
-version = "0.1-SNAPSHOT"
+version = "0.4-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -88,4 +88,8 @@ tasks.register<Copy>("copyShadowJar") {
     into(layout.projectDirectory.dir("../bin")) // Destination directory
 
     rename { "jettac.jar" } // Rename the jar file
+}
+
+tasks.build {
+    finalizedBy("copyShadowJar")
 }

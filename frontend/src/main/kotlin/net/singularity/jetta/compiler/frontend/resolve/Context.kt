@@ -394,7 +394,8 @@ class Context(
                             fnName,
                             listOf(),
                             ArrowType(atom.type!!),
-                            atom
+                            atom,
+                            position = atom.position
                         )
                         resolveFunctionDefinition(source.getJvmClassName(), def)
                         code.add(def)
@@ -404,7 +405,9 @@ class Context(
                         FunctionRewriter.MAIN,
                         listOf(),
                         null,
-                        Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
+                        Expression(listOf(Special(Predefined.RUN_SEQ)) + calls,
+                            position = calls.getOrNull(0)?.position),
+                        position = calls.getOrNull(0)?.position
                     )
 //                    resolveFunctionDefinition(source.getJvmClassName(), def)
 //                    addResolvedFunction(source.getJvmClassName(), def)
@@ -674,7 +677,8 @@ class Context(
                 val wrapper = Lambda(
                     def.func.params,
                     def.func.arrowType,
-                    Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position)
+                    Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position),
+                    position = atom.position
                 )
                 resolveAtom(wrapper, scope, suggestedType)
                 replaceNode(atom, wrapper)

@@ -162,13 +162,13 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         params.zip(pattern.atoms.drop(1)).forEach { (variable, atom) ->
             when (atom) {
                 is Grounded<*>, is Symbol -> {
-                    cond.add(Expression(Special(Predefined.COND_EQ), variable, atom))
+                    cond.add(Expression(Special(Predefined.COND_EQ), variable, atom, position = pattern.position))
                 }
                 is Expression -> {
                     // For nested patterns like (And $a $b), generate structural match conditions.
                     // Compare the formal param against the full pattern expression
                     // (the condition uses == which the Match evaluator handles structurally).
-                    cond.add(Expression(Special(Predefined.COND_EQ), variable, atom))
+                    cond.add(Expression(Special(Predefined.COND_EQ), variable, atom, position = pattern.position))
                 }
                 else -> { /* Variable — no condition needed */ }
             }
@@ -190,7 +190,8 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     extractFormalParams(pattern.pattern),
                     typeInfo[name] as? ArrowType,
                     pattern.value,
-                    annotations[name]?.toMutableList() ?: mutableListOf()
+                    annotations[name]?.toMutableList() ?: mutableListOf(),
+                    position = pattern.pattern.position
                 )
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
@@ -208,7 +209,8 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                             bindings
                         )
                     }, returnType = arrowType?.types?.last()),
-                    annotations[name]?.toMutableList() ?: mutableListOf()
+                    annotations[name]?.toMutableList() ?: mutableListOf(),
+                    position = list[0].pattern.position
                 )
             }
         }
@@ -251,7 +253,8 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 fnName,
                 listOf(),
                 null,
-                Expression(listOf(Special(Predefined.RUN_SEQ)) + main1)
+                Expression(listOf(Special(Predefined.RUN_SEQ)) + main1),
+                position = main.first().position
             )
         )
         return result
@@ -321,7 +324,8 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 val lambda = Lambda(
                     listOf(lambdaVar),
                     null,
-                    lambdaBody
+                    lambdaBody,
+                    position = expression.position
                 )
                 return Expression(Special(Predefined.FLAT_MAP_), lambda, matchCall)
             }

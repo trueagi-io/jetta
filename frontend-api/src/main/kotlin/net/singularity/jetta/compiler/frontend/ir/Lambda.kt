@@ -4,7 +4,7 @@ class Lambda(
     override val params: List<Variable>,
     override var arrowType: ArrowType?,
     override val body: Atom,
-    override val position: SourcePosition? = null
+    override val position: SourcePosition?
 ) : FunctionLike {
     var resolvedClassName: String? = null
 

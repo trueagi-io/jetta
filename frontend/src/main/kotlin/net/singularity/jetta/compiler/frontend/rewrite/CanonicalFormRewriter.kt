@@ -24,7 +24,7 @@ class CanonicalFormRewriter(
         var i = 0
         while (i < functions.size) {
             val def = functions[i]
-            val expression = def.copy(body = rewriteFunction(source.getJvmClassName(), def))
+            val expression = def.copy(body = rewriteFunction(source.getJvmClassName(), def), position = def.position)
             result.add(expression)
             i++
         }
@@ -80,7 +80,7 @@ class CanonicalFormRewriter(
                     )
                     functions.add(def)
                     context.resolveFunctionDefinition(owner, def)
-                    val result = Expression(Symbol(functionName), *params.toTypedArray())
+                    val result = Expression(Symbol(functionName), *params.toTypedArray(), position = atom.position)
                     result.resolved = context.resolve(functionName)
                     // return function call
                     return result
@@ -89,7 +89,8 @@ class CanonicalFormRewriter(
                         atoms = atom.atoms.map { extractIfStatementsIfNeeded(owner, it, false) },
                         type = atom.type,
                         id = atom.id,
-                        resolved = atom.resolved
+                        resolved = atom.resolved,
+                        position = atom.position
                     )
                 }
             }
@@ -172,11 +173,13 @@ class CanonicalFormRewriter(
                 replacement.drop(1), Expression(
                     op,
                     Lambda(
-                        listOf(mkVariable(replacement[0].first)),
+                        listOf(mkVariable(replacement[0].first, expression.position)),
                         getArrayTypeForFunc(op, funcName),
-                        expression
+                        expression,
+                        position = expression.position
                     ),
-                    replacement[0].second
+                    replacement[0].second,
+                    position = expression.position
                 ),
                 op = PredefinedAtoms.FLAT_MAP_
             )
@@ -184,12 +187,12 @@ class CanonicalFormRewriter(
         if (!expression.isNonDeterministic()) return expression
 
         val body = multivaluedCalls[expression.id]?.let {
-            mkVariable(it)
+            mkVariable(it, expression.position)
         } ?: Expression(atoms = expression.atoms.map { atom ->
             multivaluedCalls[atom.id]?.let {
-                mkVariable(it)
+                mkVariable(it, expression.position)
             } ?: rewriteAtom(atom)
-        })
+        }, position = expression.position)
         // check the expression is a scope
         val replacement = multivaluedCallsInverse[expression.id]
         if (replacement != null) {
@@ -248,9 +251,10 @@ class CanonicalFormRewriter(
             return Expression(
                 op,
                 Lambda(
-                    listOf(mkVariable(replacement[0].first)),
+                    listOf(mkVariable(replacement[0].first, expression.position)),
                     getArrayTypeForFunc(op, funcName),
-                    newExpression
+                    newExpression,
+                    position = expression.position
                 ),
                 replacement[0].second
             )
@@ -367,8 +371,8 @@ class CanonicalFormRewriter(
             )
         }
 
-    private fun mkVariable(i: Int): Variable =
-        Variable("__var$i")
+    private fun mkVariable(i: Int, position: SourcePosition?): Variable =
+        Variable("__var$i", position = position)
 
     private fun Atom.isNonDeterministic(): Boolean = multivaluedAtoms.contains(id)
 }

@@ -14,6 +14,13 @@ class Expression(
         resolved
     )
 
+    constructor(vararg atoms: Atom, type: Atom? = null, resolved: ResolvedSymbol? = null, position: SourcePosition?) : this(
+        atoms.asList(),
+        type,
+        resolved,
+        position
+    )
+
     fun copy(atoms: List<Atom>) = Expression(atoms, type, resolved, position)
 
     override fun toString(): String = buildString {

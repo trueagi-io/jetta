@@ -29,6 +29,7 @@ open class FunctionGenerator(
     }
 
     fun generate() {
+        emitLineNumber(function)
         val matcherType = Type.getInternalName(Matcher::class.java)
 
         // Matcher.push()
@@ -116,6 +117,14 @@ open class FunctionGenerator(
         )
     }
 
+    protected fun emitLineNumber(atom: Atom) {
+        atom.position?.let {
+            val label = Label()
+            mv.visitLabel(label)
+            mv.visitLineNumber(it.start.line, label)
+        }
+    }
+
     protected fun generateAtom(
         mv: LocalVariablesSorter,
         atom: Atom,
@@ -123,6 +132,7 @@ open class FunctionGenerator(
         doReturn: Boolean,
         needBoxing: Boolean = false
     ) {
+        emitLineNumber(atom)
         when (atom) {
             is Expression -> {
                 val func = atom.atoms[0]
@@ -309,6 +319,7 @@ open class FunctionGenerator(
     }
 
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
+        emitLineNumber(match)
         val returnType = match.returnType
             ?: match.branches.firstNotNullOfOrNull { it.body.type }
             ?: GroundedType.ATOM
@@ -328,6 +339,7 @@ open class FunctionGenerator(
     private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
         val elseLabel = Label()
         if (branch.cond != null) {
+            emitLineNumber(branch.cond!!)
             // Resolve bindings on parameters before evaluating conditions.
             // This ensures that shared Variables passed from callers have
             // their bindings applied before pattern matching.
@@ -507,6 +519,7 @@ open class FunctionGenerator(
     }
 
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
+        emitLineNumber(expr)
         fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int) {
             val label1 = Label()
             generateAtom(mv, left, label1, false)

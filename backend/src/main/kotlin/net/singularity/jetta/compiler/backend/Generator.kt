@@ -28,6 +28,7 @@ class Generator(val generateMain: Boolean = false) {
             Type.getInternalName(Object::class.java),
             null
         )
+        cw.visitSource(source.filename, null)
         val result = findLambdas(source).toList().sortedBy {
             val ind = it.first.indexOf('$')
             if (ind >= 0) it.first.substring(ind + 1).toInt() else 0

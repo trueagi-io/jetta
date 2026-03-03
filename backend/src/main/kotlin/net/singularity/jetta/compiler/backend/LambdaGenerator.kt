@@ -21,6 +21,7 @@ class LambdaGenerator(private val className: String, private val lambda: Lambda)
             Type.getInternalName(Object::class.java),
             arrayOf(lambda.arrowType!!.getJvmInterfaceName())
         )
+        lambda.position?.let { cw.visitSource(it.filename, null) }
         val init = cw.visitMethod(
             Opcodes.ACC_PUBLIC,
             "<init>",
