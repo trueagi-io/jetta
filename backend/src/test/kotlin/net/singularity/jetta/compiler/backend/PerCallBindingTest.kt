@@ -95,7 +95,7 @@ class PerCallBindingTest : GeneratorTestBase() {
             (= (lookup $x) (match &self (Color $x) T))
             (= (ift T $then) $then)
 
-            (ift (lookup $x) $x)
+            !(ift (lookup $x) $x)
         """.trimIndent(),
             mapImpl, flatMapImpl
         ) { context ->
@@ -219,8 +219,8 @@ class PerCallBindingTest : GeneratorTestBase() {
                 (= (checkCity $y) (match &self (City $y) T))
                 (= (ift T $then) $then)
 
-                (ift (checkFruit $x) $x)
-                (ift (checkCity $y) $y)
+                !(ift (checkFruit $x) $x)
+                !(ift (checkCity $y) $y)
             """.trimIndent(),
             mapImpl, flatMapImpl
         ) { context ->

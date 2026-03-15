@@ -172,7 +172,7 @@ class MettaB2BackchainTest : GeneratorTestBase() {
                 ; Top-level query: who is mortal?
                 ; $x should be unified with Plato during deduction
 
-                (ift (deduce (Evaluation (mortal $x))) $x)
+                !(ift (deduce (Evaluation (mortal $x))) $x)
             """.trimIndent(),
             mapImpl, flatMapImpl
         ) { context ->

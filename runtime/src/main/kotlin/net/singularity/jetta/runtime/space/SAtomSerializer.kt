@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime.space
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.SExpression
 import net.singularity.jetta.runtime.space.atoms.SGrounded
+import net.singularity.jetta.runtime.space.atoms.SSpecial
 import net.singularity.jetta.runtime.space.atoms.SSymbol
 import net.singularity.jetta.runtime.space.atoms.SVariable
 
@@ -14,6 +15,7 @@ object SAtomSerializer {
     private const val TAG_SYMBOL: Byte = 0
     private const val TAG_EXPRESSION: Byte = 1
     private const val TAG_VARIABLE: Byte = 3
+    private const val TAG_SPECIAL: Byte = 4
     private const val TAG_GROUNDED_LONG: Byte = 20
     private const val TAG_GROUNDED_DOUBLE: Byte = 21
     private const val TAG_GROUNDED_STRING: Byte = 22
@@ -29,6 +31,10 @@ object SAtomSerializer {
             is SVariable -> {
                 writer.writeByte(TAG_VARIABLE)
                 writer.writeString(atom.name)
+            }
+            is SSpecial -> {
+                writer.writeByte(TAG_SPECIAL)
+                writer.writeString(atom.value)
             }
             is SExpression -> {
                 writer.writeByte(TAG_EXPRESSION)
@@ -82,6 +88,10 @@ object SAtomSerializer {
             TAG_VARIABLE -> {
                 val name = reader.readString()
                 SVariable(name)
+            }
+            TAG_SPECIAL -> {
+                val value = reader.readString()
+                SSpecial(value)
             }
             TAG_GROUNDED_LONG -> {
                 val value = reader.readLong()

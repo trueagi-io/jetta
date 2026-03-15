@@ -16,7 +16,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (A B)
                 ; (C (A B)) contains (A B) as a subexpression — should NOT match
                 (C (A B))
-                (match &self (A $x) $x)
+                !(match &self (A $x) $x)
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -36,7 +36,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (color red)
                 (color green)
                 (color blue)
-                (match &self (color $x) (painted $x))
+                !(match &self (color $x) (painted $x))
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -59,7 +59,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (edge A B)
                 (edge B C)
                 (edge C D)
-                (match &self (edge $x $y) ($y $x))
+                !(match &self (edge $x $y) ($y $x))
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -81,7 +81,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
             $$"""
                 (A B)
                 (C D)
-                (match &self (X $y) $y)
+                !(match &self (X $y) $y)
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -100,7 +100,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (a (b (c d)))
                 (a (b (c e)))
                 (a (b (f g)))
-                (match &self (a (b (c $x))) $x)
+                !(match &self (a (b (c $x))) $x)
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -121,7 +121,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (isa cat animal)
                 (isa dog animal)
                 (isa car vehicle)
-                (match &self (isa cat animal) found)
+                !(match &self (isa cat animal) found)
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -141,7 +141,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (red apple)
                 (green apple)
                 (yellow banana)
-                (match &self ($x apple) $x)
+                !(match &self ($x apple) $x)
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -162,7 +162,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 (A B)
                 (C D)
                 (E F)
-                (match &self ($x $y) ($x $y))
+                !(match &self ($x $y) ($x $y))
             """.trimIndent()
         ) { context ->
             registerExternals(context)
@@ -185,7 +185,7 @@ class MettaA1SymbolsTest : GeneratorTestBase() {
                 ((leaf1 leaf2) leaf3)
                 (((leaf0 leaf1) leaf2) leaf3)
                 (top ((leaf1 leaf2) leaf3))
-                (match &self (($x leaf2) leaf3) (found $x))
+                !(match &self (($x leaf2) leaf3) (found $x))
             """.trimIndent()
         ) { context ->
             registerExternals(context)

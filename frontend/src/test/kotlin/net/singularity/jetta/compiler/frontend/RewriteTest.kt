@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.runtime.space.SpaceImpl
 import kotlin.test.*
 
 class RewriteTest : BaseFrontendTest() {
@@ -24,7 +25,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)
@@ -49,7 +50,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)
@@ -76,7 +77,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)
@@ -104,7 +105,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, SpaceImpl()) }
         rewriter.add { LambdaRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
@@ -130,7 +131,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, SpaceImpl()) }
         rewriter.add { LambdaRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
@@ -157,7 +158,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, SpaceImpl()) }
         val result = rewriter.rewrite(program)
         println(result)
     }
@@ -176,7 +177,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         assertEquals(1, result.code.size)
@@ -222,7 +223,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -258,7 +259,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -307,7 +308,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -332,7 +333,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition

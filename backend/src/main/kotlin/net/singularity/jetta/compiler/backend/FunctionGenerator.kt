@@ -314,7 +314,7 @@ open class FunctionGenerator(
                 }
             }
 
-            else -> TODO()
+            else -> TODO("Not implemented yet $atom")
         }
     }
 

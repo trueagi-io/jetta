@@ -40,7 +40,7 @@ class SpaceTest : GeneratorTestBase() {
                     ; and thus will not be matched
                     (top ((leaf1 leaf2) leaf3))
 
-                    (match &self (($x leaf2) leaf3) $x)
+                    !(match &self (($x leaf2) leaf3) $x)
                     ;  (leaf1 (leaf0 leaf1))
             """.trimIndent()
         ) { context ->
@@ -65,7 +65,7 @@ class SpaceTest : GeneratorTestBase() {
         compile(
             "GenerateMatch1.metta",
             """
-                    (match &self (leaf2) _x)
+                    !(match &self (leaf2) _x)
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -91,7 +91,7 @@ class SpaceTest : GeneratorTestBase() {
             registerExternals(context)
             val parser = AntlrParserFacadeImpl()
             val rewriter = CompositeRewriter()
-            rewriter.add { FunctionRewriter(messageCollector) }
+            rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
             rewriter.add { LambdaRewriter(messageCollector) }
 
             val code = $$"""
@@ -135,7 +135,7 @@ class SpaceTest : GeneratorTestBase() {
             registerExternals(context)
             val parser = AntlrParserFacadeImpl()
             val rewriter = CompositeRewriter()
-            rewriter.add { FunctionRewriter(messageCollector) }
+            rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
             rewriter.add { LambdaRewriter(messageCollector) }
 
             val code = $$"""
@@ -187,7 +187,7 @@ class SpaceTest : GeneratorTestBase() {
             registerExternals(context)
             val parser = AntlrParserFacadeImpl()
             val rewriter = CompositeRewriter()
-            rewriter.add { FunctionRewriter(messageCollector) }
+            rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
             rewriter.add { LambdaRewriter(messageCollector) }
 
             val code = $$"""

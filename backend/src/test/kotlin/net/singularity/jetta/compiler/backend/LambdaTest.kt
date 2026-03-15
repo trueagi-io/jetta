@@ -14,7 +14,7 @@ class LambdaTest : GeneratorTestBase() {
             """
                 (: foo (-> Int Int (-> Int Int Int) Int))
                 (= (foo _x _y _f) (_f _x _y))
-                (foo 10 20 (\ (_x _y) (+ _x _y)))
+                !(foo 10 20 (\ (_x _y) (+ _x _y)))
                 """.trimIndent().replace('_', '$')
         ).let { (result, messageCollector) ->
             messageCollector.list().forEach {
@@ -155,7 +155,7 @@ class LambdaTest : GeneratorTestBase() {
             """
                 (: foo (-> Int Int (-> Int Int Int Int) Int))
                 (= (foo _x _y _f) (_f _x _y _x))
-                (foo 10 20 (\ (_x _y _z) (+ _x _y _z)))
+                !(foo 10 20 (\ (_x _y _z) (+ _x _y _z)))
                 """.trimIndent().replace('_', '$')
         ).let { (result, messageCollector) ->
             messageCollector.list().forEach {
@@ -176,7 +176,7 @@ class LambdaTest : GeneratorTestBase() {
                 (= (foo _x _y _f) (_f _x _y))
                 (: bar (-> Int Int Int))
                 (= (bar _x _y) (+ _x _y))
-                (foo 10 20 bar)
+                !(foo 10 20 bar)
                 """.trimIndent().replace('_', '$')
         ).let { (result, messageCollector) ->
             messageCollector.list().forEach {

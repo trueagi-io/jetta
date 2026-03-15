@@ -13,7 +13,7 @@ class ReplTest {
         repl.eval("""
             (: foo (-> Int Int Int))
             (= (foo _x _y) (+ _x _y 1))
-            (foo 1 2)
+            !(foo 1 2)
         """.trimIndent().replace('_', '$')).let {
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
@@ -32,7 +32,7 @@ class ReplTest {
         }
         repl.eval("""
             (= (bar _x) (foo _x 2))
-            (bar 2)
+            !(bar 2)
         """.trimIndent().replace('_', '$')).let {
             it.messages.forEach { println(it) }
             assertTrue(it.isSuccess)
@@ -44,7 +44,7 @@ class ReplTest {
     fun evalExpression() {
         val repl = createRepl()
         repl.eval("""
-            (+ 1 2)
+            !(+ 1 2)
         """.trimIndent().replace('_', '$')).let {
             assertTrue(it.isSuccess)
             assertEquals(3, it.result)
@@ -55,7 +55,7 @@ class ReplTest {
     fun expressionBeforeDefinition() {
         val repl = createRepl()
         repl.eval("""
-            (+ 1 2)
+            !(+ 1 2)
         """.trimIndent().replace('_', '$')).let {
             assertTrue(it.isSuccess)
         }
@@ -78,7 +78,7 @@ class ReplTest {
         }
         repl.eval("""
             (= (bar _x) (foo _x 2))
-            (bar 2)
+            !(bar 2)
         """.trimIndent().replace('_', '$')).let {
             it.messages.forEach { println(it) }
             assertTrue(it.isSuccess)
@@ -90,13 +90,13 @@ class ReplTest {
             assertTrue(it.isSuccess)
         }
         repl.eval("""
-            (bar 2)
+            !(bar 2)
         """.trimIndent()).let {
             assertTrue(it.isSuccess)
             assertEquals(5, it.result)
         }
         repl.eval("""
-            (foo 1 2)
+            !(foo 1 2)
         """.trimIndent()).let {
             assertTrue(it.isSuccess)
             assertEquals(5, it.result)
@@ -120,13 +120,13 @@ class ReplTest {
             assertTrue(it.isSuccess)
         }
         repl1.eval("""
-            (foo 1 2)
+            !(foo 1 2)
         """.trimIndent()).let {
             assertTrue(it.isSuccess)
             assertEquals(4, it.result)
         }
         repl2.eval("""
-            (foo 2)
+            !(foo 2)
         """.trimIndent()).let {
             assertTrue(it.isSuccess)
             assertEquals(4, it.result)
@@ -139,7 +139,7 @@ class ReplTest {
         repl.eval("""
             (: foo (-> Int Int (-> Int Int Int) Int))
             (= (foo _x _y _f) (_f _x _y))
-            (foo 10 20 (\ (_x _y) (+ _x _y)))
+            !(foo 10 20 (\ (_x _y) (+ _x _y)))
         """.trimIndent().replace('_', '$')).let {
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
@@ -155,7 +155,7 @@ class ReplTest {
             (= (foo _x _y _f) (_f _x _y))
             (: bar (-> Int Int Int))
             (= (bar _x _y) (+ _x _y))
-            (foo 10 20 bar)
+            !(foo 10 20 bar)
         """.trimIndent().replace('_', '$')).let {
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
@@ -178,7 +178,7 @@ class ReplTest {
             (: bar (-> Int))
             (= (bar) (f (foo)))
            
-            (bar)
+            !(bar)
         """.trimIndent().replace('_', '$')).let {
             assertTrue(it.isSuccess)
             assertTrue(it.messages.isEmpty())
@@ -201,7 +201,7 @@ class ReplTest {
             (: bar (-> Int))
             (= (bar) (f (foo)))
            
-            (+ 1 (bar))
+            !(+ 1 (bar))
         """.trimIndent().replace('_', '$')).let {
             it.messages.forEach {
                 println(it)
@@ -215,7 +215,7 @@ class ReplTest {
     @Test
     fun `recover from a failure`() {
         val repl = createRepl()
-        repl.eval("""(+ 1 (foo 2))""").let {
+        repl.eval("""!(+ 1 (foo 2))""").let {
             assertFalse(it.isSuccess)
         }
         repl.eval(
@@ -224,7 +224,7 @@ class ReplTest {
             (= (log-int _x)
                 (if (== _x 1) 0 (+ 1 (log-int (- _x 1))))
             )
-            (log-int 8)
+            !(log-int 8)
             """.trimIndent().replace('_', '$')
         ).let {
             assertTrue(it.isSuccess)
@@ -243,7 +243,7 @@ class ReplTest {
             assertTrue(it.isSuccess)
         }
         repl.eval("""
-            (foo)
+            !(foo)
         """.trimIndent()).let {
             assertTrue(it.isSuccess)
         }

@@ -6,13 +6,17 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.ir.MatchBranch
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOrConstantButFoundMessage
+import net.singularity.jetta.runtime.space.Space
 import kotlin.math.exp
 
-class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
+class FunctionRewriter(
+    val messageCollector: MessageCollector,
+    private val space: Space
+) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
     private val annotations = mutableMapOf<String, List<Atom>>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
-    private val main = mutableListOf<Atom>()
+    private val runs = mutableListOf<Atom>()
 
     private data class Pattern(val pattern: Expression, val value: Atom)
 
@@ -20,10 +24,11 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
         source.code.forEach {
             when (it) {
                 is Expression -> rewriteTopLevelExpression(it)
+                is Run -> rewriteTopLevelRun(it)
                 else -> TODO()
             }
         }
-        val mainPart = if (main.isNotEmpty()) mkMain() else listOf()
+        val mainPart = if (runs.isNotEmpty()) mkMain() else listOf()
         return ParsedSource(source.filename, mkFunctions() + mainPart)
     }
 
@@ -103,7 +108,6 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     if (!isConstantExpression(it)) return false
                 }
             }
-
             else -> return true
         }
         return true
@@ -223,38 +227,14 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
 
     private fun mkMain(): List<Atom> {
         val result = mutableListOf<Atom>()
-        // FIXME: turn it back
-//        var count = 0
-//
-//        val calls = main.map {
-//            val fnName = "__main_${count++}"
-//            result.add(
-//                FunctionDefinition(
-//                    fnName,
-//                    listOf(),
-//                    null,
-//                    it
-//                )
-//            )
-//            Expression(Symbol(fnName))
-//        }
-//        result.add(
-//            FunctionDefinition(
-//                MAIN,
-//                listOf(),
-//                null,
-//                Expression(listOf(Special(Predefined.RUN_SEQ)) + calls)
-//            )
-//        )
-        val fnName = MAIN
-        val main1 = main.map { rewriteAtom(it) }
+        val mainBody = runs
         result.add(
             FunctionDefinition(
-                fnName,
+                MAIN,
                 listOf(),
                 null,
-                Expression(listOf(Special(Predefined.RUN_SEQ)) + main1),
-                position = main.first().position
+                Expression(listOf(Special(Predefined.RUN_SEQ)) + mainBody),
+                position = runs.first().position
             )
         )
         return result
@@ -270,7 +250,6 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                     else -> atom
                 }
             }
-
             else -> atom
         }
 
@@ -350,7 +329,7 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
             } else if (func is Symbol && specials.contains(func.name)) {
                 mkSpecialFromSymbol(it)
             } else {
-                expression
+                it
             }
         }
     }
@@ -392,9 +371,13 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
             }
 
             else -> {
-                main.add(expression)
+                space.add(expression)
             }
         }
+    }
+
+    private fun rewriteTopLevelRun(run: Run) {
+        runs.add(rewriteAtom(run.expression))
     }
 
     private fun Atom.asType(): Atom =
@@ -408,7 +391,6 @@ class FunctionRewriter(val messageCollector: MessageCollector) : Rewriter {
                 "Atom" -> GroundedType.ATOM
                 else -> TODO()
             }
-
             is ArrowType -> ArrowType(types = types.map { it.asType() })
             else -> TODO("atom=" + this)
         }

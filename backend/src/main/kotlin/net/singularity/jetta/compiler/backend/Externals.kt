@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
+import net.singularity.jetta.runtime.Assertions
 import net.singularity.jetta.runtime.IO
 import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.Random
@@ -42,6 +43,28 @@ fun registerExternals(context: Context) {
                 name = "println",
                 descriptor = "(Ljava/lang/Object;)V"
             ), null, false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = Type.getInternalName(Assertions::class.java),
+                name = "assertEqual",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)V"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.UNIT),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = Type.getInternalName(Assertions::class.java),
+                name = "assertEqualToResult",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)V"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.UNIT),
+            false
         )
     )
     context.addSystemFunction(

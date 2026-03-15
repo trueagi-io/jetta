@@ -33,8 +33,8 @@ class Expression(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is Expression) return false
-        return toString() == other.toString()
+        return atoms == other.atoms
     }
 
-    override fun hashCode(): Int = toString().hashCode()
+    override fun hashCode(): Int = atoms.hashCode()
 }
