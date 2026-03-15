@@ -50,20 +50,6 @@ class MettaB2BackchainTest : GeneratorTestBase() {
         }
     }
 
-    private val mapImpl = JvmMethod(
-        owner = "net/singularity/jetta/runtime/UtilKt",
-        name = "simpleMap",
-        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
-        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;TR;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
-    )
-
-    private val flatMapImpl = JvmMethod(
-        owner = "net/singularity/jetta/runtime/UtilKt",
-        name = "simpleFlatMap",
-        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
-        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;Ljava/util/List<TR;>;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
-    )
-
     @Test
     fun `backward chaining deduction - Plato is mortal`() {
         compile(

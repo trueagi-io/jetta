@@ -9,7 +9,9 @@ import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSym
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LowerAssertExpressionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.QuotePureSymbolicBodiesRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.runtime.space.SpaceImpl
 import net.singularity.jetta.compiler.logger.Logger
@@ -155,6 +157,10 @@ class Context(
 
     private fun inferTypeForExpression(expression: Expression, scope: Scope) {
         logger.trace { "Infer type for expression: $expression" }
+        if (expression.atoms.isEmpty()) {
+            expression.type = GroundedType.ATOM
+            return
+        }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val functionName = atom.name
@@ -248,6 +254,11 @@ class Context(
 
             is Lambda -> {
                 TODO()
+            }
+
+            is Expression -> {
+                expression.atoms.forEach { inferType(it, scope) }
+                expression.type = GroundedType.ATOM
             }
 
             else -> TODO("atom=$atom")
@@ -511,7 +522,7 @@ class Context(
                         val def = FunctionDefinition(
                             fnName,
                             listOf(),
-                            ArrowType(atom.type!!),
+                            ArrowType(atom.type ?: GroundedType.ATOM),
                             atom,
                             position = atom.position
                         )
@@ -761,7 +772,6 @@ class Context(
                     // (e.g., nested destructuring in Match branches).
                     // Default to Atom type; only report error if type was explicitly expected.
                     atom.type = atom.type ?: GroundedType.ATOM
-//                    messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
                 }
             }
 
@@ -784,6 +794,10 @@ class Context(
 
             is Symbol -> {
                 if (atom.name == Predefined.SELF) {
+                    return
+                }
+                if (suggestedType == GroundedType.ATOM || suggestedType == GroundedType.ANY) {
+                    atom.type = GroundedType.ATOM
                     return
                 }
                 val def = definedFunctions[atom.name]
@@ -828,6 +842,8 @@ class Context(
         val rewriter = CompositeRewriter()
         rewriter.add { ReplaceNodesRewriter(nodesToReplace) }
         rewriter.add { MarkMultivaluedFunctionsRewriter(functions) }
+        rewriter.add { LowerAssertExpressionsRewriter() }
+        rewriter.add { QuotePureSymbolicBodiesRewriter() }
         rewriter.add { CanonicalFormRewriter(messageCollector, this) }
         val res = rewriter.rewrite(source)
         return res
@@ -995,6 +1011,11 @@ class Context(
                 } else {
                     unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
                 }
+            }
+
+            is Expression -> {
+                expression.type = GroundedType.ATOM
+                expression.atoms.forEach { resolveAtom(it, scope) }
             }
 
             else -> TODO("atom=$atom")

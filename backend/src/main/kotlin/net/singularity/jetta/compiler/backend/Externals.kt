@@ -50,7 +50,7 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = Type.getInternalName(Assertions::class.java),
                 name = "assertEqual",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)V"
+                descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
             ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.UNIT),
             false
@@ -61,7 +61,7 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = Type.getInternalName(Assertions::class.java),
                 name = "assertEqualToResult",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)V"
+                descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
             ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.UNIT),
             false

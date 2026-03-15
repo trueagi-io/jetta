@@ -15,5 +15,5 @@
 ; which is treated as a set of expected results.
 !(assertEqualToResult
   (match &self (($x leaf2) leaf3) $x)
-  '[leaf1
-   (leaf0 leaf1)])
+  (leaf1
+   (leaf0 leaf1)))

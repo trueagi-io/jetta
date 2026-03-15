@@ -298,8 +298,85 @@ open class FunctionGenerator(
                 )
             }
 
+            is Special -> {
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Special::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                mv.visitLdcInsn(atom.value)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                generateLoadInt(2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Special::class.java),
+                    "<init>",
+                    "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
+            }
+
             is Grounded<*> -> {
-                TODO()
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Grounded::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                when (val value = atom.value) {
+                    is Int -> {
+                        generateLoadInt(value)
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "java/lang/Integer",
+                            "valueOf",
+                            "(I)Ljava/lang/Integer;",
+                            false
+                        )
+                    }
+                    is Long -> {
+                        mv.visitLdcInsn(value)
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "java/lang/Long",
+                            "valueOf",
+                            "(J)Ljava/lang/Long;",
+                            false
+                        )
+                    }
+                    is Boolean -> {
+                        if (value) {
+                            mv.visitInsn(Opcodes.ICONST_1)
+                        } else {
+                            mv.visitInsn(Opcodes.ICONST_0)
+                        }
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "java/lang/Boolean",
+                            "valueOf",
+                            "(Z)Ljava/lang/Boolean;",
+                            false
+                        )
+                    }
+                    is Double -> {
+                        mv.visitLdcInsn(value)
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "java/lang/Double",
+                            "valueOf",
+                            "(D)Ljava/lang/Double;",
+                            false
+                        )
+                    }
+                    is String -> {
+                        mv.visitLdcInsn(value)
+                    }
+                    else -> TODO("Not implemented yet grounded quote for $value")
+                }
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                generateLoadInt(2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Grounded::class.java),
+                    "<init>",
+                    "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
             }
 
             is Variable -> {

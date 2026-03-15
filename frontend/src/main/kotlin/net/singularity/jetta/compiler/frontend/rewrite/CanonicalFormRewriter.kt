@@ -68,6 +68,9 @@ class CanonicalFormRewriter(
     private fun extractIfStatementsIfNeeded(owner: String, atom: Atom, root: Boolean): Atom {
         when (atom) {
             is Expression -> {
+                if (atom.atoms.isEmpty()) {
+                    return atom
+                }
                 if (!root && atom.atoms[0].isIf() && atom.checkIsNonDeterministicRecursively()) {
                     val functionName = mkFunctionName(functionCount++)
                     val (params, arrowType) = extractVariables(atom)
@@ -97,7 +100,6 @@ class CanonicalFormRewriter(
 
             else -> return atom
         }
-
     }
 
     private fun extractVariables(atom: Atom): Pair<List<Variable>, ArrowType> {
@@ -125,7 +127,9 @@ class CanonicalFormRewriter(
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {
             is Expression -> {
-                if (atom.atoms[0].isIf()) rewriteIf(atom) else rewriteExpression(atom)
+                if (atom.atoms.isEmpty()) atom
+                else if (atom.atoms[0].isIf()) rewriteIf(atom)
+                else rewriteExpression(atom)
             }
 
             else -> atom
@@ -162,6 +166,8 @@ class CanonicalFormRewriter(
     `(map? (\ ($x1) (f 2 $x1)) (foo))`
      */
     private fun rewriteExpression(expression: Expression): Atom {
+        if (expression.atoms.isEmpty()) return expression
+
         fun createMaps(
             replacement: List<Pair<Int, Expression>>,
             expression: Atom,
@@ -200,6 +206,7 @@ class CanonicalFormRewriter(
             // a multivalued function, use FLAT_MAP_ so its List results
             // are flattened rather than nested.
             val innermostOp = if (body is Expression
+                && body.atoms.isNotEmpty()
                 && body.atoms[0] is Symbol
                 && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
             ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
@@ -207,7 +214,6 @@ class CanonicalFormRewriter(
         }
         return body
     }
-
 
     /*
     `(if (c $x1 $x2) (b1 $x1 $x3) (b2 $x2 $x3))`
@@ -242,8 +248,8 @@ class CanonicalFormRewriter(
                 atoms = listOf(
                     expression.atoms[0],
                     rewriteAtom(expression.atoms[1]),
-                    rewriteAndMkSeqIfNeeded(expression, 2),//rewriteAtom(expression.atoms[2]),
-                    rewriteAndMkSeqIfNeeded(expression, 3)//rewriteAtom(expression.atoms[3])
+                    rewriteAndMkSeqIfNeeded(expression, 2),
+                    rewriteAndMkSeqIfNeeded(expression, 3)
                 ),
                 type = expression.type,
                 id = expression.id
@@ -278,6 +284,8 @@ class CanonicalFormRewriter(
         var isMultivalued = false
         when (atom) {
             is Expression -> {
+                if (atom.atoms.isEmpty()) return false
+
                 when (val f = atom.atoms[0]) {
                     is Symbol -> {
                         // match expressions have their own variable scope —
@@ -292,7 +300,8 @@ class CanonicalFormRewriter(
                             // If so, don't register this call at the parent scope —
                             // instead, let the children be scoped to this call.
                             val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
-                                arg is Expression && arg.atoms[0] is Symbol &&
+                                arg is Expression && arg.atoms.isNotEmpty() &&
+                                        arg.atoms[0] is Symbol &&
                                         context.definedFunctions[(arg.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
                             }
                             if (!hasMultivaluedArgs) {
@@ -352,6 +361,7 @@ class CanonicalFormRewriter(
     }
 
     private fun Expression.checkIsNonDeterministicRecursively(): Boolean {
+        if (atoms.isEmpty()) return false
         if (atoms[0] is Symbol && context.definedFunctions[(atoms[0] as Symbol).name]!!.func.isMultivalued()) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
