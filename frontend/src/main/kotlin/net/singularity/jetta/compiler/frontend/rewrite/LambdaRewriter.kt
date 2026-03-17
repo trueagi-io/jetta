@@ -22,8 +22,11 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
             else -> atom
         }
 
-    private fun rewriteExpression(expression: Expression): Atom =
-        when ((expression.atoms.first() as? Special)?.value) {
+    private fun rewriteExpression(expression: Expression): Atom {
+        if (expression.atoms.isEmpty()) {
+            return expression
+        }
+        return when ((expression.atoms.first() as? Special)?.value) {
             Predefined.LAMBDA -> {
                 val (params, body) = expression.atoms.drop(1)
                 Lambda(
@@ -40,10 +43,11 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
                 Expression(atoms, position = expression.position)
             }
         }
+    }
 
     private fun extractFormalParams(expression: Expression): List<Variable> {
         val list = expression.atoms.mapNotNull {
-             if (it is Variable) {
+            if (it is Variable) {
                 it
             } else {
                 messageCollector.add(ExpectVariableButFoundMessage(expression))

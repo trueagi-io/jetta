@@ -57,7 +57,7 @@ class ApplicationTest {
                 """
                 (: foo (-> Int Int Int))
                 (= (foo _x _y) (+ _x _y 1))
-                (foo 1 2)
+                !(foo 1 2)
                 """.trimIndent().replace('_', '$')
             )
         }.let {
@@ -128,7 +128,7 @@ class ApplicationTest {
         client.post("/contexts/$contextId") {
             setBody(
                 """
-                (+ 1 2)
+                !(+ 1 2)
                 """.trimIndent().replace('_', '$')
             )
         }.let {
@@ -164,7 +164,7 @@ class ApplicationTest {
                 (@ foo multivalued)
                 (: foo (-> Int))
                 (= (foo) (seq 1 2 3))
-                (foo)
+                !(foo)
                 """.trimIndent()
             )
         }.let {

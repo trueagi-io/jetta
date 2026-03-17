@@ -13,7 +13,7 @@ class NamingTest : GeneratorTestBase() {
             """
                 (: foo (-> Int Int Int))
                 (= (foo _x#1 _x#2) (+ _x#1 _x#2))
-                (foo 10 20)
+                !(foo 10 20)
                 """.trimIndent().replace('_', '$')
         ).let { (result, messageCollector) ->
             messageCollector.list().forEach {
@@ -32,7 +32,7 @@ class NamingTest : GeneratorTestBase() {
             """
                 (: foo-bar (-> Int Int Int))
                 (= (foo-bar _x _y) (+ _x _y))
-                (foo-bar 10 20)
+                !(foo-bar 10 20)
                 """.trimIndent().replace('_', '$')
         ).let { (result, messageCollector) ->
             messageCollector.list().forEach {

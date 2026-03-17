@@ -12,7 +12,7 @@ class ExternalCallsTest : GeneratorTestBase() {
         compile(
             "Println.metta",
             """
-            (println (+ 1 1))
+            !(println (+ 1 1))
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -32,7 +32,7 @@ class ExternalCallsTest : GeneratorTestBase() {
         compile(
             "Println.metta",
             """
-            (println (+ 1.0 2.0))
+            !(println (+ 1.0 2.0))
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -52,7 +52,7 @@ class ExternalCallsTest : GeneratorTestBase() {
         compile(
             "Random.metta",
             """
-            (random)
+            !(random)
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -75,8 +75,8 @@ class ExternalCallsTest : GeneratorTestBase() {
         compile(
             "RandomWithSeed.metta",
             """
-            (seed 10L)
-            (random)
+            !(seed 10L)
+            !(random)
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -98,7 +98,7 @@ class ExternalCallsTest : GeneratorTestBase() {
         compile(
             "GenerateSimple.metta",
             """
-            (generate (\ (_x) (+ _x 1.0)) 1.0 3.0 1.0)
+            !(generate (\ (_x) (+ _x 1.0)) 1.0 3.0 1.0)
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -120,7 +120,7 @@ class ExternalCallsTest : GeneratorTestBase() {
             """
             (: coin (-> Double))
             (= (coin) (if (> (random) 0.5) 1.0 0.0))
-            (coin)
+            !(coin)
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)

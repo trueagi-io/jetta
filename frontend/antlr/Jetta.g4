@@ -1,20 +1,34 @@
 grammar Jetta;
 
 program
-    : expression* EOF
+    : statement* EOF
+    ;
+
+statement
+    : run
+    | expression
+    ;
+
+run
+    : BANG expression
     ;
 
 expression
-    : LPAREN atom (atom)* RPAREN
+    : LPAREN (atom)* RPAREN
     ;
 
 atom
-    : variable
+    : quoted
+    | variable
     | symbol
     | number
     | string
     | special
     | expression
+    ;
+
+quoted
+    : QUOTE atom
     ;
 
 number
@@ -156,6 +170,14 @@ STRING
 
 AT
     : '@'
+    ;
+
+BANG
+    : '!'
+    ;
+
+QUOTE
+    : '\''
     ;
 
 WS

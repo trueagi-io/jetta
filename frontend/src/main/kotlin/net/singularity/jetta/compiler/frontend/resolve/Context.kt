@@ -9,7 +9,9 @@ import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSym
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LowerAssertExpressionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.QuotePureSymbolicBodiesRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
 import net.singularity.jetta.runtime.space.SpaceImpl
 import net.singularity.jetta.compiler.logger.Logger
@@ -155,6 +157,10 @@ class Context(
 
     private fun inferTypeForExpression(expression: Expression, scope: Scope) {
         logger.trace { "Infer type for expression: $expression" }
+        if (expression.atoms.isEmpty()) {
+            expression.type = GroundedType.ATOM
+            return
+        }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val functionName = atom.name
@@ -248,6 +254,11 @@ class Context(
 
             is Lambda -> {
                 TODO()
+            }
+
+            is Expression -> {
+                expression.atoms.forEach { inferType(it, scope) }
+                expression.type = GroundedType.ATOM
             }
 
             else -> TODO("atom=$atom")
@@ -373,18 +384,136 @@ class Context(
         }
     }
 
-    private fun removeSpaceNodes(source: ParsedSource): ParsedSource {
-        fun removeNodesFromFunction(func: FunctionDefinition): FunctionDefinition {
-            val atoms = (func.body as Expression).atoms.filter { !space.contains(it.id) }
-            return func.copy(body = (func.body as Expression).copy(atoms))
+    /**
+     * Validate executable top-level runtime entrypoints after resolution.
+     *
+     * This pass is intentionally conservative:
+     * - it checks only generated executable entrypoints (`__main` and `__main_*`)
+     * - it reports unresolved symbol-head expressions only when they are used in
+     *   executable position
+     * - it does not attempt to reject symbolic/data-heavy user-defined functions yet
+     *
+     * The goal is to improve diagnostics for broken top-level `!expr` programs
+     * without over-constraining MeTTa-style symbolic code.
+     */
+    private fun validateExecutableCalls(source: ParsedSource) {
+        source.code.forEach { atom ->
+            val function = atom as? FunctionDefinition ?: return@forEach
+            if (!isExecutableEntryPoint(function.name)) return@forEach
+            validateExecutableAtom(function.body)
         }
+    }
 
+    private fun isExecutableEntryPoint(functionName: String): Boolean =
+        functionName == FunctionRewriter.MAIN || functionName.startsWith("${FunctionRewriter.MAIN}_")
+
+    private fun validateExecutableAtom(atom: Atom) {
+        when (atom) {
+            is Expression -> validateExecutableExpression(atom)
+            is Lambda -> validateExecutableAtom(atom.body)
+            is Match -> atom.branches.forEach { branch ->
+                branch.cond?.let { validateExecutableAtom(it) }
+                validateExecutableAtom(branch.body)
+            }
+            else -> { /* literals, variables, symbols in value position are fine */ }
+        }
+    }
+
+    private fun validateExecutableExpression(expression: Expression) {
+        if (expression.atoms.isEmpty()) return
+
+        when (val head = expression.atoms[0]) {
+            is Special -> validateSpecialExpression(expression, head)
+            is Variable -> expression.arguments().forEach { validateExecutableAtom(it) }
+            is Lambda -> {
+                validateExecutableAtom(head.body)
+                expression.arguments().forEach { validateExecutableAtom(it) }
+            }
+            is Symbol -> {
+                val resolved = expression.resolved
+                if (resolved != null) {
+                    validateResolvedCallArguments(expression, resolved)
+                    return
+                }
+
+                if (expression.type == GroundedType.ATOM) {
+                    return
+                }
+
+                messageCollector.add(CannotResolveSymbolMessage(head.name, head.position ?: expression.position))
+                expression.arguments().forEach { validateExecutableAtom(it) }
+            }
+            else -> {
+                expression.arguments().forEach { validateExecutableAtom(it) }
+            }
+        }
+    }
+
+    private fun validateResolvedCallArguments(expression: Expression, resolved: ResolvedSymbol) {
+        val paramTypes = resolved.arrowType()?.types?.dropLast(1).orEmpty()
+        expression.arguments().forEachIndexed { index, arg ->
+            val paramType = paramTypes.getOrNull(index)
+            if (paramType == GroundedType.ATOM) return@forEachIndexed
+            validateExecutableAtom(arg)
+        }
+    }
+
+    private fun validateSpecialExpression(expression: Expression, special: Special) {
+        when (special.value) {
+            Predefined.QUOTE -> {
+                // Quoted content is data, not executable code.
+            }
+
+            Predefined.IF,
+            Predefined.COND_EQ,
+            Predefined.COND_NEQ,
+            Predefined.COND_LT,
+            Predefined.COND_GT,
+            Predefined.COND_LE,
+            Predefined.COND_GE,
+            Predefined.TIMES,
+            Predefined.MINUS,
+            Predefined.PLUS,
+            Predefined.DIVIDE,
+            Predefined.DIV,
+            Predefined.MOD,
+            Predefined.RUN_SEQ,
+            Predefined.NOT,
+            Predefined.AND,
+            Predefined.OR,
+            Predefined.XOR,
+            Predefined.SEQ,
+            Predefined.MAP_,
+            Predefined.FLAT_MAP_ -> {
+                expression.arguments().forEach { validateExecutableAtom(it) }
+            }
+
+            else -> {
+                expression.arguments().forEach { validateExecutableAtom(it) }
+            }
+        }
+    }
+
+    /**
+     * Rewrites generated `__main` into a codegen-friendly form by extracting each
+     * run step from the top-level `run-seq` body into a separate synthetic helper
+     * function and replacing the original step with a call to that helper.
+     *
+     * This transformation is purely operational:
+     * - it does not decide which expressions belong to space
+     * - it does not change top-level MeTTa semantics
+     * - it preserves run order and final result semantics
+     *
+     * After top-level semantics were split in the rewriter, `__main` contains only
+     * executable top-level `!expr` forms. This method exists only to simplify later
+     * frontend/backend stages that work better when each main step is represented as
+     * an ordinary function call.
+     */
+    private fun normalizeMainForCodegen(source: ParsedSource): ParsedSource {
         val code = mutableListOf<Atom>()
         source.code.forEach {
             if (it is FunctionDefinition && it.name == FunctionRewriter.MAIN) {
-                // FIXME: Can it be optimized sometimes to avoid additional functions?
-                val bag = removeNodesFromFunction(it)
-                val atoms = (bag.body as Expression).atoms
+                val atoms = (it.body as Expression).atoms
                 if (atoms.size != 1) {
                     var count = 0
 
@@ -393,7 +522,7 @@ class Context(
                         val def = FunctionDefinition(
                             fnName,
                             listOf(),
-                            ArrowType(atom.type!!),
+                            ArrowType(atom.type ?: GroundedType.ATOM),
                             atom,
                             position = atom.position
                         )
@@ -405,20 +534,22 @@ class Context(
                         FunctionRewriter.MAIN,
                         listOf(),
                         null,
-                        Expression(listOf(Special(Predefined.RUN_SEQ)) + calls,
-                            position = calls.getOrNull(0)?.position),
+                        Expression(
+                            listOf(Special(Predefined.RUN_SEQ)) + calls,
+                            position = calls.getOrNull(0)?.position
+                        ),
                         position = calls.getOrNull(0)?.position
                     )
-//                    resolveFunctionDefinition(source.getJvmClassName(), def)
-//                    addResolvedFunction(source.getJvmClassName(), def)
                     code.add(def)
                 }
-            } else
+            } else {
                 code.add(it)
+            }
         }
 
         return ParsedSource(source.filename, code)
     }
+
 
     fun resolveRecursively(source: ParsedSource): ParsedSource {
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
@@ -426,10 +557,11 @@ class Context(
         typeInferenceLoop(source)
         refineFunctionArrowTypes()
         resolveSource(source)
-        val cleaned = removeSpaceNodes(source)
-        val postprocessed = applyPostResolveRewriters(cleaned)
+        val normalizedMain = normalizeMainForCodegen(source)
+        val postprocessed = applyPostResolveRewriters(normalizedMain)
         messageCollector.clear()
         resolveSource(postprocessed)
+        validateExecutableCalls(postprocessed)
         defaultUntypedToAtom(postprocessed)
         return postprocessed
     }
@@ -607,17 +739,21 @@ class Context(
     }
 
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
-        logger.trace {"Resolving atom: $atom" }
+        logger.trace { "Resolving atom: $atom" }
         when (atom) {
             is Expression -> {
                 // If the expected type is Atom, this expression is data (a constructor),
                 // not a function call — don't try to resolve its head symbol.
-                if (suggestedType == GroundedType.ATOM && resolve((atom.atoms.firstOrNull() as? Symbol)?.name ?: "") == null) {
+                if (suggestedType == GroundedType.ATOM && resolve(
+                        (atom.atoms.firstOrNull() as? Symbol)?.name ?: ""
+                    ) == null
+                ) {
                     atom.type = GroundedType.ATOM
                 } else {
                     resolveExpression(atom, scope)
                 }
             }
+
             is Variable -> {
                 val data = scope[atom.name]
                 if (data != null) {
@@ -636,7 +772,6 @@ class Context(
                     // (e.g., nested destructuring in Match branches).
                     // Default to Atom type; only report error if type was explicitly expected.
                     atom.type = atom.type ?: GroundedType.ATOM
-//                    messageCollector.add(UndefinedVariableMessage(atom.name, atom.position))
                 }
             }
 
@@ -659,6 +794,10 @@ class Context(
 
             is Symbol -> {
                 if (atom.name == Predefined.SELF) {
+                    return
+                }
+                if (suggestedType == GroundedType.ATOM || suggestedType == GroundedType.ANY) {
+                    atom.type = GroundedType.ATOM
                     return
                 }
                 val def = definedFunctions[atom.name]
@@ -703,6 +842,8 @@ class Context(
         val rewriter = CompositeRewriter()
         rewriter.add { ReplaceNodesRewriter(nodesToReplace) }
         rewriter.add { MarkMultivaluedFunctionsRewriter(functions) }
+        rewriter.add { LowerAssertExpressionsRewriter() }
+        rewriter.add { QuotePureSymbolicBodiesRewriter() }
         rewriter.add { CanonicalFormRewriter(messageCollector, this) }
         val res = rewriter.rewrite(source)
         return res
@@ -711,12 +852,12 @@ class Context(
     private fun createLambdaTypeInfo(parentScope: Scope, lambda: Lambda): Scope = parentScope.join(lambda)
 
     private fun resolveExpression(expression: Expression, scope: Scope) {
-        logger.trace {"Resolving expression: $expression" }
+        logger.trace { "Resolving expression: $expression" }
         if (!scope.isProvided &&
             scope.functionDefinition is FunctionDefinition &&
             scope.functionDefinition.name != FunctionRewriter.MAIN
         ) {
-            logger.debug {"Add $expression >> $scope" }
+            logger.debug { "Add $expression >> $scope" }
             unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
         }
         when (val atom = expression.atoms[0]) {
@@ -741,29 +882,22 @@ class Context(
                         }
                     }
                 } else {
-                    if (scope.functionDefinition is FunctionDefinition &&
-                        scope.functionDefinition.name == FunctionRewriter.MAIN
-                    ) {
-                        if (typeInferenceDone)
-                            space.add(expression)
-                    } else {
-                        // Always track as unresolved so subsequent passes can retry
-                        unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
-                        if (definedFunctions[atom.name] == null) {
-                            // If the enclosing function has a Match body, unresolved symbols
-                            // in expression-head position are data constructors (e.g., And, Pair)
-                            // that should be quoted, not reported as errors.
-                            // Also skip error if any param is typed Atom — the function accepts
-                            // dynamic values so unresolved symbols are constructors.
-                            if ((scope.functionDefinition is FunctionDefinition &&
-                                        scope.functionDefinition.body is Match) ||
-                                scope.functionDefinition.params.any { it.type == GroundedType.ATOM }
-                            ) {
-                                expression.type = GroundedType.ATOM
-                                expression.arguments().forEach { resolveAtom(it, scope) }
-                            } else {
-                                messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
-                            }
+                    // Always track as unresolved so subsequent passes can retry
+                    unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
+                    if (definedFunctions[atom.name] == null) {
+                        // If the enclosing function has a Match body, unresolved symbols
+                        // in expression-head position are data constructors (e.g., And, Pair)
+                        // that should be quoted, not reported as errors.
+                        // Also skip error if any param is typed Atom — the function accepts
+                        // dynamic values so unresolved symbols are constructors.
+                        if ((scope.functionDefinition is FunctionDefinition &&
+                                    scope.functionDefinition.body is Match) ||
+                            scope.functionDefinition.params.any { it.type == GroundedType.ATOM }
+                        ) {
+                            expression.type = GroundedType.ATOM
+                            expression.arguments().forEach { resolveAtom(it, scope) }
+                        } else {
+                            messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
                         }
                     }
                 }
@@ -871,7 +1005,6 @@ class Context(
                 }
             }
 
-
             is Lambda -> {
                 if (atom.arrowType != null) {
                     resolveAtom(atom, scope)
@@ -880,14 +1013,12 @@ class Context(
                 }
             }
 
-            else -> {
-                if (scope.functionDefinition is FunctionDefinition &&
-                    scope.functionDefinition.name == FunctionRewriter.MAIN
-                ) {
-                    if (typeInferenceDone)
-                        space.add(expression)
-                } else TODO("atom=$atom")
+            is Expression -> {
+                expression.type = GroundedType.ATOM
+                expression.atoms.forEach { resolveAtom(it, scope) }
             }
+
+            else -> TODO("atom=$atom")
         }
     }
 

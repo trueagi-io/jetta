@@ -33,7 +33,6 @@ class Compiler(
     val dumpIr: Boolean = false
 ) {
 
-
     init {
         LogConfig.level = logLevel
     }
@@ -63,7 +62,7 @@ class Compiler(
         addSystemFunctions(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
         rewriter.add { LambdaRewriter(messageCollector) }
 
         val parsed = sources.map { source ->
@@ -75,7 +74,6 @@ class Compiler(
         }
 
         if (messageCollector.containsErrors()) {
-            // do not generate classes if there is any error
             return false to messageCollector.list()
         }
         val resolved = parsed.map { context.resolve(it) }

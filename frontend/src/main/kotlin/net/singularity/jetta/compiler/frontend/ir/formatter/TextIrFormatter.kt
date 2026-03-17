@@ -25,6 +25,7 @@ class TextIrFormatter(
     private fun formatAtom(atom: Atom, depth: Int, sb: StringBuilder) {
         when (atom) {
             is FunctionDefinition -> formatFunctionDef(atom, depth, sb)
+            is Run -> formatAssertion(atom, depth, sb)
             is Lambda -> formatLambda(atom, depth, sb)
             is Match -> formatMatch(atom, depth, sb)
             is Expression -> formatExpression(atom, depth, sb)
@@ -68,6 +69,7 @@ class TextIrFormatter(
     }
 
     private fun formatInlineAtom(atom: Atom): String = when (atom) {
+        is Run -> buildString { formatAssertion(atom, 0, this) }
         is Variable -> formatVariable(atom)
         is Grounded<*> -> formatGrounded(atom)
         is Symbol -> formatSymbol(atom)
@@ -114,6 +116,15 @@ class TextIrFormatter(
             sb.append(childIndent)
             formatAtom(def.body, depth + 1, sb)
             sb.append(")")
+        }
+    }
+
+    private fun formatAssertion(run: Run, depth: Int, sb: StringBuilder) {
+        sb.append("!")
+        if (isSimple(run.expression)) {
+            formatAtom(run.expression, depth, sb)
+        } else {
+            formatAtom(run.expression, depth, sb)
         }
     }
 
@@ -205,6 +216,7 @@ class TextIrFormatter(
     }
 
     private fun isSimple(atom: Atom): Boolean = when (atom) {
+        is Run -> isSimple(atom.expression)
         is Symbol, is Variable, is Grounded<*>, is Special, is GroundedType, is SeqType, is ArrowType -> true
         is Expression -> atom.atoms.all { isLeaf(it) } && atom.atoms.size <= 5
         else -> false

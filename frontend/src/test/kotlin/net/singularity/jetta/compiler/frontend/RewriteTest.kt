@@ -1,12 +1,14 @@
 package net.singularity.jetta.compiler.frontend
 
 import net.singularity.jetta.compiler.frontend.ir.ArrowType
+import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
 import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.runtime.space.SpaceImpl
 import kotlin.test.*
 
 class RewriteTest : BaseFrontendTest() {
@@ -24,7 +26,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)
@@ -49,7 +51,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)
@@ -76,7 +78,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
         println(result)
         assertEquals(1, result.code.size)
@@ -104,7 +106,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, SpaceImpl()) }
         rewriter.add { LambdaRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
@@ -130,7 +132,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, SpaceImpl()) }
         rewriter.add { LambdaRewriter(messageCollector) }
         val result = rewriter.rewrite(program)
         println(result)
@@ -157,7 +159,7 @@ class RewriteTest : BaseFrontendTest() {
             messageCollector
         )
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, SpaceImpl()) }
         val result = rewriter.rewrite(program)
         println(result)
     }
@@ -176,7 +178,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         assertEquals(1, result.code.size)
@@ -222,7 +224,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -258,7 +260,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -307,7 +309,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -332,7 +334,7 @@ class RewriteTest : BaseFrontendTest() {
             ),
             messageCollector
         )
-        val rewriter = FunctionRewriter(messageCollector)
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
         val result = rewriter.rewrite(program)
 
         val func = result.code[0] as FunctionDefinition
@@ -359,5 +361,57 @@ class RewriteTest : BaseFrontendTest() {
 
         // Second branch: (deduce $x) -> no destructure bindings
         assertTrue(match.branches[1].destructuredBindings.isEmpty())
+    }
+
+    @Test
+    fun `assertEqualToResult quotes only expected argument`() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val program = parser.parse(
+            Source(
+                "AssertEqualToResultRewrite.metta",
+                """
+                !(assertEqualToResult (frog Sam) ((Frog Sam)))
+                """.trimIndent()
+            ),
+            messageCollector
+        )
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
+        val result = rewriter.rewrite(program)
+
+        assertEquals(1, result.code.size)
+        val main = result.code[0] as FunctionDefinition
+        val mainBody = main.body as Expression
+        val assertion = mainBody.atoms[1] as Expression
+
+        assertEquals("assertEqualToResult", assertion.atoms[0].toString())
+        assertEquals("(frog Sam)", assertion.atoms[1].toString())
+        assertEquals("(quote ((Frog Sam)))", assertion.atoms[2].toString())
+    }
+
+    @Test
+    fun `assertEqual remains ordinary call`() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val program = parser.parse(
+            Source(
+                "AssertEqualRewrite.metta",
+                """
+                !(assertEqual (frog Sam) T)
+                """.trimIndent()
+            ),
+            messageCollector
+        )
+        val rewriter = FunctionRewriter(messageCollector, SpaceImpl())
+        val result = rewriter.rewrite(program)
+
+        assertEquals(1, result.code.size)
+        val main = result.code[0] as FunctionDefinition
+        val mainBody = main.body as Expression
+        val assertion = mainBody.atoms[1] as Expression
+
+        assertEquals("assertEqual", assertion.atoms[0].toString())
+        assertEquals("(frog Sam)", assertion.atoms[1].toString())
+        assertEquals("T", assertion.atoms[2].toString())
     }
 }

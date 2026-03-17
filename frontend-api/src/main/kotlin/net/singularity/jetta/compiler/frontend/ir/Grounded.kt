@@ -13,5 +13,13 @@ class Grounded<T>(val value: T, override val position: SourcePosition? = null) :
 
     override val id: Int = UniqueAtomIdGenerator.generate()
 
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Grounded<*>) return false
+        return value == other.value
+    }
+
+    override fun hashCode(): Int = value.hashCode()
+
     override fun toString(): String = value.toString()
 }

@@ -29,7 +29,8 @@ abstract class GeneratorTestBase {
     val log = Logger.getLogger(GeneratorTestBase::class.java)
 
     protected fun compile(
-        filename: String, code: String,
+        filename: String,
+        code: String,
         mapImpl: JvmMethod? = null,
         flatMapImpl: JvmMethod? = null,
         init: (Context) -> Unit = {}
@@ -39,7 +40,7 @@ abstract class GeneratorTestBase {
         init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
@@ -49,7 +50,6 @@ abstract class GeneratorTestBase {
                     formatter.format(result) +
                     "============================================================================"
         }
-        // Save space and initialize JettaProgram so generated __main can use it
         val outputDir = Path("/tmp/metta")
         val programName = filename.substringBeforeLast('.')
         SpaceDirectorySerializer.save(context.getSpace(), outputDir, programName = programName)
@@ -73,7 +73,7 @@ abstract class GeneratorTestBase {
         val context = Context(messageCollector, mapImpl, flatMapImpl)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector) }
+        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
         rewriter.add { LambdaRewriter(messageCollector) }
 
         val parsed = sources.map {
@@ -104,4 +104,18 @@ abstract class GeneratorTestBase {
     protected fun List<CompilationResult>.toMap() = this.associate { it.className to it.bytecode }
 
     protected fun CompilationResult.getClass(): Class<*> = listOf(this).toMap().toClasses()[this.className]!!
+
+    protected val mapImpl = JvmMethod(
+        owner = "net/singularity/jetta/runtime/UtilKt",
+        name = "simpleMap",
+        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
+        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;TR;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+    )
+
+    protected val flatMapImpl = JvmMethod(
+        owner = "net/singularity/jetta/runtime/UtilKt",
+        name = "simpleFlatMap",
+        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
+        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;Ljava/util/List<TR;>;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+    )
 }

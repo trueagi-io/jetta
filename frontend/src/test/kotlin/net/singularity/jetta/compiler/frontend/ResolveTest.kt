@@ -3,10 +3,12 @@ package net.singularity.jetta.compiler.frontend
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import org.junit.jupiter.api.Test
+import kotlin.test.Ignore
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -117,5 +119,40 @@ class ResolveTest : BaseFrontendTest() {
                 println(it)
             }
             assertEquals(0, messageCollector.list().size)
+        }
+
+    @Ignore
+    @Test
+    fun `assertEqual quotes pure symbolic expression argument after resolve`() =
+        resolve(
+            "AssertEqualSymbolicStructureResolve.metta",
+            """
+        (: explain (-> Atom))
+        (= (explain)
+           ((mortal Plato)
+             proven-by
+             ((human Plato))))
+
+        !(assertEqual
+          (explain)
+          ((mortal Plato)
+            proven-by
+            ((human Plato))))
+        """.trimIndent()
+        ).let { (result, messageCollector) ->
+            messageCollector.list().forEach(::println) // FIXME
+//            assertTrue(messageCollector.list().isEmpty())
+
+            val helper = result.code
+                .filterIsInstance<FunctionDefinition>()
+                .first { it.name == "__main_0" }
+
+            val assertion = helper.body as Expression
+            assertEquals("assertEqual", assertion.atoms[0].toString())
+            assertEquals("(explain)", assertion.atoms[1].toString())
+            assertEquals(
+                "(quote ((mortal Plato) proven-by ((human Plato))))",
+                assertion.atoms[2].toString()
+            )
         }
 }

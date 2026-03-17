@@ -98,7 +98,7 @@ class Generator(val generateMain: Boolean = false) {
             val def = (it as FunctionDefinition)
             val name = mkLambdaName(source)
             when (val body = def.body) {
-                is Expression -> findLambdas(name, def.body as Expression, result)
+                is Expression -> findLambdas(name, body, result)
                 is Match -> {
                     body.branches.forEach { branch ->
                         findLambdas(name, branch.body, result)
@@ -113,6 +113,9 @@ class Generator(val generateMain: Boolean = false) {
     private fun findLambdas(name: String, body: Atom, acc: MutableMap<String, Lambda>): Map<String, Lambda> {
         when (body) {
             is Expression -> {
+                if (body.atoms.isEmpty()) {
+                    return acc
+                }
                 if ((body.atoms.first() as? Special)?.value == Predefined.RUN_SEQ) {
                     body.atoms.drop(1).forEach {
                         findLambdas(name, it as Expression, acc)

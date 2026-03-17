@@ -13,10 +13,27 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
 
     override fun visitProgram(ctx: JettaParser.ProgramContext) {
         val list = mutableListOf<Atom>()
-        ctx.expression().forEach {
-            list.add(visitExpression(it))
+        ctx.statement().forEach {
+            list.add(visitStatement(it))
         }
         parsedSource = ParsedSource(filename, list)
+    }
+
+    override fun visitStatement(ctx: JettaParser.StatementContext): Atom {
+        ctx.run()?.let {
+            return visitRun(it)
+        }
+        ctx.expression()?.let {
+            return visitExpression(it)
+        }
+        TODO(">>>" + ctx.text)
+    }
+
+    override fun visitRun(ctx: JettaParser.RunContext): Run {
+        return Run(
+            visitExpression(ctx.expression()),
+            mkPosition(ctx.position)
+        )
     }
 
     override fun visitExpression(ctx: JettaParser.ExpressionContext): Expression {
@@ -28,6 +45,9 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
     }
 
     override fun visitAtom(ctx: JettaParser.AtomContext): Atom {
+        ctx.quoted()?.let {
+            return visitQuoted(it)
+        }
         ctx.symbol()?.let {
             return Symbol(it.text, mkPosition(ctx.position))
         }
@@ -47,6 +67,14 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
             return visitString(it)
         }
         TODO(">>>" + ctx.text)
+    }
+
+    override fun visitQuoted(ctx: JettaParser.QuotedContext): Atom {
+        return Expression(
+            PredefinedAtoms.QUOTE,
+            visitAtom(ctx.atom()),
+            position = mkPosition(ctx.position)
+        )
     }
 
     override fun visitString(ctx: JettaParser.StringContext): Atom {
