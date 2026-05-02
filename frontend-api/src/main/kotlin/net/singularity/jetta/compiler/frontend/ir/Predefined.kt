@@ -30,7 +30,6 @@ object Predefined {
     const val MAP_ = "map?"
     const val FLAT_MAP_ = "flat-map?"
     const val SEQ = "seq"
-    const val IMPORT = "import"
     const val PACKAGE = "package"
     const val QUOTE = "quote"
     const val SELF = "&self"

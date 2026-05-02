@@ -55,7 +55,6 @@ double
 
 special
     : pattern
-    | import_
     | package
     | annotation
     | type
@@ -141,10 +140,6 @@ arrow
 
 if
     : IF
-    ;
-
-import_
-    : IMPORT
     ;
 
 package
@@ -263,10 +258,6 @@ IF
     : 'if'
     ;
 
-IMPORT
-    : 'import'
-    ;
-
 PACKAGE
     : 'package'
     ;
@@ -311,6 +302,10 @@ RPAREN
     : ')'
     ;
 
+// Identifier. The optional trailing '!' lets MeTTa-convention names like
+// `bind!`, `add-atom!`, `change-state!`, `import!`, `pragma!` lex as a single
+// IDENT token. The leading '!' (statement-level evaluation marker, see `run`)
+// is unaffected because '!' is not in the start-character class.
 IDENT
-    : [a-zA-Z_&] [a-zA-Z0-9_\-]*
+    : [a-zA-Z_&] [a-zA-Z0-9_\-]* '!'?
     ;

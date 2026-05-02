@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.frontend
 
 import net.singularity.jetta.compiler.frontend.ir.Run
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.parser.messages.ParseErrorMessage
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -246,5 +247,64 @@ class ParserTest : BaseFrontendTest() {
 
         assertEquals(1, program.code.size)
         assertTrue(program.code[0] is Run)
+    }
+
+    @Test
+    fun `parse identifier with trailing bang`() {
+        val program = justParse("(bind! foo bar)")
+        assertEquals(1, program.code.size)
+        val expr = program.code[0] as Expression
+        assertEquals(3, expr.atoms.size)
+        val head = expr.atoms[0] as Symbol
+        assertEquals("bind!", head.name)
+    }
+
+    @Test
+    fun `parse import bang as plain symbol`() {
+        val program = justParse("!(import! &self utils)")
+        assertEquals(1, program.code.size)
+        assertTrue(program.code[0] is Run)
+        val run = program.code[0] as Run
+        val expr = run.expression
+        assertEquals(3, expr.atoms.size)
+        assertEquals("import!", (expr.atoms[0] as Symbol).name)
+        assertEquals("&self", (expr.atoms[1] as Symbol).name)
+        assertEquals("utils", (expr.atoms[2] as Symbol).name)
+    }
+
+    @Test
+    fun `parse change-state bang`() {
+        val program = justParse("(change-state! foo 1)")
+        val expr = program.code[0] as Expression
+        assertEquals("change-state!", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse assertEqual without trailing bang`() {
+        val program = justParse("(assertEqual a b)")
+        val expr = program.code[0] as Expression
+        assertEquals("assertEqual", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `bare bang inside expression is a parse error`() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        parser.parse(
+            Source("BareBang.metta", "(foo !)"),
+            messageCollector
+        )
+        assertTrue(messageCollector.list().any { it is ParseErrorMessage })
+    }
+
+    @Test
+    fun `not-equals is a single token after grammar relax`() {
+        // Verifies that '!=' still lexes as NEQ rather than IDENT/BANG/EQUAL.
+        val program = justParse("(foo != bar)")
+        val expr = program.code[0] as Expression
+        assertEquals(3, expr.atoms.size)
+        // The middle atom is a Special(NEQ), not a symbol or two tokens.
+        // Surface check: stringification stays stable.
+        assertEquals("(foo != bar)", expr.toString())
     }
 }
