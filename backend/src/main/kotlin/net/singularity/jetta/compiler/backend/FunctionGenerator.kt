@@ -13,7 +13,14 @@ open class FunctionGenerator(
     private val mv: LocalVariablesSorter,
     private val function: FunctionLike,
     private val isStatic: Boolean,
-    private val className: String?
+    private val className: String?,
+    /**
+     * Name of the module being compiled — the same string the entry's `__main` passes
+     * to `JettaProgram.init`. Baked into bytecode at every `&self` reference so each
+     * `match` call carries the name of its owner space, and the runtime registry can
+     * resolve it without a thread-local "current" space.
+     */
+    private val moduleSpaceName: String,
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
@@ -82,8 +89,16 @@ open class FunctionGenerator(
             }
 
             is Symbol -> {
-                when (atom.name) {
-                    Predefined.SELF -> generateSpaceSingleton(mv)
+                when {
+                    // &self materialises as the owner module's space name. The runtime's
+                    // match/matchEval take this string as their leading argument and
+                    // look up the corresponding Space via SpaceRegistry.
+                    atom.name == Predefined.SELF -> mv.visitLdcInsn(moduleSpaceName)
+                    // Any other &-prefixed symbol is a reference to a sub-space registered
+                    // (or to-be-registered) under that literal name. The runtime registry
+                    // returns an empty space for unknown names, so unresolved sub-space
+                    // references produce empty match results rather than crashing.
+                    atom.name.startsWith("&") -> mv.visitLdcInsn(atom.name)
                     else -> {
                         // Create a Symbol object at runtime for comparison
                         mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Symbol::class.java))
@@ -105,16 +120,6 @@ open class FunctionGenerator(
 
             else -> TODO("Not implemented yet $atom")
         }
-    }
-
-    private fun generateSpaceSingleton(mv: LocalVariablesSorter) {
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            "net/singularity/jetta/runtime/JettaProgram",
-            "getSpace",
-            "()Lnet/singularity/jetta/runtime/space/Space;",
-            false
-        )
     }
 
     protected fun emitLineNumber(atom: Atom) {
@@ -526,10 +531,7 @@ open class FunctionGenerator(
         resolved: ResolvedSymbol?
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
-        val filteredArgs = arguments.filter {
-            !(it is Symbol && it.name == Predefined.SELF)
-        }
-        filteredArgs.forEachIndexed { index, arg ->
+        arguments.forEachIndexed { index, arg ->
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
         mv.visitMethodInsn(

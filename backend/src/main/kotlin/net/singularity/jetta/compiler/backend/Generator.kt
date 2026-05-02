@@ -20,6 +20,10 @@ class Generator(val generateMain: Boolean = false) {
         lambdaCount = 1
         val cw = ClassWriter(COMPUTE_MAXS or COMPUTE_FRAMES)
         val className = source.getJvmClassName()
+        // The simple class name doubles as the module's space name: every match call site
+        // generated below bakes this string in via LDC so the runtime registry can route
+        // the call to the right space.
+        val moduleSpaceName = className.substringAfterLast('/')
         cw.visit(
             Constants.JVM_TARGET_VERSION,
             Opcodes.ACC_PUBLIC,
@@ -34,7 +38,7 @@ class Generator(val generateMain: Boolean = false) {
             if (ind >= 0) it.first.substring(ind + 1).toInt() else 0
         }.reversed().map { (name, lambda) ->
             lambda.resolvedClassName = name
-            val lambdaGenerator = LambdaGenerator(name, lambda)
+            val lambdaGenerator = LambdaGenerator(name, lambda, moduleSpaceName)
             lambdaGenerator.generate()
         }
         source.code.forEach { node ->
@@ -54,7 +58,7 @@ class Generator(val generateMain: Boolean = false) {
                         )
                     )
                     if (node.name == FunctionRewriter.MAIN) {
-                        mv.visitLdcInsn(className.substringAfterLast('/'))
+                        mv.visitLdcInsn(moduleSpaceName)
                         mv.visitMethodInsn(
                             Opcodes.INVOKESTATIC,
                             "net/singularity/jetta/runtime/JettaProgram",
@@ -63,7 +67,7 @@ class Generator(val generateMain: Boolean = false) {
                             false
                         )
                     }
-                    FunctionGenerator(mv, node, true, null).generate()
+                    FunctionGenerator(mv, node, true, null, moduleSpaceName).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
                         val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(

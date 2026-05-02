@@ -15,28 +15,19 @@ open class JettaProgram {
     companion object {
         private var dataDir: Path = Path.of(".")
 
-        /**
-         * The id of the entry program's space — the one that [match] / [matchEval] /
-         * [getSpace] currently operate on, since neither codegen nor those static methods
-         * carry a space argument yet. [init] sets this when an entry program starts; before
-         * that it is [SpaceId.Anonymous] so call sites running outside an `init` cycle (unit
-         * tests, REPL probes) still see a consistent empty space rather than null.
-         *
-         * This field is a stepping stone. Once codegen threads the space name through every
-         * `match` call site, the static methods take it as a parameter and this field is
-         * removed.
-         */
-        private var currentSpaceId: SpaceId = SpaceId.Anonymous
-
         @JvmStatic
         fun setDataDir(path: Path) {
             dataDir = path
         }
 
+        /**
+         * Reset registry, clear binding stack, and load (or create) the entry program's
+         * space under [SpaceId.FromModule] keyed on [programName]. Subsequent generated
+         * `match` calls supply that same name as their first argument and look the space
+         * up via the registry.
+         */
         @JvmStatic
         fun init(programName: String) {
-            // Each program starts from a clean slate: drop all previously registered spaces
-            // and any leftover variable bindings from a prior run in the same JVM.
             SpaceRegistry.reset()
             Matcher.getBindings().clear()
 
@@ -48,28 +39,33 @@ open class JettaProgram {
                 SpaceImpl()
             }
             SpaceRegistry.register(id, space)
-            currentSpaceId = id
         }
 
-        @JvmStatic
-        fun getSpace(): Space = SpaceRegistry.getOrCreate(currentSpaceId)
-
-        @JvmStatic
-        fun match(src: Expression, dst: Atom): List<Atom> =
-            getSpace().match(src, dst)
-
-
         /**
-         * Match with a template function for nested evaluation.
-         * Instead of returning substituted data, this calls the template function
-         * for each match result, allowing compiled function calls in templates.
+         * Match [src] against the space identified by [spaceName].
          *
-         * The template function receives the fully substituted template atom
-         * (same as what `match` would return) and evaluates it, returning results.
+         * The space-name string is baked into bytecode at codegen time — every `match`
+         * call site carries the name of the module that produced it. Resolution happens
+         * here via [SpaceRegistry.getOrCreate]; an unfamiliar id auto-creates an empty
+         * space, which is the right behaviour for cold starts.
          */
         @JvmStatic
-        fun matchEval(src: Expression, dst: Atom, templateFn: java.util.function.Function<Atom, List<Atom>>): List<Atom> =
-            getSpace().match(src, dst).flatMap { substituted ->
+        fun match(spaceName: String, src: Expression, dst: Atom): List<Atom> =
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst)
+
+        /**
+         * Like [match], but each result is fed through [templateFn] for nested evaluation.
+         * The template function receives the fully substituted template atom and returns
+         * its evaluation result. Used for compiled `match`-with-template-call rewrites.
+         */
+        @JvmStatic
+        fun matchEval(
+            spaceName: String,
+            src: Expression,
+            dst: Atom,
+            templateFn: java.util.function.Function<Atom, List<Atom>>,
+        ): List<Atom> =
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst).flatMap { substituted ->
                 val unwrapped = if (substituted is BoundAtom) {
                     Matcher.getBindings().putAll(substituted.bindings)
                     substituted.atom

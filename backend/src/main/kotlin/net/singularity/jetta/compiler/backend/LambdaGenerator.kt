@@ -8,7 +8,11 @@ import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.LocalVariablesSorter
 
-class LambdaGenerator(private val className: String, private val lambda: Lambda) {
+class LambdaGenerator(
+    private val className: String,
+    private val lambda: Lambda,
+    private val moduleSpaceName: String,
+) {
     private val capturedVariables = lambda.capturedVariables()
 
     fun generate(): CompilationResult {
@@ -86,7 +90,7 @@ class LambdaGenerator(private val className: String, private val lambda: Lambda)
     }
 
     private fun generateApply(mv: LocalVariablesSorter) {
-        val generator = FunctionGenerator(mv, lambda, false, className)
+        val generator = FunctionGenerator(mv, lambda, false, className, moduleSpaceName)
         generator.generate()
     }
 
