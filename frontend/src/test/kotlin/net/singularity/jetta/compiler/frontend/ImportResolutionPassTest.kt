@@ -155,6 +155,45 @@ class ImportResolutionPassTest {
     }
 
     @Test
+    fun `imported runs are spliced at the import position on first load`(@TempDir tmp: Path) {
+        write(tmp, "utils.metta", "!(println from-utils)")
+        write(tmp, "main.metta", """
+            !(println before)
+            !(import! &self utils)
+            !(println after)
+        """)
+
+        val r = runPass(tmp, "main.metta")
+        assertTrue(r.messages.list().isEmpty(), r.messages.list().toString())
+        // Three Runs in order: before, from-utils (spliced), after.
+        val runs = r.transformed.code.filterIsInstance<Run>()
+        assertEquals(3, runs.size)
+        val texts = runs.map { (it.expression.atoms[1] as Symbol).name }
+        assertEquals(listOf("before", "from-utils", "after"), texts)
+    }
+
+    @Test
+    fun `diamond - shared module's runs are spliced exactly once`(@TempDir tmp: Path) {
+        // C has a Run; A and B both import C; main imports A and B.
+        // C's Run must appear in main's transformed source exactly once
+        // (idempotent load: subsequent imports of an already-loaded module
+        // are no-ops for `!`-Runs).
+        write(tmp, "C.metta", "!(println from-C)")
+        write(tmp, "A.metta", "!(import! &self C)")
+        write(tmp, "B.metta", "!(import! &self C)")
+        write(tmp, "main.metta", """
+            !(import! &self A)
+            !(import! &self B)
+        """)
+
+        val r = runPass(tmp, "main.metta")
+        assertTrue(r.messages.list().isEmpty(), r.messages.list().toString())
+        val runs = r.transformed.code.filterIsInstance<Run>()
+        assertEquals(1, runs.size, "expected C's run exactly once, got: $runs")
+        assertEquals("from-C", (runs[0].expression.atoms[1] as Symbol).name)
+    }
+
+    @Test
     fun `order is preserved — atoms before and after import survive in their order`(@TempDir tmp: Path) {
         write(tmp, "M.metta", "(= (m) 0)")
         write(tmp, "main.metta", """

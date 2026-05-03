@@ -44,7 +44,12 @@ class ImportResolutionPass(
     private val moduleNamePattern = Regex("^[A-Za-z0-9_-]+$")
 
     /** Resolve all imports reachable from [source]. Returns a transformed [ParsedSource]
-     * with the `import!` Runs removed. Imported modules end up in [cache].`resolved`. */
+     * with each `import!` Run replaced by the `!`-Runs the imported module would execute
+     * at load time, in source order. On cache hit (the module was already loaded earlier
+     * in the same compile) nothing is spliced, matching MeTTa's load-once semantics for
+     * import-time effects. Errors and cycles also splice nothing. Declarations from the
+     * imported module are not duplicated here — they live in [cache].`resolved` and are
+     * picked up by the surrounding compiler driver. */
     fun resolve(source: ParsedSource, sourcePath: Path): ParsedSource {
         val survivors = mutableListOf<Atom>()
         for (atom in source.code) {
@@ -53,9 +58,8 @@ class ImportResolutionPass(
                 survivors.add(atom)
                 continue
             }
-            handleImport(request, sourcePath)
-            // Whether handling succeeded or produced an error, the Run itself is dropped:
-            // the directive has been "consumed" at compile time.
+            val splicedRuns = handleImport(request, sourcePath)
+            survivors.addAll(splicedRuns)
         }
         return ParsedSource(source.filename, survivors)
     }
@@ -75,25 +79,32 @@ class ImportResolutionPass(
         )
     }
 
-    private fun handleImport(req: ImportRequest, importerPath: Path) {
+    /**
+     * Process one `(import! &self <name>)` request. Returns the list of `!`-Runs that
+     * should be spliced into the importer at the position of this directive — non-empty
+     * on the first successful load of the target, empty on cache hit (idempotent: load-
+     * time effects fire once), empty on error. The error itself is reported via
+     * [messageCollector]; the caller continues so multiple problems surface together.
+     */
+    private fun handleImport(req: ImportRequest, importerPath: Path): List<Run> {
         // 1. Validate space-ref. Only &self is supported in v1.
         val spaceSym = req.spaceRef as? Symbol
         if (spaceSym == null || spaceSym.name != Predefined.SELF) {
             val targetName = (req.spaceRef as? Symbol)?.name ?: req.spaceRef.toString()
             messageCollector.add(ImportAsNotImplementedMessage(targetName, req.position))
-            return
+            return emptyList()
         }
 
         // 2. Validate module name.
         val moduleSym = req.moduleAtom as? Symbol
         if (moduleSym == null) {
             messageCollector.add(InvalidModuleNameMessage(req.moduleAtom.toString(), req.position))
-            return
+            return emptyList()
         }
         val moduleName = moduleSym.name
         if (!moduleNamePattern.matches(moduleName)) {
             messageCollector.add(InvalidModuleNameMessage(moduleName, req.position))
-            return
+            return emptyList()
         }
 
         // 3. Resolve to a canonical sibling path.
@@ -105,22 +116,23 @@ class ImportResolutionPass(
             messageCollector.add(
                 CyclicImportMessage(importerPath.toString(), targetPath.toString(), req.position)
             )
-            return
+            return emptyList()
         }
 
-        // 5. Already resolved?
-        if (targetPath in cache.resolved) return
+        // 5. Already resolved? Idempotent: load-time effects fired on first import,
+        //    subsequent imports are no-ops for `!`-Runs.
+        if (targetPath in cache.resolved) return emptyList()
 
         // 6. Read + parse + recurse.
         if (!Files.isRegularFile(targetPath)) {
             messageCollector.add(MissingModuleMessage(moduleName, targetPath.toString(), req.position))
-            return
+            return emptyList()
         }
         val text = try {
             Files.readString(targetPath)
         } catch (_: Throwable) {
             messageCollector.add(MissingModuleMessage(moduleName, targetPath.toString(), req.position))
-            return
+            return emptyList()
         }
 
         cache.resolving.add(targetPath)
@@ -128,6 +140,16 @@ class ImportResolutionPass(
             val parsed = parser.parse(Source(targetPath.toString(), text), messageCollector)
             val resolved = resolve(parsed, targetPath)
             cache.resolved[targetPath] = resolved
+            // First load: splice the imported module's `!`-Runs (which already include
+            // any of its own transitively-imported Runs at the right positions, because
+            // the recursive resolve above performed the same splicing inside it).
+            //
+            // Clone each Run so the importer and the imported module's own __main hold
+            // distinct instances. Without the clone they share `id` and mutable IR
+            // fields populated by later rewriters/resolvers, which causes the second
+            // pass over the shared instance to skip work it should redo for its new
+            // owner — effectively dropping the spliced Run from main's output.
+            return resolved.code.filterIsInstance<Run>().map { Run(it.expression, it.position) }
         } finally {
             cache.resolving.remove(targetPath)
         }
