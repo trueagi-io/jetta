@@ -13,7 +13,9 @@ import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.ImportResolutionPass
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.ModuleCompilationCache
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
@@ -23,6 +25,7 @@ import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import java.io.File
+import java.nio.file.Paths
 import kotlin.io.path.Path
 
 class Compiler(
@@ -61,14 +64,31 @@ class Compiler(
         val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
         addSystemFunctions(context)
         val parser = createParserFacade()
+        val cache = ModuleCompilationCache()
+        val importPass = ImportResolutionPass(parser, cache, messageCollector)
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
         rewriter.add { LambdaRewriter(messageCollector) }
 
-        val parsed = sources.map { source ->
+        // Phase 1: parse user-supplied sources and resolve their imports. The pass leaves
+        // each user source with the import! Runs removed and fills the cache with every
+        // transitively-imported module ready for the same downstream pipeline.
+        val userParsed = sources.map { source ->
             println("Compiling ${source.filename}")
-            val parsed = parser.parse(source, messageCollector)
-            val result = rewriter.rewrite(parsed)
+            val raw = parser.parse(source, messageCollector)
+            importPass.resolve(raw, Paths.get(source.filename))
+        }
+
+        // Phase 2: build a deterministic compilation queue. Imported modules are placed
+        // BEFORE user sources so their function definitions are registered with the shared
+        // Context (via addExternalFunctions) before any user source's resolver runs and
+        // tries to look those symbols up. Within each group, sort by canonical path so
+        // build outputs are reproducible across machines.
+        val allSources: List<ParsedSource> =
+            cache.resolved.entries.sortedBy { it.key.toString() }.map { it.value } + userParsed
+
+        val parsed = allSources.map { source ->
+            val result = rewriter.rewrite(source)
             context.addExternalFunctions(result)
             result
         }

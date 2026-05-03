@@ -5,8 +5,12 @@ import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeM
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.UndefinedVariableMessage
+import net.singularity.jetta.compiler.frontend.rewrite.messages.CyclicImportMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableButFoundMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableOrConstantButFoundMessage
+import net.singularity.jetta.compiler.frontend.rewrite.messages.ImportAsNotImplementedMessage
+import net.singularity.jetta.compiler.frontend.rewrite.messages.InvalidModuleNameMessage
+import net.singularity.jetta.compiler.frontend.rewrite.messages.MissingModuleMessage
 import net.singularity.jetta.compiler.parser.messages.ParseErrorMessage
 
 class DefaultMessageRenderer : MessageRenderer {
@@ -19,6 +23,10 @@ class DefaultMessageRenderer : MessageRenderer {
             is ParseErrorMessage -> "Parse error: ${message.message}"
             is ExpectVariableButFoundMessage -> "Expect variable but found ${message.atom}"
             is ExpectVariableOrConstantButFoundMessage -> "Expect variable or constant but found ${message.atom}"
+            is ImportAsNotImplementedMessage -> "import! into ${message.targetName} is not implemented (only &self is supported)"
+            is CyclicImportMessage -> "Cyclic import: ${message.importer} -> ${message.target}"
+            is MissingModuleMessage -> "Cannot find module '${message.moduleName}' (looked for ${message.resolvedPath})"
+            is InvalidModuleNameMessage -> "Invalid module name '${message.moduleName}' (allowed: [A-Za-z0-9_-]+)"
             else -> message.toString()
         } + " at ${render(message.position)}"
     }
