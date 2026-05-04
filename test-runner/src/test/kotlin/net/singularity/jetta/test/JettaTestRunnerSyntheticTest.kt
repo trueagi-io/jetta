@@ -87,4 +87,17 @@ class JettaTestRunnerSyntheticTest {
         assertEquals(0, summary.entries.size)
         assertEquals(false, summary.hasAlerts)
     }
+
+    @Test
+    fun `module-only files are skipped as standalone entries`(@TempDir tmp: Path) {
+        val dir = tmp.toFile()
+        File(dir, "main.metta").writeText("!(import! &self utils)\n!(println hello)\n")
+        File(dir, "utils.metta").writeText("(Fact a)\n")
+        File(dir, "standalone.metta").writeText("!(println world)\n")
+
+        val summary = JettaTestRunner().run(dir, emptyMap())
+        // utils is imported by main; only main and standalone run as entries.
+        val files = summary.entries.map { it.file }.toSet()
+        assertEquals(setOf("main.metta", "standalone.metta"), files)
+    }
 }

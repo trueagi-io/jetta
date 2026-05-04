@@ -25,8 +25,10 @@ class JettaTestRunner {
 
     /**
      * Walk [directory], pick up every `.metta` file (recursively), run each one, and return
-     * the aggregated [RunSummary]. The walk order is sorted by absolute path so reports are
-     * stable across invocations.
+     * the aggregated [RunSummary]. Files that are referenced as `import!` targets by other
+     * files in the same suite are excluded — they are modules, not standalone tests, and
+     * their atoms participate via their importers. The walk order is sorted by absolute
+     * path so reports are stable across invocations.
      *
      * @param directory the suite root; an exception is thrown if it does not exist or is not a directory.
      * @param xfail map from suite-relative path to the `xfail` entry for that test, if any.
@@ -36,13 +38,16 @@ class JettaTestRunner {
             "Test directory does not exist or is not a directory: ${directory.absolutePath}"
         }
 
-        val files = directory
+        val allFiles = directory
             .walkTopDown()
             .filter { it.isFile && it.extension == "metta" }
             .sortedBy { it.absolutePath }
             .toList()
 
-        val entries = files.map { runSingle(it, directory, xfail) }
+        val moduleOnlyNames = ImportGraph.importedNames(allFiles)
+        val entryFiles = allFiles.filter { it.nameWithoutExtension !in moduleOnlyNames }
+
+        val entries = entryFiles.map { runSingle(it, directory, xfail) }
         return RunSummary(entries)
     }
 
