@@ -12,14 +12,24 @@ fun List<Variable>.getParameterIndex(variable: Variable): Int {
     var jvmIndex = 0
     forEach {
         if (it.name == variable.name) return jvmIndex
+        // 64-bit primitives (long, double) consume two JVM local slots; everything
+        // else (int / boolean / object refs of any flavour) takes one.
         when (it.type) {
+            GroundedType.LONG,
+            GroundedType.DOUBLE -> jvmIndex += 2
+
             GroundedType.INT,
             GroundedType.BOOLEAN,
             GroundedType.STRING,
+            GroundedType.ANY,
+            GroundedType.NOTHING,
+            GroundedType.SPACE,
+            GroundedType.LIST,
             GroundedType.ATOM,
+            GroundedType.EXPRESSION,
+            is ArrowType,
             is SeqType -> jvmIndex++
 
-            GroundedType.DOUBLE -> jvmIndex += 2
             else -> TODO("type=" + it.type + " (" + it + ")")
         }
     }
@@ -63,6 +73,13 @@ fun generateLoadVar(
                 mv.visitVarInsn(Opcodes.ILOAD, index + offset)
         }
 
+        GroundedType.LONG -> {
+            if (index < 0)
+                generateField()
+            else
+                mv.visitVarInsn(Opcodes.LLOAD, index + offset)
+        }
+
         GroundedType.DOUBLE -> {
             if (index < 0)
                 generateField()
@@ -70,13 +87,14 @@ fun generateLoadVar(
                 mv.visitVarInsn(Opcodes.DLOAD, index + offset)
         }
 
-        GroundedType.ATOM -> {
-            if (index < 0)
-                generateField()
-            else
-                mv.visitVarInsn(Opcodes.ALOAD, index + offset)
-        }
-
+        GroundedType.STRING,
+        GroundedType.ANY,
+        GroundedType.NOTHING,
+        GroundedType.SPACE,
+        GroundedType.LIST,
+        GroundedType.ATOM,
+        GroundedType.EXPRESSION,
+        is ArrowType,
         is SeqType -> {
             if (index < 0)
                 generateField()
@@ -101,6 +119,17 @@ fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             )
         }
 
+        GroundedType.LONG -> {
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Number")
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                "java/lang/Number",
+                "longValue",
+                "()J",
+                false
+            )
+        }
+
         GroundedType.DOUBLE -> {
             mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Number")
             mv.visitMethodInsn(
@@ -112,7 +141,25 @@ fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             )
         }
 
+        GroundedType.BOOLEAN -> {
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Boolean")
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                "java/lang/Boolean",
+                "booleanValue",
+                "()Z",
+                false
+            )
+        }
+
+        // Reference types — already objects, no unbox needed.
+        GroundedType.STRING,
+        GroundedType.ANY,
+        GroundedType.NOTHING,
+        GroundedType.SPACE,
+        GroundedType.LIST,
         GroundedType.ATOM,
+        GroundedType.EXPRESSION,
         null -> {
         }
 
@@ -130,6 +177,14 @@ fun boxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             false
         )
 
+        GroundedType.LONG -> mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/lang/Long",
+            "valueOf",
+            "(J)Ljava/lang/Long;",
+            false
+        )
+
         GroundedType.DOUBLE -> mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
             "java/lang/Double",
@@ -138,7 +193,21 @@ fun boxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
             false
         )
 
+        GroundedType.BOOLEAN -> mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/lang/Boolean",
+            "valueOf",
+            "(Z)Ljava/lang/Boolean;",
+            false
+        )
+
+        GroundedType.STRING,
+        GroundedType.ANY,
+        GroundedType.NOTHING,
+        GroundedType.SPACE,
+        GroundedType.LIST,
         GroundedType.ATOM,
+        GroundedType.EXPRESSION,
         null -> {
         }
 

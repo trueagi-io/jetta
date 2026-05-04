@@ -15,8 +15,12 @@ fun Atom.toJvmType(boxing: Boolean = false): String =
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (boxing) throw RuntimeException("Should never happen") else "V"
+        GroundedType.STRING -> "Ljava/lang/String;"
+        GroundedType.ANY, GroundedType.NOTHING -> "Ljava/lang/Object;"
+        GroundedType.SPACE -> "Lnet/singularity/jetta/runtime/space/Space;"
         GroundedType.LIST -> "Ljava/util/List;"
         GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+        GroundedType.EXPRESSION -> "Lnet/singularity/jetta/compiler/frontend/ir/Expression;"
         is ArrowType -> this.descriptor()
         is SeqType -> "Ljava/util/List;"
         else -> TODO("Not implemented yet $this")
@@ -43,9 +47,18 @@ fun Atom.signature(): String {
         }
 
         is SeqType -> sb.append("Ljava/util/List<${elementType.signature()}>;")
+        // Generic-signature uses are always boxed.
         GroundedType.INT -> sb.append("Ljava/lang/Integer;")
+        GroundedType.LONG -> sb.append("Ljava/lang/Long;")
+        GroundedType.BOOLEAN -> sb.append("Ljava/lang/Boolean;")
         GroundedType.DOUBLE -> sb.append("Ljava/lang/Double;")
+        GroundedType.UNIT -> sb.append("Ljava/lang/Void;")
+        GroundedType.STRING -> sb.append("Ljava/lang/String;")
+        GroundedType.ANY, GroundedType.NOTHING -> sb.append("Ljava/lang/Object;")
+        GroundedType.SPACE -> sb.append("Lnet/singularity/jetta/runtime/space/Space;")
+        GroundedType.LIST -> sb.append("Ljava/util/List;")
         GroundedType.ATOM -> sb.append("Lnet/singularity/jetta/compiler/frontend/ir/Atom;")
+        GroundedType.EXPRESSION -> sb.append("Lnet/singularity/jetta/compiler/frontend/ir/Expression;")
         else -> TODO("Not implemented yet $this")
     }
     return sb.toString()
@@ -76,10 +89,16 @@ fun ArrowType.getApplyJvmPlainDescriptor(): String {
 fun Atom.toJvmGenericType(box: Boolean = false): String =
     when (this) {
         GroundedType.INT -> if (box) "Ljava/lang/Integer;" else "I"
+        GroundedType.LONG -> if (box) "Ljava/lang/Long;" else "J"
         GroundedType.BOOLEAN -> if (box) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (box) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (box) "Ljava/lang/Void;" else "V"
+        GroundedType.STRING -> "Ljava/lang/String;"
+        GroundedType.ANY, GroundedType.NOTHING -> "Ljava/lang/Object;"
+        GroundedType.SPACE -> "Lnet/singularity/jetta/runtime/space/Space;"
+        GroundedType.LIST -> "Ljava/util/List;"
         GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+        GroundedType.EXPRESSION -> "Lnet/singularity/jetta/compiler/frontend/ir/Expression;"
         is ArrowType -> this.signature()
         is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
         else -> TODO("Not implemented yet $this")
