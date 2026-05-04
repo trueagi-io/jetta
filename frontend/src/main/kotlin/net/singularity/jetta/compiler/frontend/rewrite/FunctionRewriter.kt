@@ -365,27 +365,50 @@ class FunctionRewriter(
     private fun rewriteTopLevelExpression(expression: Expression) {
         when ((expression.atoms[0] as? Special)?.value) {
             Predefined.PATTERN -> {
-                val pattern = expression.atoms[1] as Expression
-                val symbol = pattern.atoms[0] as Symbol
-                val list = patterns.getOrPut(symbol.name) { mutableListOf() }
-                list.add(Pattern(pattern, rewriteAtom(expression.atoms[2])))
+                val pattern = expression.atoms[1] as? Expression
+                val head = pattern?.atoms?.getOrNull(0) as? Symbol
+                if (head != null) {
+                    val list = patterns.getOrPut(head.name) { mutableListOf() }
+                    list.add(Pattern(pattern, rewriteAtom(expression.atoms[2])))
+                } else {
+                    // LHS head isn't a plain Symbol — curried form `(= ((K $x) $y) ...)`
+                    // or meta-rule like `(= (= $x $x) T)`. JeTTa can't lower these to a
+                    // JVM function, but they're still valid MeTTa equality facts: store
+                    // the whole `(= ...)` in the space so runtime `match &self (= ...)`
+                    // queries can find them. Matches the reference interpreter's
+                    // "rules live as space atoms" model.
+                    addAsFact(expression)
+                }
             }
 
             Predefined.TYPE -> {
-                val symbol = expression.atoms[1] as Symbol
-                typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
+                val symbol = expression.atoms[1] as? Symbol
+                if (symbol != null) {
+                    typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
+                } else {
+                    // Type for a non-Symbol form, e.g. `(: (A B) PairAB)`. Keep it in
+                    // the space as a typed fact; the resolver's per-symbol typeInfo
+                    // doesn't apply.
+                    addAsFact(expression)
+                }
             }
 
             Predefined.ANNOTATION -> {
-                val symbol = expression.atoms[1] as Symbol
-                annotations[symbol.name] = expression.atoms.drop(2)
+                val symbol = expression.atoms[1] as? Symbol
+                if (symbol != null) {
+                    annotations[symbol.name] = expression.atoms.drop(2)
+                } else {
+                    addAsFact(expression)
+                }
             }
 
-            else -> {
-                space.add(expression)
-                ownAtomsCollector?.add(expression)
-            }
+            else -> addAsFact(expression)
         }
+    }
+
+    private fun addAsFact(expression: Expression) {
+        space.add(expression)
+        ownAtomsCollector?.add(expression)
     }
 
     private fun rewriteTopLevelRun(run: Run) {
