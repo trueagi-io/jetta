@@ -10,6 +10,7 @@ import net.singularity.jetta.compiler.frontend.MessageCollector
 import net.singularity.jetta.compiler.frontend.MessageLevel
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
+import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
@@ -23,8 +24,12 @@ import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.formatter.TextIrFormatter
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.logger.LogConfig
+import net.singularity.jetta.compiler.storage.DeepCopyStrategy
+import net.singularity.jetta.compiler.storage.StorageStrategy
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
+import net.singularity.jetta.runtime.space.SpaceImpl
 import java.io.File
+import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.io.path.Path
 
@@ -33,7 +38,8 @@ class Compiler(
     val outputDir: String,
     val runtime: JettaRuntime = DefaultRuntime(),
     val logLevel: LogLevel = LogLevel.DEBUG,
-    val dumpIr: Boolean = false
+    val dumpIr: Boolean = false,
+    val storageStrategy: StorageStrategy = DeepCopyStrategy,
 ) {
 
     init {
@@ -66,9 +72,6 @@ class Compiler(
         val parser = createParserFacade()
         val cache = ModuleCompilationCache()
         val importPass = ImportResolutionPass(parser, cache, messageCollector)
-        val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
-        rewriter.add { LambdaRewriter(messageCollector) }
 
         // Phase 1: parse user-supplied sources and resolve their imports. The pass leaves
         // each user source with the import! Runs removed and fills the cache with every
@@ -87,7 +90,16 @@ class Compiler(
         val allSources: List<ParsedSource> =
             cache.resolved.entries.sortedBy { it.key.toString() }.map { it.value } + userParsed
 
+        // Run the rewriter chain per-source, wiring a fresh ownAtomsCollector for each so
+        // we can serialize per-module spaces below. The shared `context.getSpace()` still
+        // receives every atom — the resolver and pattern indexer rely on the merged view.
+        val atomsBySource = mutableMapOf<ParsedSource, MutableList<Expression>>()
         val parsed = allSources.map { source ->
+            val collector = mutableListOf<Expression>()
+            atomsBySource[source] = collector
+            val rewriter = CompositeRewriter()
+            rewriter.add { FunctionRewriter(messageCollector, context.getSpace(), collector) }
+            rewriter.add { LambdaRewriter(messageCollector) }
             val result = rewriter.rewrite(source)
             context.addExternalFunctions(result)
             result
@@ -102,10 +114,46 @@ class Compiler(
             dumpIrFiles(resolved)
         }
 
-        val space = context.getSpace()
-        resolved.forEach {
-            val programName = it.getJvmClassName().substringAfterLast('/')
-            SpaceDirectorySerializer.save(space, Path(outputDir), programName)
+        // Phase 3: per-module storage via the strategy. Each compiled source — both
+        // user entries and imported modules — gets its own `.jtsf` whose effective space
+        // is computed by the strategy (DeepCopy: own atoms ∪ transitive &self-imports).
+        //
+        // Keying convention for the strategy: pre-rewrite ParsedSource instances. That's
+        // what `cache.resolved` and `userParsed` already use, and what `atomsBySource`
+        // was populated with. Lookup by resolved-source happens via the allSources↔resolved
+        // index pairing established below.
+        val importsBySource: Map<ParsedSource, Set<Path>> = run {
+            val byCanonical: Map<Path, ParsedSource> = buildMap {
+                putAll(cache.resolved)
+                userParsed.forEach { put(canonicalPath(it), it) }
+            }
+            cache.imports.entries.mapNotNull { (importerPath, targets) ->
+                val importer = byCanonical[importerPath] ?: return@mapNotNull null
+                importer to targets.toSet()
+            }.toMap()
+        }
+        val spaces = storageStrategy.computeSpaces(
+            userSources = userParsed,
+            cache = cache,
+            atomsBySource = atomsBySource,
+            importsBySource = importsBySource,
+        )
+
+        // resolved[i] corresponds to allSources[i]. The strategy keys spaces by the
+        // pre-rewrite ParsedSource (allSources[i]); save under the post-resolver
+        // source's class name to match the bytecode that will look it up at runtime.
+        allSources.forEachIndexed { i, preRewriteSource ->
+            val resolvedSource = resolved[i]
+            val programName = resolvedSource.getJvmClassName().substringAfterLast('/')
+            val space = (spaces[preRewriteSource] as? SpaceImpl) ?: SpaceImpl()
+            val ext = storageStrategy.manifestExtensionFor(preRewriteSource, cache, importsBySource)
+            SpaceDirectorySerializer.save(
+                space = space,
+                directory = Path(outputDir),
+                programName = programName,
+                manifestExtension = ext,
+                strategyKind = storageStrategy.kind,
+            )
         }
 
         resolved.forEach {
@@ -115,6 +163,9 @@ class Compiler(
         }
         return true to messageCollector.list()
     }
+
+    private fun canonicalPath(source: ParsedSource): Path =
+        Paths.get(source.filename).toAbsolutePath().normalize()
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 

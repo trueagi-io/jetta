@@ -11,7 +11,15 @@ import kotlin.math.exp
 
 class FunctionRewriter(
     val messageCollector: MessageCollector,
-    private val space: Space
+    private val space: Space,
+    /**
+     * Optional sink that captures every plain top-level expression added to [space] for
+     * the source currently being rewritten. The shared compile-time space stays the
+     * resolver's input (cross-module symbol lookup needs the merged view), but the
+     * collector lets the surrounding compiler driver record each source's *own* atoms
+     * for per-module serialization. Null in tests / REPL where the collector isn't wired.
+     */
+    private val ownAtomsCollector: MutableList<Expression>? = null,
 ) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
     private val annotations = mutableMapOf<String, List<Atom>>()
@@ -375,6 +383,7 @@ class FunctionRewriter(
 
             else -> {
                 space.add(expression)
+                ownAtomsCollector?.add(expression)
             }
         }
     }

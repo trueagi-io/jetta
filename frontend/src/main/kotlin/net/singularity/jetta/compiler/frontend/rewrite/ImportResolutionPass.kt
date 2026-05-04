@@ -110,6 +110,7 @@ class ImportResolutionPass(
         // 3. Resolve to a canonical sibling path.
         val parent = importerPath.toAbsolutePath().normalize().parent ?: Paths.get(".").toAbsolutePath()
         val targetPath = parent.resolve("$moduleName.metta").toAbsolutePath().normalize()
+        val canonicalImporter = importerPath.toAbsolutePath().normalize()
 
         // 4. Cycle?
         if (targetPath in cache.resolving) {
@@ -120,8 +121,12 @@ class ImportResolutionPass(
         }
 
         // 5. Already resolved? Idempotent: load-time effects fired on first import,
-        //    subsequent imports are no-ops for `!`-Runs.
-        if (targetPath in cache.resolved) return emptyList()
+        //    subsequent imports are no-ops for `!`-Runs. Edge is still recorded so the
+        //    storage strategy sees this importer's diamond view.
+        if (targetPath in cache.resolved) {
+            cache.imports.getOrPut(canonicalImporter) { mutableSetOf() }.add(targetPath)
+            return emptyList()
+        }
 
         // 6. Read + parse + recurse.
         if (!Files.isRegularFile(targetPath)) {
@@ -140,6 +145,7 @@ class ImportResolutionPass(
             val parsed = parser.parse(Source(targetPath.toString(), text), messageCollector)
             val resolved = resolve(parsed, targetPath)
             cache.resolved[targetPath] = resolved
+            cache.imports.getOrPut(canonicalImporter) { mutableSetOf() }.add(targetPath)
             // First load: splice the imported module's `!`-Runs (which already include
             // any of its own transitively-imported Runs at the right positions, because
             // the recursive resolve above performed the same splicing inside it).
