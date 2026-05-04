@@ -392,19 +392,35 @@ class FunctionRewriter(
         runs.add(rewriteAtom(run.expression))
     }
 
+    /**
+     * Lower a type-position atom to a [GroundedType] / [ArrowType]. JeTTa currently
+     * type-erases everything that isn't a known ground type to [GroundedType.ATOM] so
+     * MeTTa's user-defined types (`Either`, `Pair $a $b`, `Type`, `%Undefined%`, tvars
+     * `$t`) all compile to `Object` on the JVM. This loses the symbolic type for any
+     * downstream type checking, but it lets programs that rely on user/parametric
+     * types reach codegen — proper type-aware analysis is a future improvement.
+     */
     private fun Atom.asType(): Atom =
         when (this) {
             is Symbol -> when (name) {
                 "Int" -> GroundedType.INT
+                "Long" -> GroundedType.LONG
                 "Double" -> GroundedType.DOUBLE
-                "Boolean" -> GroundedType.BOOLEAN
+                "Boolean", "Bool" -> GroundedType.BOOLEAN
                 "String" -> GroundedType.STRING
                 "Unit" -> GroundedType.UNIT
                 "Atom" -> GroundedType.ATOM
-                else -> TODO()
+                "Any" -> GroundedType.ANY
+                "Expression" -> GroundedType.EXPRESSION
+                "List" -> GroundedType.LIST
+                "Nothing" -> GroundedType.NOTHING
+                "Space" -> GroundedType.SPACE
+                else -> GroundedType.ATOM
             }
             is ArrowType -> ArrowType(types = types.map { it.asType() })
-            else -> TODO("atom=" + this)
+            is Variable -> GroundedType.ATOM
+            is Expression -> GroundedType.ATOM
+            else -> GroundedType.ATOM
         }
 
     companion object {
