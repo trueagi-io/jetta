@@ -307,4 +307,42 @@ class ParserTest : BaseFrontendTest() {
         // Surface check: stringification stays stable.
         assertEquals("(foo != bar)", expr.toString())
     }
+
+    @Test
+    fun `parse identifier with trailing question`() {
+        val program = justParse("(Frog? Sam)")
+        val expr = program.code[0] as Expression
+        assertEquals("Frog?", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse leading-dot identifier`() {
+        val program = justParse("(.tv x stv)")
+        val expr = program.code[0] as Expression
+        assertEquals(".tv", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse percent-bracketed meta-type`() {
+        val program = justParse("(: Left (-> %Undefined% Either))")
+        val expr = program.code[0] as Expression
+        val arrow = expr.atoms[2] as Expression
+        assertEquals("%Undefined%", (arrow.atoms[1] as Symbol).name)
+        assertEquals("Either", (arrow.atoms[2] as Symbol).name)
+    }
+
+    @Test
+    fun `parse standalone percent operator`() {
+        val program = justParse("(% 21 17)")
+        val expr = program.code[0] as Expression
+        assertEquals("%", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse comma as conjunction operator`() {
+        val program = justParse("(match _self (, (Frog _x) (implies (Frog _x) _y)) _y)")
+        val expr = program.code[0] as Expression
+        val conj = expr.atoms[2] as Expression
+        assertEquals(",", (conj.atoms[0] as Symbol).name)
+    }
 }
