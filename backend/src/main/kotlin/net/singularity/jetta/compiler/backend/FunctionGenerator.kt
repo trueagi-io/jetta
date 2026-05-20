@@ -3,6 +3,7 @@ package net.singularity.jetta.compiler.backend
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.*
 import net.singularity.jetta.runtime.Matcher
+import org.objectweb.asm.Handle
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
@@ -21,19 +22,13 @@ open class FunctionGenerator(
      * resolve it without a thread-local "current" space.
      */
     private val moduleSpaceName: String,
+    /**
+     * Internal name of the class that owns this method and any sibling lambda body
+     * methods. Used at indy lambda creation sites to reference the static lambda body.
+     */
+    private val enclosingClassInternalName: String,
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
-
-    /**
-     * Check whether the given variable is a captured variable in the current
-     * lambda class (i.e., it was a free variable in the lambda body and is
-     * stored as a field in the generated lambda class).
-     */
-    private fun isLambdaCapturedVariable(variable: Variable): Boolean {
-        if (function !is Lambda) return false
-        val lambda = function
-        return lambda.capturedVariables().any { it.name == variable.name }
-    }
 
     fun generate() {
         emitLineNumber(function)
@@ -202,19 +197,14 @@ open class FunctionGenerator(
                     val paramIndex = function.getParameterIndex(atom)
                     if (paramIndex >= 0) {
                         generateLoadVar(mv, atom, function.params, isStatic, className)
-                    } else if (isLambdaCapturedVariable(atom)) {
-                        // Captured variable from enclosing scope — load via GETFIELD
-                        generateLoadVar(mv, atom, function.params, isStatic, className)
                     } else {
-                        // True free variable — create a raw Variable for match unification
+                        // True free variable — create a raw Variable for match unification.
                         generateNewVariable(mv, atom.name)
                     }
                 }
             }
 
             is Lambda -> {
-                mv.visitTypeInsn(Opcodes.NEW, atom.resolvedClassName!!)
-                mv.visitInsn(Opcodes.DUP)
                 val capturedVariables = atom.capturedVariables()
                 capturedVariables.forEach {
                     // Captured variables may come from destructured pattern bindings
@@ -232,14 +222,30 @@ open class FunctionGenerator(
                         generateLoadVar(mv, it, function.params, isStatic, className)
                     }
                 }
-                mv.visitMethodInsn(
-                    Opcodes.INVOKESPECIAL,
-                    atom.resolvedClassName,
-                    "<init>",
-                    mkLambdaInitDescriptor(capturedVariables),
-                    false
+                val invokedTypeDesc = buildString {
+                    append('(')
+                    capturedVariables.forEach { append(it.type!!.toJvmType()) }
+                    append(")L").append(JETTA_FUNCTION_INTERNAL_NAME).append(';')
+                }
+                val implDesc = buildString {
+                    append('(')
+                    capturedVariables.forEach { append(it.type!!.toJvmType()) }
+                    atom.params.forEach { append(it.type!!.toJvmType()) }
+                    append(')')
+                    append(atom.returnType!!.toJvmType())
+                }
+                mv.visitInvokeDynamicInsn(
+                    "apply",
+                    invokedTypeDesc,
+                    LAMBDA_BOOTSTRAP_HANDLE,
+                    Handle(
+                        Opcodes.H_INVOKESTATIC,
+                        enclosingClassInternalName,
+                        atom.resolvedMethodName!!,
+                        implDesc,
+                        false,
+                    ),
                 )
-                mv.visitTypeInsn(Opcodes.CHECKCAST, atom.arrowType!!.getJvmInterfaceName())
             }
 
             is Match -> generateMatch(mv, atom)

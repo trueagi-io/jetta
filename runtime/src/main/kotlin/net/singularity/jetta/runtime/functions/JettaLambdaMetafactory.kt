@@ -58,7 +58,11 @@ object JettaLambdaMetafactory {
         }
 
         val bytes = generateImplClass(caller.lookupClass(), invokedType, implType, implInfo)
-        val hiddenClass = caller.defineHiddenClass(bytes, true).lookupClass()
+        // NESTMATE: the hidden class joins the caller's nest so the SAM bridge can
+        // INVOKESTATIC the private lambda body method.
+        val hiddenClass = caller
+            .defineHiddenClass(bytes, true, MethodHandles.Lookup.ClassOption.NESTMATE)
+            .lookupClass()
 
         val ctorType = MethodType.methodType(Void.TYPE, invokedType.parameterArray())
         val ctorHandle = caller.findConstructor(hiddenClass, ctorType)

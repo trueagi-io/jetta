@@ -22,7 +22,7 @@ class LambdaTest : GeneratorTestBase() {
             }
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
-            assertEquals(2, classes.size)
+            assertEquals(1, classes.size)
             val value = classes["Lambda"]!!.getMethod("__main").invoke(null)
             assertEquals(30, value)
         }
@@ -184,7 +184,7 @@ class LambdaTest : GeneratorTestBase() {
             }
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
-            assertEquals(2, classes.size)
+            assertEquals(1, classes.size)
             val value = classes["PassFunction"]!!.getMethod("__main").invoke(null)
             assertEquals(30, value)
         }

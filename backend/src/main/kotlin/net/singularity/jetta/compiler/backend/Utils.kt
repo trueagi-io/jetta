@@ -254,17 +254,6 @@ fun Lambda.capturedVariables(): List<Variable> {
     return result
 }
 
-fun mkLambdaInitDescriptor(capturedVariables: List<Variable>): String {
-    val sb = StringBuilder()
-    sb.append('(')
-    capturedVariables.forEach {
-        sb.append(it.type!!.toJvmType())
-    }
-    sb.append(")V")
-    return sb.toString()
-}
-
-
 fun generateLoadInt(mv: LocalVariablesSorter, value: Int) {
     when (value) {
         0 -> mv.visitInsn(Opcodes.ICONST_0)

@@ -33,14 +33,19 @@ class Generator(val generateMain: Boolean = false) {
             null
         )
         cw.visitSource(source.filename, null)
-        val result = findLambdas(source).toList().sortedBy {
-            val ind = it.first.indexOf('$')
-            if (ind >= 0) it.first.substring(ind + 1).toInt() else 0
-        }.reversed().map { (name, lambda) ->
-            lambda.resolvedClassName = name
-            val lambdaGenerator = LambdaGenerator(name, lambda, moduleSpaceName)
-            lambdaGenerator.generate()
+
+        // Pass 1: discover lambdas and assign each a method name on the enclosing
+        // class. Names must be set before any FunctionGenerator runs so that nested
+        // lambda creation sites (in another lambda's body or in user code) can
+        // resolve `lambda.resolvedMethodName`.
+        val lambdas = findLambdas(source).toList()
+        lambdas.forEach { (name, lambda) -> lambda.resolvedMethodName = name }
+
+        // Pass 2: emit each lambda body as a `private static` method on cw.
+        lambdas.forEach { (name, lambda) ->
+            emitLambdaMethod(cw, className, name, lambda, moduleSpaceName)
         }
+
         source.code.forEach { node ->
             when (node) {
                 is FunctionDefinition -> {
@@ -67,7 +72,7 @@ class Generator(val generateMain: Boolean = false) {
                             false
                         )
                     }
-                    FunctionGenerator(mv, node, true, null, moduleSpaceName).generate()
+                    FunctionGenerator(mv, node, true, null, moduleSpaceName, className).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
                         val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(
@@ -89,23 +94,18 @@ class Generator(val generateMain: Boolean = false) {
                 else -> TODO("Not implemented yet")
             }
         }
-        return result + listOf(CompilationResult(className, cw.toByteArray()))
-    }
-
-    private fun mkLambdaName(source: ParsedSource): String {
-        return source.getJvmClassName()
+        return listOf(CompilationResult(className, cw.toByteArray()))
     }
 
     private fun findLambdas(source: ParsedSource): Map<String, Lambda> {
         val result = mutableMapOf<String, Lambda>()
         source.code.forEach {
             val def = (it as FunctionDefinition)
-            val name = mkLambdaName(source)
             when (val body = def.body) {
-                is Expression -> findLambdas(name, body, result)
+                is Expression -> findLambdas(body, result)
                 is Match -> {
                     body.branches.forEach { branch ->
-                        findLambdas(name, branch.body, result)
+                        findLambdas(branch.body, result)
                     }
                 }
                 else -> {}
@@ -114,7 +114,7 @@ class Generator(val generateMain: Boolean = false) {
         return result
     }
 
-    private fun findLambdas(name: String, body: Atom, acc: MutableMap<String, Lambda>): Map<String, Lambda> {
+    private fun findLambdas(body: Atom, acc: MutableMap<String, Lambda>): Map<String, Lambda> {
         when (body) {
             is Expression -> {
                 if (body.atoms.isEmpty()) {
@@ -122,20 +122,20 @@ class Generator(val generateMain: Boolean = false) {
                 }
                 if ((body.atoms.first() as? Special)?.value == Predefined.RUN_SEQ) {
                     body.atoms.drop(1).forEach {
-                        findLambdas(name, it as Expression, acc)
+                        findLambdas(it as Expression, acc)
                     }
                     return acc
                 }
                 body.atoms.forEach {
                     when (it) {
                         is Lambda -> {
-                            val lambdaName = "$name$${lambdaCount++}"
+                            val lambdaName = "lambda\$${lambdaCount++}"
                             acc[lambdaName] = it
-                            findLambdas(name, it.body, acc)
+                            findLambdas(it.body, acc)
                         }
 
                         is Expression -> {
-                            findLambdas(name, it, acc)
+                            findLambdas(it, acc)
                         }
 
                         else -> {}
