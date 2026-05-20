@@ -1,34 +1,34 @@
 package net.singularity.jetta.runtime
 
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
+import net.singularity.jetta.runtime.functions.JettaFunction
 
 @Suppress("unused")
-fun <T, R> simpleMap(f: java.util.function.Function<T, R>, list: List<T>): List<R> {
-    val result = ArrayList<R>(list.size)
+fun simpleMap(f: JettaFunction, list: List<Any?>): List<Any?> {
+    val result = ArrayList<Any?>(list.size)
     for (element in list) {
         Matcher.push()
         val unwrapped = if (element is BoundAtom) {
             Matcher.getBindings().putAll(element.bindings)
-            @Suppress("UNCHECKED_CAST")
-            element.atom as T
+            element.atom
         } else element
-        result.add(f.apply(unwrapped))
+        result.add(f.apply(arrayOf(unwrapped)))
         Matcher.pop()
     }
     return result
 }
 
 @Suppress("unused")
-fun <T, R> simpleFlatMap(f: java.util.function.Function<T, java.util.List<R>>, list: List<T>): List<R> {
-    val result = ArrayList<R>(list.size)
+fun simpleFlatMap(f: JettaFunction, list: List<Any?>): List<Any?> {
+    val result = ArrayList<Any?>(list.size)
     for (element in list) {
         Matcher.push()
         val unwrapped = if (element is BoundAtom) {
             Matcher.getBindings().putAll(element.bindings)
-            @Suppress("UNCHECKED_CAST")
-            element.atom as T
+            element.atom
         } else element
-        result.addAll(f.apply(unwrapped))
+        @Suppress("UNCHECKED_CAST")
+        result.addAll(f.apply(arrayOf(unwrapped)) as List<Any?>)
         Matcher.pop()
     }
     return result

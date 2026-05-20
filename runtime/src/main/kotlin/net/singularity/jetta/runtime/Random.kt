@@ -1,6 +1,6 @@
 package net.singularity.jetta.runtime
 
-import net.singularity.jetta.runtime.functions.Function1
+import net.singularity.jetta.runtime.functions.JettaFunction
 import kotlin.random.Random
 
 object Random {
@@ -15,11 +15,11 @@ object Random {
     fun random(): Double = random.nextDouble()
 
     @JvmStatic
-    fun generate(func: Function1<Double, Double>, start: Double, end: Double, step: Double): List<Double> {
+    fun generate(func: JettaFunction, start: Double, end: Double, step: Double): List<Double> {
         val result = mutableListOf<Double>()
         var x = start
         while (x < end) {
-            result += func.apply(x)
+            result += func.apply(arrayOf<Any?>(x)) as Double
             x += step
         }
         return result

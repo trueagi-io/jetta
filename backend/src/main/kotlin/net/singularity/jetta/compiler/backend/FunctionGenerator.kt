@@ -552,12 +552,18 @@ open class FunctionGenerator(
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
         if (index < 0) throw IllegalArgumentException(variable.toString())
-        mv.visitVarInsn(Opcodes.ALOAD, index)
-        arguments.forEach {
-            generateAtom(mv, it, null, false)
-            boxIfNeeded(mv, it.type as? GroundedType)
-        }
         val arrowType = variable.type as ArrowType
+        mv.visitVarInsn(Opcodes.ALOAD, index)
+        // Pack arguments into Object[] for the JettaFunction SAM.
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
         mv.visitMethodInsn(
             Opcodes.INVOKEINTERFACE,
             arrowType.getJvmInterfaceName(),
@@ -565,7 +571,10 @@ open class FunctionGenerator(
             arrowType.getApplyJvmPlainDescriptor(),
             true
         )
-        unboxIfNeeded(mv, arrowType.types.last() as? GroundedType)
+        val returnType = arrowType.types.last() as? GroundedType
+        if (returnType != null) {
+            unboxIfNeeded(mv, returnType)
+        }
     }
 
     private fun generateReturn(mv: MethodVisitor) {

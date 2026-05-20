@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceId
@@ -82,14 +83,15 @@ open class JettaProgram {
             spaceName: String,
             src: Expression,
             dst: Atom,
-            templateFn: java.util.function.Function<Atom, List<Atom>>,
+            templateFn: JettaFunction,
         ): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst).flatMap { substituted ->
                 val unwrapped = if (substituted is BoundAtom) {
                     Matcher.getBindings().putAll(substituted.bindings)
                     substituted.atom
                 } else substituted
-                templateFn.apply(unwrapped)
+                @Suppress("UNCHECKED_CAST")
+                templateFn.apply(arrayOf<Any?>(unwrapped)) as List<Atom>
             }
     }
 }

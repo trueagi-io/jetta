@@ -10,7 +10,7 @@ import net.singularity.jetta.runtime.Assertions
 import net.singularity.jetta.runtime.IO
 import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.Random
-import net.singularity.jetta.runtime.functions.Function1
+import net.singularity.jetta.runtime.functions.JettaFunction
 import org.objectweb.asm.Type
 
 fun registerExternals(context: Context) {
@@ -29,7 +29,7 @@ fun registerExternals(context: Context) {
     val generate = JvmMethod(
         owner = Type.getInternalName(Random::class.java),
         name = "generate",
-        descriptor = "(L${Type.getInternalName(Function1::class.java)};DDD)Ljava/util/List;",
+        descriptor = "(L${Type.getInternalName(JettaFunction::class.java)};DDD)Ljava/util/List;",
     )
     context.addSystemFunction(ResolvedSymbol(generate,
         ArrowType(ArrowType(GroundedType.DOUBLE, GroundedType.DOUBLE),
@@ -83,7 +83,7 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "matchEval",
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/util/function/Function;)Ljava/util/List;"
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;"
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)), SeqType(GroundedType.ATOM)),
             true
