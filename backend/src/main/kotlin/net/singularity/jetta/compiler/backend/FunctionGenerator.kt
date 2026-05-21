@@ -414,6 +414,17 @@ open class FunctionGenerator(
                 }
             }
 
+            is Lambda -> {
+                // A Lambda atom inside a quoted expression — typically reached
+                // when an outer call's head is unresolved and the whole
+                // expression gets quoted as data (e.g. e2's unresolved
+                // `get-state`). At runtime the lambda creation yields a
+                // `JettaFunction` value; embedding that into the quoted
+                // expression keeps the call shape intact so the matcher / a
+                // downstream reduction can still see it.
+                generateAtom(mv, atom, null, false)
+            }
+
             else -> TODO("Not implemented yet $atom")
         }
     }

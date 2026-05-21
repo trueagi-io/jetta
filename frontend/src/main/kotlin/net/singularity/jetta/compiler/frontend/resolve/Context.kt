@@ -253,12 +253,28 @@ class Context(
             }
 
             is Lambda -> {
-                TODO()
+                // Inline lambda application `((\ params body) args)` — common
+                // shape after `let` desugaring. Type is the lambda's declared
+                // return type when known, otherwise ATOM. Recurse into args
+                // so their types are inferred too.
+                expression.atoms.drop(1).forEach { inferType(it, scope) }
+                expression.type = atom.returnType ?: GroundedType.ATOM
             }
 
             is Expression -> {
                 expression.atoms.forEach { inferType(it, scope) }
                 expression.type = GroundedType.ATOM
+            }
+
+            is Variable -> {
+                // Variable-headed application — `($f x y)` in higher-order code.
+                // The variable's own ArrowType (if any) determines the result type;
+                // otherwise treat the call as inert/ATOM. JIT-eval dispatcher
+                // ([net.singularity.jetta.runtime.functions.JettaCallSite]) handles
+                // it at runtime.
+                expression.atoms.drop(1).forEach { inferType(it, scope) }
+                val arrow = atom.type as? ArrowType
+                expression.type = arrow?.types?.lastOrNull() ?: GroundedType.ATOM
             }
 
             else -> TODO("atom=$atom")
@@ -868,6 +884,11 @@ class Context(
             logger.debug { "Add $expression >> $scope" }
             unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
         }
+        if (expression.atoms.isEmpty()) {
+            // Empty `()` — pure data. Used by `(quote ())` and similar.
+            expression.type = GroundedType.ATOM
+            return
+        }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val resolved = resolve(atom.name)
@@ -917,7 +938,12 @@ class Context(
                     resolveAtom(cond, scope)
                     resolveAtom(thenBranch, scope)
                     resolveAtom(elseBranch, scope)
-                    expression.type = unifyType(thenBranch.type, elseBranch.type!!)
+                    // Either branch may still be untyped if it contains an unresolved
+                    // grounded call (e.g. `(superpose ())` before that built-in is
+                    // implemented). Fall back to ATOM rather than crashing.
+                    val thenT = thenBranch.type ?: GroundedType.ATOM
+                    val elseT = elseBranch.type ?: GroundedType.ATOM
+                    expression.type = unifyType(thenT, elseT)
                 }
 
                 Predefined.COND_EQ,
