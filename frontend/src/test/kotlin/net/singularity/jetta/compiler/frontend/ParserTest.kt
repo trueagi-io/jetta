@@ -345,4 +345,36 @@ class ParserTest : BaseFrontendTest() {
         val conj = expr.atoms[2] as Expression
         assertEquals(",", (conj.atoms[0] as Symbol).name)
     }
+
+    @Test
+    fun `parse double-colon as cons-style symbol`() {
+        // `::` is a Lisp/Haskell convention for list cons used in MeTTa samples.
+        // It must parse as a single Symbol, not as two `:` (COLON) tokens.
+        val program = justParse("(:: 3 (:: 7 nil))")
+        val expr = program.code[0] as Expression
+        assertEquals("::", (expr.atoms[0] as Symbol).name)
+        val inner = expr.atoms[2] as Expression
+        assertEquals("::", (inner.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse double-colon with suffix`() {
+        // `::foo` is also a valid identifier — same start, plus body characters.
+        val program = justParse("(::foo bar)")
+        val expr = program.code[0] as Expression
+        assertEquals("::foo", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `single colon stays a type annotation`() {
+        // Critical: extending IDENT to accept `::` must not break the bare `:`
+        // type-annotation form. ANTLR's longest-match keeps a lone `:` as the
+        // COLON token, so `(: foo Int)` still parses as a type form.
+        val program = justParse("(: foo Int)")
+        val expr = program.code[0] as Expression
+        // Head is a Special(":"), not a Symbol — the rewriter / resolver path
+        // for type annotations is unaffected.
+        val head = expr.atoms[0]
+        assertEquals("class net.singularity.jetta.compiler.frontend.ir.Special", head.javaClass.toString())
+    }
 }
