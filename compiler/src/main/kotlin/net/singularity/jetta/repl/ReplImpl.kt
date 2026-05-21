@@ -9,6 +9,7 @@ import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
@@ -62,6 +63,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
+        rewriter.add { LetRewriter() }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = try {

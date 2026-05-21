@@ -16,6 +16,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ImportResolutionPass
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ModuleCompilationCache
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
@@ -99,6 +100,7 @@ class Compiler(
             atomsBySource[source] = collector
             val rewriter = CompositeRewriter()
             rewriter.add { FunctionRewriter(messageCollector, context.getSpace(), collector) }
+            rewriter.add { LetRewriter() }
             rewriter.add { LambdaRewriter(messageCollector) }
             val result = rewriter.rewrite(source)
             context.addExternalFunctions(result)

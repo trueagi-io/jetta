@@ -195,6 +195,8 @@ open class FunctionGenerator(
                         }
                     }
 
+                    is Lambda -> generateInlineLambdaCall(mv, func, arguments)
+
                     else -> TODO("Not implemented yet $func")
                 }
             }
@@ -563,6 +565,38 @@ open class FunctionGenerator(
         // placeholder so the stack isn't empty for areturn.
         if (jvmSymbol.descriptor.endsWith(")V")) {
             mv.visitInsn(Opcodes.ACONST_NULL)
+        }
+    }
+
+    /**
+     * Inline lambda application: `((\\ params body) args)`. After [LetRewriter] +
+     * [net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter], every `let`
+     * desugars into this shape, so it shows up routinely. The Lambda head is itself
+     * an atom — emitting it creates a `JettaFunction` instance at runtime (via the
+     * indy lambda metafactory); the args are packed into an `Object[]`; then
+     * `INVOKEINTERFACE JettaFunction.apply` invokes the body.
+     */
+    private fun generateInlineLambdaCall(mv: LocalVariablesSorter, lambda: Lambda, arguments: List<Atom>) {
+        generateAtom(mv, lambda, null, false)
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            JETTA_FUNCTION_INTERNAL_NAME,
+            "apply",
+            "([Ljava/lang/Object;)Ljava/lang/Object;",
+            true,
+        )
+        val returnType = lambda.returnType as? GroundedType
+        if (returnType != null) {
+            unboxIfNeeded(mv, returnType)
         }
     }
 

@@ -332,6 +332,7 @@ class FunctionRewriter(
     }
 
     private fun rewriteExpression(expression: Expression): Atom {
+        if (expression.atoms.isEmpty()) return expression
         val func = expression.atoms[0]
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
