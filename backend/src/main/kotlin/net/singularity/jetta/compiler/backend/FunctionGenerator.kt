@@ -683,11 +683,21 @@ open class FunctionGenerator(
         }
         when (function.returnType) {
             GroundedType.INT, GroundedType.BOOLEAN -> mv.visitInsn(Opcodes.IRETURN)
+            GroundedType.LONG -> mv.visitInsn(Opcodes.LRETURN)
             GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DRETURN)
             GroundedType.UNIT -> mv.visitInsn(Opcodes.RETURN)
-            GroundedType.ATOM -> mv.visitInsn(Opcodes.ARETURN)
-            GroundedType.LIST -> mv.visitInsn(Opcodes.ARETURN)
-            is SeqType -> mv.visitInsn(Opcodes.ARETURN)
+            // All reference-typed returns share ARETURN. Lambdas returning
+            // lambdas (ArrowType return — common in higher-order code like
+            // d2_higherfunc's `curry`) end up here.
+            GroundedType.ATOM,
+            GroundedType.LIST,
+            GroundedType.STRING,
+            GroundedType.EXPRESSION,
+            GroundedType.SPACE,
+            GroundedType.ANY,
+            GroundedType.NOTHING,
+            is SeqType,
+            is ArrowType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")
         }
     }
