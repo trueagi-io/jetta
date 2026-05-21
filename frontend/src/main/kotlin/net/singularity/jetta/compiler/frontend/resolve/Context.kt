@@ -830,6 +830,14 @@ class Context(
                 }
             }
 
+            is ArrowType -> {
+                // An ArrowType atom in a value position (not a type annotation) — e.g.
+                // the literal `(-> Number Number Number)` on the RHS of `assertEqual`,
+                // or the result of evaluating `(get-type +)`. It's inert data; the
+                // resolver just stamps its type. Codegen turns it into a runtime atom.
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+
             else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
@@ -1014,6 +1022,14 @@ class Context(
             }
 
             is Expression -> {
+                expression.type = GroundedType.ATOM
+                expression.atoms.forEach { resolveAtom(it, scope) }
+            }
+
+            is Grounded<*>, is ArrowType -> {
+                // Expression with a non-functional head — a literal `(2 7)` tuple,
+                // a `((-> A B) ...)` type form used as data, etc. The whole
+                // expression is inert data; recurse to resolve sub-atoms.
                 expression.type = GroundedType.ATOM
                 expression.atoms.forEach { resolveAtom(it, scope) }
             }

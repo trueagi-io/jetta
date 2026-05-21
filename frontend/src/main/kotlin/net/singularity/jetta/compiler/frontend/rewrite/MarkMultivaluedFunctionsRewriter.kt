@@ -37,6 +37,7 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
     private fun checkAtom(atom: Atom, func: FunctionDefinition): Boolean {
         when (atom) {
             is Expression -> {
+                if (atom.atoms.isEmpty()) return false
                 (atom.atoms[0] as? Symbol)?.let {
                     functions[it.name]?.let { def ->
                         if (def.isMultivalued()) {

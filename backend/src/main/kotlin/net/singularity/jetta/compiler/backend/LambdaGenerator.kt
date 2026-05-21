@@ -32,6 +32,28 @@ val LAMBDA_BOOTSTRAP_HANDLE: Handle = Handle(
     false,
 )
 
+private const val JETTA_CALL_SITE_INTERNAL_NAME =
+    "net/singularity/jetta/runtime/functions/JettaCallSite"
+
+private const val CALL_SITE_BOOTSTRAP_DESCRIPTOR =
+    "(Ljava/lang/invoke/MethodHandles\$Lookup;" +
+        "Ljava/lang/String;" +
+        "Ljava/lang/invoke/MethodType;" +
+        ")Ljava/lang/invoke/CallSite;"
+
+/**
+ * Static handle to [net.singularity.jetta.runtime.functions.JettaCallSite.bootstrap],
+ * embedded in every indy JIT-eval dispatch site (`(head args…)` where head is not
+ * a statically-known compiled-function Symbol).
+ */
+val CALL_SITE_BOOTSTRAP_HANDLE: Handle = Handle(
+    Opcodes.H_INVOKESTATIC,
+    JETTA_CALL_SITE_INTERNAL_NAME,
+    "bootstrap",
+    CALL_SITE_BOOTSTRAP_DESCRIPTOR,
+    false,
+)
+
 /**
  * Emits a lambda body as a `private static synthetic` method on the enclosing
  * class. The method signature is `(captures..., samArgs-typed...) -> samReturn-typed`.

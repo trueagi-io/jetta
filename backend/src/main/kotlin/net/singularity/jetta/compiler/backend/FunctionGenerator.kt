@@ -183,7 +183,17 @@ open class FunctionGenerator(
                         }
                     }
 
-                    is Variable -> generateLambdaCall(mv, func, arguments)
+                    is Variable -> {
+                        if (func.type is ArrowType) {
+                            generateLambdaCall(mv, func, arguments)
+                        } else {
+                            // Variable head without a static ArrowType — could be a
+                            // compiled lambda, could be a non-callable data atom, could
+                            // be anything. Defer the decision to runtime via the
+                            // JettaCallSite dispatcher.
+                            generateDispatchCall(mv, func, arguments)
+                        }
+                    }
 
                     else -> TODO("Not implemented yet $func")
                 }
@@ -523,8 +533,9 @@ open class FunctionGenerator(
     private fun generateBoxingIfNeeded(type: Atom) {
         val (owner, name, desc) = when (type) {
             GroundedType.INT -> Triple("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-            GroundedType.BOOLEAN -> TODO()
+            GroundedType.BOOLEAN -> Triple("java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;")
             GroundedType.DOUBLE -> Triple("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
+            GroundedType.LONG -> Triple("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")
             else -> return
         }
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, desc, false)
@@ -553,6 +564,36 @@ open class FunctionGenerator(
         if (jvmSymbol.descriptor.endsWith(")V")) {
             mv.visitInsn(Opcodes.ACONST_NULL)
         }
+    }
+
+    /**
+     * Variable-headed application where the head has no static ArrowType.
+     * Loads head + boxed-arg-array and dispatches through the JIT-eval bootstrap
+     * (see [net.singularity.jetta.runtime.functions.JettaCallSite]). At runtime
+     * the dispatcher invokes `JettaFunction.apply` if the head is a compiled
+     * lambda; otherwise it builds an inert `(head args…)` Expression.
+     */
+    private fun generateDispatchCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
+        val slot = destructuredLocals[variable.name]
+        if (slot != null) {
+            mv.visitVarInsn(Opcodes.ALOAD, slot)
+        } else {
+            generateLoadVar(mv, variable, function.params, isStatic, className)
+        }
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitInvokeDynamicInsn(
+            "apply",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            CALL_SITE_BOOTSTRAP_HANDLE,
+        )
     }
 
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
