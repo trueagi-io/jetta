@@ -1044,6 +1044,20 @@ class Context(
                     // don't need to resolve
                 }
 
+                Predefined.ANNOTATION,
+                Predefined.PATTERN,
+                Predefined.TYPE,
+                Predefined.ARROW -> {
+                    // Specials used as data heads (curried `(= ((K $x) $y) …)`,
+                    // meta-rule `(= (= $x $x) T)`, tuple type tag `(: (A B) …)`,
+                    // doc/annotation `(@ doc-string …)`, or a type form sitting in
+                    // a value position). The rewriter-fallback (21bbee2) routes
+                    // them to the space as facts; here in resolve they're inert
+                    // data — type ATOM, recurse to resolve sub-atoms.
+                    expression.type = GroundedType.ATOM
+                    expression.atoms.drop(1).forEach { resolveAtom(it, scope) }
+                }
+
                 else -> TODO("atom=$atom")
             }
 

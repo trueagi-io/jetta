@@ -113,6 +113,15 @@ open class FunctionGenerator(
                 }
             }
 
+            is ArrowType -> {
+                // Same surface-form reification as in `generateQuote` — an arrow
+                // type appearing as a direct value (e.g. RHS of `assertEqual`)
+                // becomes the `(-> …)` Expression at runtime. Use `generateQuote`
+                // (not the local recursive `generateLoad`) because Expressions
+                // must be constructed via the quote machinery.
+                generateQuote(mv, Expression(listOf(Special(Predefined.ARROW)) + atom.types))
+            }
+
             else -> TODO("Not implemented yet $atom")
         }
     }
@@ -163,6 +172,16 @@ open class FunctionGenerator(
                         Predefined.MAP_ -> generateCall(mv, Predefined.MAP_, arguments, atom.resolved)
                         Predefined.FLAT_MAP_ -> generateCall(mv, Predefined.FLAT_MAP_, arguments, atom.resolved)
                         Predefined.QUOTE -> generateQuote(mv, arguments[0])
+                        Predefined.ANNOTATION,
+                        Predefined.PATTERN,
+                        Predefined.TYPE,
+                        Predefined.ARROW -> {
+                            // Data forms with a Special head reach codegen as inert
+                            // values (see resolver counterpart). Emit as a quoted
+                            // expression so the whole `(@ doc …)` / `(= … …)` /
+                            // `(: … …)` / `(-> …)` lives as a runtime Expression atom.
+                            generateQuote(mv, atom)
+                        }
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
                                 mv,
@@ -423,6 +442,16 @@ open class FunctionGenerator(
                 // expression keeps the call shape intact so the matcher / a
                 // downstream reduction can still see it.
                 generateAtom(mv, atom, null, false)
+            }
+
+            is ArrowType -> {
+                // Reify an arrow-type atom as the equivalent surface Expression
+                // `(-> t1 t2 … return)`. The rewriter folds `(-> …)` literals
+                // into [ArrowType] IR nodes (FunctionRewriter:339); reversing the
+                // fold here keeps quoted/data positions structurally comparable
+                // to whatever `(get-type …)` produces at runtime, without
+                // needing a separate runtime ArrowType-construction path.
+                generateQuote(mv, Expression(listOf(Special(Predefined.ARROW)) + atom.types))
             }
 
             else -> TODO("Not implemented yet $atom")
