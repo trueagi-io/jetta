@@ -214,10 +214,19 @@ class Context(
                     expression.type = thenBranch.type ?: elseBranch.type
                 }
 
-                Predefined.COND_EQ -> {
+                Predefined.COND_EQ,
+                Predefined.COND_NEQ,
+                Predefined.COND_LT,
+                Predefined.COND_GT,
+                Predefined.COND_LE,
+                Predefined.COND_GE -> {
                     val (_, lhs, rhs) = expression.atoms
                     inferType(lhs, scope)
                     inferType(rhs, scope)
+                    // Propagate a known side's type to an unknown side. This is how
+                    // `(== $v 5)` infers `$v: Int` — the standard symmetry trick.
+                    // Order-comparison operators (<, >, ≤, ≥) only need a Number-ish
+                    // type but the side-propagation logic is the same.
                     if (lhs.type != null && rhs.type == null) {
                         rhs.type = lhs.type
                         if (rhs is Variable) scope.data[rhs.name] = lhs.type!!
@@ -229,10 +238,16 @@ class Context(
                     expression.type = GroundedType.BOOLEAN
                 }
 
-                Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
+                Predefined.TIMES, Predefined.MINUS, Predefined.PLUS,
+                Predefined.DIVIDE, Predefined.DIV, Predefined.MOD -> {
                     expression.arguments().forEach {
                         inferType(it, scope)
                     }
+                }
+
+                Predefined.RUN_SEQ, Predefined.SEQ -> {
+                    expression.arguments().forEach { inferType(it, scope) }
+                    expression.type = expression.atoms.lastOrNull()?.type ?: GroundedType.ATOM
                 }
 
                 Predefined.MAP_, Predefined.FLAT_MAP_ -> { /* skip it */
