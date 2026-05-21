@@ -2,6 +2,7 @@ package net.singularity.jetta.runtime.space
 
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
+import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.space.atoms.SAtom
@@ -211,6 +212,25 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                             return false
                         }
                     } else if (exprAtom !is Grounded<*> || exprAtom.value != patternAtom.value) {
+                        return false
+                    }
+                }
+
+                is Special -> {
+                    // Special atoms (`:`, `=`, `@`, `->`) appear as plain data in
+                    // space facts after the rewriter fallback (21bbee2) — e.g.
+                    // `(:= (Green Sam) T)` parses to `(: = (Green Sam) T)`, a
+                    // four-atom expression with two leading Specials. They must
+                    // unify just like Symbols do.
+                    if (exprAtom is Variable) {
+                        val patternSAtom = patternAtom.toSAtom()
+                        val existing = spaceVarBindings[exprAtom.name]
+                        if (existing == null) {
+                            spaceVarBindings[exprAtom.name] = patternSAtom
+                        } else if (existing != patternSAtom) {
+                            return false
+                        }
+                    } else if (exprAtom !is Special || exprAtom.value != patternAtom.value) {
                         return false
                     }
                 }

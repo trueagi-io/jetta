@@ -131,7 +131,10 @@ class SpaceImpl : Space {
     private fun substituteVariables(atom: Atom, bindings: Bindings): Atom {
         return when (atom) {
             is Variable -> {
-                bindings[atom.name]!!.toAtom()
+                // Variables not in this match's bindings stay as Variables — they
+                // belong to a different scope (e.g. a nested `match` template
+                // whose own variables are bound by the inner call, not the outer).
+                bindings[atom.name]?.toAtom() ?: atom
             }
 
             is Expression -> {
