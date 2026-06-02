@@ -310,6 +310,51 @@ class FunctionRewriter(
             }
         }
 
+        // Chained `match` — the template of an outer `match` is itself a `match` call.
+        // The user writes the chain expecting the inner match to be EVALUATED for each
+        // result of the outer one (with the outer's bindings live), as in
+        //
+        //   (match &self (:= (S K K x) $r)
+        //     (match &self (:= $r $r2) $r2))
+        //                            ; expected: (x)
+        //
+        // The default `quote(template)` path would treat the inner match as data and
+        // return it unreduced — `(match &self (: = (K x (K x)) $r2) $r2)`.
+        //
+        // Rewrite as a flat-map: the outer match yields each binding of the shared
+        // variable (here `$r`), and the lambda runs the (recursively-rewritten) inner
+        // match for each binding. `$r` becomes a real lambda parameter, so references
+        // inside the inner pattern's `quote` see the right value at runtime.
+        //
+        // Restriction: exactly one variable shared between outer pattern and inner
+        // template. Multi-variable chaining would need either `matchEval` (binding
+        // stack via BoundAtom) or a multi-arg lambda; defer until a test needs it.
+        if (isMatchCall(template)) {
+            val innerMatch = template as Expression
+            val outerPattern = expression.atoms[2]
+            val shared = collectVariableNames(outerPattern)
+                .intersect(collectVariableNames(innerMatch))
+
+            if (shared.size == 1) {
+                val sharedVar = Variable(shared.first())
+                val outerCall = Expression(
+                    expression.atoms[0],         // match
+                    expression.atoms[1],         // &self
+                    quoteAtom(outerPattern),
+                    quoteAtom(sharedVar)         // dst yields the shared var's binding per match
+                )
+                // Recurse so chained-of-chained matches collapse correctly.
+                val innerRewritten = rewriteMatchCall(innerMatch)
+                val lambda = Lambda(
+                    listOf(sharedVar),
+                    null,
+                    innerRewritten,
+                    position = expression.position
+                )
+                return Expression(Special(Predefined.FLAT_MAP_), lambda, outerCall)
+            }
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -318,6 +363,25 @@ class FunctionRewriter(
                 quoteAtom(expression.atoms[3])
             )
         )
+    }
+
+    private fun isMatchCall(atom: Atom): Boolean {
+        if (atom !is Expression) return false
+        val head = atom.atoms.firstOrNull() ?: return false
+        return head is Symbol && head.name == "match"
+    }
+
+    private fun collectVariableNames(atom: Atom): Set<String> {
+        val result = mutableSetOf<String>()
+        fun walk(a: Atom) {
+            when (a) {
+                is Variable -> result.add(a.name)
+                is Expression -> a.atoms.forEach(::walk)
+                else -> {}
+            }
+        }
+        walk(atom)
+        return result
     }
 
     private fun rewriteAssertionCall(expression: Expression): Expression {
