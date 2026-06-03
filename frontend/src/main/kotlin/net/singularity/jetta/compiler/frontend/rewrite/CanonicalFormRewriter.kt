@@ -59,7 +59,19 @@ class CanonicalFormRewriter(
                 }
                 else -> {
                     val newBody = extractIfStatementsIfNeeded(owner, body, root = true)
-                    collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
+                    // Pass newBody.id as reducedScopeId — same as the Match branch
+                    // path above. Without this, when the body is a single bare
+                    // multivalued call like `(= (green $x) (frog $x))`, the scope
+                    // registration uses the parameter variable's scope.id (the
+                    // function scope), while rewriteExpression looks up by the
+                    // call's expression.id (the body itself). Those keys
+                    // disagreed, so multivaluedCallsInverse came back null and
+                    // the map/flat-map wrapper was never generated — the body
+                    // collapsed to a free `$__varN` whose at-runtime value is a
+                    // fresh Variable atom (mis-cast as List by the caller's
+                    // simpleMap). Pinning the scope to the body's own id keeps
+                    // both sides consulting the same bucket.
+                    collectNonDeterministicAtomsRecursively(newBody, functionDefinition, newBody.id)
                     rewriteAtom(newBody)
                 }
             }
