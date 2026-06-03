@@ -57,16 +57,27 @@ object Assertions {
 
     @JvmStatic
     fun assertEqual(actual: Any?, expected: Any?) {
-        val normalizedActual = normalize(actual)
-        val normalizedExpected = normalize(expected)
-        if (normalizedActual != normalizedExpected) {
+        // Hyperon-style bag semantics: every value is treated as a bag of results.
+        // A literal like `Plato` is the singleton bag {Plato}; a multivalued call's
+        // List result is its full bag. Two bags are equal iff they match as ordered
+        // lists (order- and multiplicity-sensitive — Hyperon's `assertEqual` is the
+        // same; set semantics would require sort+dedupe).
+        //
+        // Without this lift, `assertEqual [Plato] Plato` (multivalued actual, scalar
+        // expected) would fail spuriously even though both sides denote the same
+        // singleton bag. That mismatch is what surfaced as b2_backchain ASSERT_FAIL —
+        // `(ift (deduce ...) $x)` builds a flat-map yielding `[Plato]`, but the
+        // expected `Plato` is a scalar.
+        val actualBag = normalizeActualResults(actual)
+        val expectedBag = normalizeActualResults(expected)
+        if (actualBag != expectedBag) {
             throw AssertionError(
                 buildString {
                     append("assertEqual failed")
                     append("\nExpected: ")
-                    append(normalizedExpected)
+                    append(normalize(expected))
                     append("\nActual:   ")
-                    append(normalizedActual)
+                    append(normalize(actual))
                 }
             )
         }
