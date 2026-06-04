@@ -611,6 +611,17 @@ class Context(
             is FunctionDefinition -> {
                 atom.params.forEach { it.type = it.type ?: GroundedType.ATOM }
                 defaultUntypedToAtom(atom.body)
+                // Symmetric with the Lambda branch below: when the earlier
+                // inference passes left arrowType null (e.g. identity-style
+                // `(= (I $x) $x)` has no constraint that pins a non-Atom
+                // type), aggregate it from the now-defaulted params and body.
+                // Without this the backend hits `arrowType!!` in
+                // getJvmDescriptor and NPEs.
+                if (atom.arrowType == null) {
+                    val paramTypes = atom.params.map { it.type!! }
+                    val returnType = atom.body.type ?: GroundedType.ATOM
+                    atom.arrowType = ArrowType(paramTypes + returnType)
+                }
             }
 
             is Lambda -> {
