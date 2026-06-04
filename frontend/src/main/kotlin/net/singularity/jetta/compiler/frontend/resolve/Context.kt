@@ -918,7 +918,22 @@ class Context(
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val resolved = resolve(atom.name)
-                if (resolved != null) {
+                val expectedArity = resolved?.arrowType()?.let { it.types.size - 1 }
+                if (resolved != null && expectedArity != null &&
+                    definedFunctions[atom.name] != null &&
+                    expression.arguments().size != expectedArity
+                ) {
+                    // Arity mismatch on a user-defined function: an under-application
+                    // like `(S Z)` for 3-ary S, or a partial like `(K $x)`. This is NOT
+                    // a JVM-invokable call — it's an inert MeTTa expression (data). Leave
+                    // `resolved` null so codegen emits a quoted expression; runtime
+                    // dispatch (JettaCallSite) can still reduce it via a matching `(= …)`
+                    // space rule. Without this guard, codegen would emit an INVOKESTATIC
+                    // with the function's full arity and the verifier/frame computation
+                    // fails on the argument-count mismatch.
+                    expression.type = GroundedType.ATOM
+                    expression.arguments().forEach { resolveAtom(it, scope) }
+                } else if (resolved != null) {
                     val arrowType = resolved.arrowType()
                     expression.arguments().mapIndexed { index, arg ->
                         resolveAtom(arg, scope, arrowType.types[index])

@@ -667,6 +667,8 @@ open class FunctionGenerator(
             "apply",
             "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
             CALL_SITE_BOOTSTRAP_HANDLE,
+            // Static bootstrap arg: the space name to query for `(= …)` rules.
+            moduleSpaceName,
         )
     }
 

@@ -7,10 +7,32 @@ import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 
 object Assertions {
+    /**
+     * Comparison key for a free [net.singularity.jetta.compiler.frontend.ir.Variable].
+     * `Variable` uses identity equality, but two variables that print the same (e.g.
+     * the `$n` on each side of `(assertEqual (Add $n Z) $n)`) denote the same variable
+     * and must compare equal. Keying by name gives that structural equality without
+     * touching `Variable`'s global identity semantics (which `match`/`Matcher` rely on).
+     */
+    private data class VarKey(val name: String)
+
+    /**
+     * Comparison key for a normalized [Expression]. Distinct from a plain [List] so
+     * [normalizeActualResults] does not mistake a single expression result for a
+     * multivalued bag of results — a bare `List` means "bag", an `ExprKey` means
+     * "one expression whose children have been normalized".
+     */
+    private data class ExprKey(val atoms: List<Any?>)
+
     private fun normalize(value: Any?): Any? =
         when (value) {
             is BoundAtom -> normalize(value.atom)
             is Grounded<*> -> value.value
+            is net.singularity.jetta.compiler.frontend.ir.Variable -> VarKey(value.name)
+            // Recurse so nested variables inside an expression are compared by name too
+            // (e.g. `(S $n)` vs `(S $n)`). Symbols already compare by name; grounded
+            // leaves collapse to their values.
+            is Expression -> ExprKey(value.atoms.map { normalize(it) })
             is List<*> -> value.map { normalize(it) }
             else -> value
         }

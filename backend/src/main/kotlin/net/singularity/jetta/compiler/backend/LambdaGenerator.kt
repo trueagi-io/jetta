@@ -39,6 +39,10 @@ private const val CALL_SITE_BOOTSTRAP_DESCRIPTOR =
     "(Ljava/lang/invoke/MethodHandles\$Lookup;" +
         "Ljava/lang/String;" +
         "Ljava/lang/invoke/MethodType;" +
+        // Trailing static bootstrap arg: the owning module's space name, baked at
+        // each dispatch site so JettaCallSite can query the right space for `(= …)`
+        // rules. Bound into the dispatch handle by JettaCallSite.bootstrap.
+        "Ljava/lang/String;" +
         ")Ljava/lang/invoke/CallSite;"
 
 /**

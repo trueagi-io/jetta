@@ -43,6 +43,18 @@ class FunctionRewriter(
     private fun hasConstantsInPattern(pattern: Expression): Boolean =
         pattern.atoms.drop(1).any { it !is Variable }
 
+    /**
+     * A non-linear pattern repeats a variable across argument positions, e.g.
+     * `(= (eq $x $x) T)`. Such a clause only matches when those positions are equal,
+     * so it must compile through the guarded [Match] path (a `$x == $x` condition),
+     * not the unconditional direct-call path — otherwise the guard is dropped and the
+     * function returns its body for *any* arguments.
+     */
+    private fun hasRepeatedVariables(pattern: Expression): Boolean {
+        val names = pattern.atoms.drop(1).filterIsInstance<Variable>().map { it.name }
+        return names.size != names.toSet().size
+    }
+
     private fun extractFormalParams(expression: Expression): List<Variable> {
         val list = expression.atoms.drop(1).mapNotNull {
             // FIXME: it might be a value
@@ -167,6 +179,9 @@ class FunctionRewriter(
     private fun mkCond(params: List<Variable>, pattern: Expression): Expression? {
         val cond = mutableListOf<Expression>()
         if (pattern.atoms.size == 1) return null
+        // Track the first param a pattern variable bound to, so a repeated variable
+        // (`(eq $x $x)`) emits an equality guard between the two argument positions.
+        val seenVars = mutableMapOf<String, Variable>()
         params.zip(pattern.atoms.drop(1)).forEach { (variable, atom) ->
             when (atom) {
                 is Grounded<*>, is Symbol -> {
@@ -175,7 +190,15 @@ class FunctionRewriter(
                 is Expression -> {
                     cond.add(Expression(Special(Predefined.COND_EQ), variable, atom, position = pattern.position))
                 }
-                else -> { /* Variable — no condition needed */ }
+                is Variable -> {
+                    val first = seenVars[atom.name]
+                    if (first != null) {
+                        cond.add(Expression(Special(Predefined.COND_EQ), first, variable, position = pattern.position))
+                    } else {
+                        seenVars[atom.name] = variable
+                    }
+                }
+                else -> { /* nothing to guard */ }
             }
         }
         if (cond.isEmpty()) return null
@@ -188,7 +211,9 @@ class FunctionRewriter(
 
     private fun mkFunctions(): List<Atom> =
         patterns.map { (name, list) ->
-            if (list.size == 1 && !hasConstantsInPattern(list[0].pattern)) {
+            if (list.size == 1 && !hasConstantsInPattern(list[0].pattern) &&
+                !hasRepeatedVariables(list[0].pattern)
+            ) {
                 val pattern = list[0]
                 FunctionDefinition(
                     name,
@@ -435,15 +460,16 @@ class FunctionRewriter(
                 if (head != null) {
                     val list = patterns.getOrPut(head.name) { mutableListOf() }
                     list.add(Pattern(pattern, rewriteAtom(expression.atoms[2])))
-                } else {
-                    // LHS head isn't a plain Symbol — curried form `(= ((K $x) $y) ...)`
-                    // or meta-rule like `(= (= $x $x) T)`. JeTTa can't lower these to a
-                    // JVM function, but they're still valid MeTTa equality facts: store
-                    // the whole `(= ...)` in the space so runtime `match &self (= ...)`
-                    // queries can find them. Matches the reference interpreter's
-                    // "rules live as space atoms" model.
-                    addAsFact(expression)
                 }
+                // Every `(= lhs rhs)` is ALSO an equality fact in the space, whether or
+                // not its head compiles to a JVM function. This is the reference
+                // interpreter's "rules live as space atoms" model: it lets runtime
+                // `match &self (= …)` queries — and the eval-as-runtime dispatcher
+                // (JettaCallSite) — find the rule by unification, including for
+                // free-variable arguments the compiled boolean path can't bind. The
+                // compiled function and the space fact coexist (curried / meta-rule
+                // heads with `head == null` get only the space fact, as before).
+                addAsFact(expression)
             }
 
             Predefined.TYPE -> {
