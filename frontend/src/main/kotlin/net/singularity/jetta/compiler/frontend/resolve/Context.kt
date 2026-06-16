@@ -786,9 +786,15 @@ class Context(
             is Expression -> {
                 // If the expected type is Atom, this expression is data (a constructor),
                 // not a function call — don't try to resolve its head symbol.
-                if (suggestedType == GroundedType.ATOM && resolve(
-                        (atom.atoms.firstOrNull() as? Symbol)?.name ?: ""
-                    ) == null
+                // Exception: a Special head (flat-map?/map?/if/arithmetic/…) is always
+                // an executable form, even in an argument position with expected type
+                // Atom — route it through resolveExpression so it receives its resolved
+                // symbol and SeqType. Without this, a nested (flat-map? …) passed as a
+                // call argument (e.g. inside `(ift (flat-map? …) …)`) would be stamped
+                // Atom and reach codegen unresolved.
+                val head = atom.atoms.firstOrNull()
+                if (suggestedType == GroundedType.ATOM && head !is Special &&
+                    resolve((head as? Symbol)?.name ?: "") == null
                 ) {
                     atom.type = GroundedType.ATOM
                 } else {
@@ -1067,7 +1073,11 @@ class Context(
                 }
 
                 Predefined.QUOTE -> {
-                    // don't need to resolve
+                    // A quoted form is inert data. Stamp it Atom: callers that pass a
+                    // (quote …) as an argument with expected type Atom relied on the
+                    // resolveAtom data-shortcut for this type; now that Special heads are
+                    // routed here, set it explicitly.
+                    expression.type = GroundedType.ATOM
                 }
 
                 Predefined.ANNOTATION,
