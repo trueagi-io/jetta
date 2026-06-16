@@ -11,6 +11,19 @@ class CanonicalFormRewriter(
     val messageCollector: MessageCollector,
     private val context: Context,
 ) : Rewriter {
+    companion object {
+        // Grounded functions that consume the whole bag of results of each argument
+        // (a non-determinism barrier). A bare multivalued call in their argument
+        // position is passed as a List rather than lifted into a map/flat-map.
+        //
+        // `assertEqual`/`assertEqualToResult` are also barriers in principle, but adding
+        // them here exposes a separate gap: a non-matching call like `(eq Green Blue)`
+        // must reduce to itself (the unreduced expression), not to an empty bag. Until
+        // that non-reduction fallback exists, keeping them out preserves the existing
+        // (lift-into-map) behaviour. See the b1_equal_chain note.
+        private val BARRIER_FUNCTIONS = setOf("collapse")
+    }
+
     private var variableCount = 0
     private var functionCount = 0
     private val multivaluedCalls: MutableMap<Int, Int> = mutableMapOf()
@@ -283,7 +296,12 @@ class CanonicalFormRewriter(
     private fun collectNonDeterministicAtomsRecursively(
         atom: Atom,
         functionDefinition: FunctionLike,
-        reducedScopeId: Int? = null
+        reducedScopeId: Int? = null,
+        // True when [atom] is a direct argument of a non-determinism barrier
+        // (`assertEqual`/`assertEqualToResult`/`collapse`). Such a barrier consumes the
+        // WHOLE bag of results of each argument, so a bare multivalued call here must be
+        // handed over as a List rather than lifted into a map at the parent scope.
+        barrierArg: Boolean = false
     ): Boolean {
         // returns closest scope according call parameters
         fun getScopeId(call: Expression): Int =
@@ -316,7 +334,11 @@ class CanonicalFormRewriter(
                                         arg.atoms[0] is Symbol &&
                                         context.definedFunctions[(arg.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
                             }
-                            if (!hasMultivaluedArgs) {
+                            // A bare multivalued call that is a direct barrier argument is
+                            // handed over whole (as its List result) — skip lifting it so
+                            // the barrier receives the full bag instead of being mapped
+                            // once per element.
+                            if (!hasMultivaluedArgs && !barrierArg) {
                                 val scopeId = reducedScopeId ?: getScopeId(atom)
                                 multivaluedCalls[atom.id] = variableCount
                                 multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
@@ -354,12 +376,17 @@ class CanonicalFormRewriter(
                         && context.definedFunctions[(atom.atoms[0] as Symbol).name] != null
                     ) atom.id else reducedScopeId
 
+                    // Direct arguments of a barrier (assertEqual/collapse/…) are tagged
+                    // so a bare multivalued call among them is handed over as a whole bag.
+                    val childIsBarrierArg = (atom.atoms[0] as? Symbol)?.name in BARRIER_FUNCTIONS
+
                     // other specials and symbols
                     atom.atoms.drop(1).forEach {
                         if (collectNonDeterministicAtomsRecursively(
                                 it,
                                 functionDefinition,
-                                childScope
+                                childScope,
+                                childIsBarrierArg
                             )
                         ) isMultivalued = true
                     }

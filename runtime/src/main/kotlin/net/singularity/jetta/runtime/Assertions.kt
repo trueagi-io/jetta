@@ -77,13 +77,22 @@ object Assertions {
         return expression.atoms.map { normalize(unquote(it)) }
     }
 
+    /**
+     * Multiset (bag) equality: order-insensitive, multiplicity-sensitive. This matches
+     * Hyperon's `assertEqual`, whose @doc compares "(sets of) results" and whose
+     * `_assert-results-are-equal` is built on `subtraction-atom` (which preserves
+     * multiplicity). The non-deterministic order of results is not guaranteed, so an
+     * ordered comparison would spuriously fail tests like `b4_nondeterm`
+     * (`(match … (color) …)` yields `[green yellow red]` while `(superpose (red yellow
+     * green))` yields `[red yellow green]` — same bag, different order).
+     */
+    private fun bagsEqual(a: List<Any?>, b: List<Any?>): Boolean =
+        a.size == b.size && a.groupingBy { it }.eachCount() == b.groupingBy { it }.eachCount()
+
     @JvmStatic
     fun assertEqual(actual: Any?, expected: Any?) {
-        // Hyperon-style bag semantics: every value is treated as a bag of results.
-        // A literal like `Plato` is the singleton bag {Plato}; a multivalued call's
-        // List result is its full bag. Two bags are equal iff they match as ordered
-        // lists (order- and multiplicity-sensitive — Hyperon's `assertEqual` is the
-        // same; set semantics would require sort+dedupe).
+        // Every value is treated as a bag of results. A literal like `Plato` is the
+        // singleton bag {Plato}; a multivalued call's List result is its full bag.
         //
         // Without this lift, `assertEqual [Plato] Plato` (multivalued actual, scalar
         // expected) would fail spuriously even though both sides denote the same
@@ -92,7 +101,7 @@ object Assertions {
         // expected `Plato` is a scalar.
         val actualBag = normalizeActualResults(actual)
         val expectedBag = normalizeActualResults(expected)
-        if (actualBag != expectedBag) {
+        if (!bagsEqual(actualBag, expectedBag)) {
             throw AssertionError(
                 buildString {
                     append("assertEqual failed")
@@ -109,7 +118,7 @@ object Assertions {
     fun assertEqualToResult(actual: Any?, expected: Any?) {
         val normalizedActual = normalizeActualResults(actual)
         val normalizedExpected = decodeExpectedResults(expected)
-        if (normalizedActual != normalizedExpected) {
+        if (!bagsEqual(normalizedActual, normalizedExpected)) {
             throw AssertionError(
                 buildString {
                     append("assertEqualToResult failed")

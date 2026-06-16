@@ -216,7 +216,15 @@ open class FunctionGenerator(
 
                     is Lambda -> generateInlineLambdaCall(mv, func, arguments)
 
-                    else -> TODO("Not implemented yet $func")
+                    else -> {
+                        // Expression with a non-callable head — a tuple of tuples such
+                        // as `((stop ventilation) (start kettle))` (e.g. the argument of
+                        // `superpose`), or a `(Grounded …)`/`(-> …)`-headed data form.
+                        // The resolver already stamps these as inert ATOM data; quote
+                        // the whole expression so it lives as a runtime Expression atom
+                        // (runtime dispatch may still reduce it via space rules).
+                        generateQuote(mv, atom)
+                    }
                 }
             }
 
