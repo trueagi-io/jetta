@@ -13,7 +13,7 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
 
     companion object {
         // Non-determinism barriers — see CanonicalFormRewriter.BARRIER_FUNCTIONS.
-        private val BARRIER_FUNCTIONS = setOf("collapse")
+        private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult")
     }
 
     override fun rewrite(source: ParsedSource): ParsedSource {

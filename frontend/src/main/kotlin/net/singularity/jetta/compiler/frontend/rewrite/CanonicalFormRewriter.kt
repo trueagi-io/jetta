@@ -16,12 +16,13 @@ class CanonicalFormRewriter(
         // (a non-determinism barrier). A bare multivalued call in their argument
         // position is passed as a List rather than lifted into a map/flat-map.
         //
-        // `assertEqual`/`assertEqualToResult` are also barriers in principle, but adding
-        // them here exposes a separate gap: a non-matching call like `(eq Green Blue)`
-        // must reduce to itself (the unreduced expression), not to an empty bag. Until
-        // that non-reduction fallback exists, keeping them out preserves the existing
-        // (lift-into-map) behaviour. See the b1_equal_chain note.
-        private val BARRIER_FUNCTIONS = setOf("collapse")
+        // `assertEqual`/`assertEqualToResult` are barriers: they compare the FULL bag
+        // produced by each argument (multiset compare in Assertions.kt). Lifting a
+        // multivalued arg into a map/flat-map would instead call the barrier once per
+        // value, yielding a singleton on the actual side — see b4_nondeterm. They
+        // depend on the non-reduction fallback (commit 4ebe9d0) so a non-matching call
+        // like `(eq Green Blue)` reduces to itself rather than to an empty bag.
+        private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult")
     }
 
     private var variableCount = 0
