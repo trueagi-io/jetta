@@ -1,7 +1,10 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
+import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
+import net.singularity.jetta.runtime.JettaProgram
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -234,4 +237,36 @@ class MultivaluedFunctionTest : GeneratorTestBase() {
             val value = classes["NonDeterministicFunction"]!!.getMethod("baz").invoke(null)
             assertEquals(listOf(2, 3, 4), value)
         }
+
+    // A system multivalued call (`superpose`) in the argument position of an
+    // ordinary single-valued function must be lifted into a map?, exactly like a
+    // user @multivalued function (cf. compileOneArgCall above). Before the fix,
+    // CanonicalFormRewriter only recognised user @multivalued functions, so the
+    // superpose bag was handed to `rev` as a raw List and crashed codegen.
+    // Mirrors b4_nondeterm's `(rev A (superpose (B C D)))`.
+    @Test
+    fun liftSystemMultivaluedArgIntoOrdinaryFunction() =
+        compile(
+            "LiftSuperposeArg.metta",
+            """
+            (= (rev _x _y) (_y _x))
+            !(rev A (superpose (B C D)))
+            """.trimIndent().replace('_', '$'),
+            mapImpl, flatMapImpl
+        ) { context -> registerExternals(context) }
+            .let { (result, messageCollector) ->
+                messageCollector.list().forEach { println(it) }
+                assertTrue(messageCollector.list().isEmpty())
+                val classes = result.toMap().toClasses()
+                JettaProgram.init("LiftSuperposeArg")
+                val value = classes["LiftSuperposeArg"]!!.getMethod("__main").invoke(null)
+                assertEquals(
+                    listOf(
+                        Expression(Symbol("B"), Symbol("A")),
+                        Expression(Symbol("C"), Symbol("A")),
+                        Expression(Symbol("D"), Symbol("A")),
+                    ),
+                    value
+                )
+            }
 }
