@@ -380,6 +380,65 @@ class FunctionRewriter(
             }
         }
 
+        // Compound template containing a NESTED function call, e.g. `explain` clause 2:
+        //   (match &self (Implication $a (Evaluation ($P $x))) (($P $x) proven by (explain $a)))
+        // The whole-template single-call path above only fires when the template IS the
+        // call. Here the call `(explain $a)` is buried inside a data tuple. Quoting the
+        // whole template (the default below) makes the nested call inert data that never
+        // reduces — `(explain X)` then returns the SHALLOW `(… proven by (explain …))`.
+        //
+        // Lift the call explicitly, mirroring the late non-determinism hoisting:
+        //   flat-map? (\ $a. map? (\ $r. (($P $x) proven by $r))  (explain $a))
+        //             (match &self <pattern> (quote $a))
+        // i.e. the outer match drives `$a` (the single match-bound variable the call
+        // depends on); the inner `map?` evaluates `(explain $a)` as a REAL call and splices
+        // each result `$r` back into the data tuple. Remaining template variables resolve as
+        // before (function params / destructured locals captured into the lambdas).
+        //
+        // Restrictions (else fall through to quote — no behaviour change): exactly ONE
+        // nested call, depending on exactly ONE match-bound variable. Multiple calls or
+        // drive-vars would need multi-arg lambdas / tuple-returning match (same deferral as
+        // the chained-match path above).
+        if (template is Expression) {
+            val nestedCalls = collectNestedFunctionCalls(template)
+            if (nestedCalls.size == 1) {
+                val call = nestedCalls[0]
+                val callName = (call.atoms[0] as? Symbol)?.name
+                val matchVars = collectVariableNames(expression.atoms[2])
+                val callVars = collectVariableNames(call).intersect(matchVars)
+                // Only lift MULTIVALUED nested calls. The lift wraps the call in
+                // map?/flat-map?, which require it to return a List; a single-valued call
+                // returns a scalar (→ ClassCast at runtime). For single-valued nested
+                // calls fall through to quote — the same shallow behaviour as before this
+                // change, so no regression.
+                if (callName != null && callVars.size == 1 && isMultivaluedFunction(callName)) {
+                    val driveVar = Variable(callVars.first())
+                    val resultVar = Variable("__matchEvalRes")
+                    val splicedTemplate = replaceSubExpression(template, call, resultVar)
+                    val matchCall = Expression(
+                        expression.atoms[0],
+                        expression.atoms[1],
+                        quoteAtom(expression.atoms[2]),
+                        quoteAtom(driveVar)
+                    )
+                    val innerLambda = Lambda(
+                        listOf(resultVar),
+                        null,
+                        splicedTemplate,
+                        position = expression.position
+                    )
+                    val inner = Expression(Special(Predefined.MAP_), innerLambda, call)
+                    val outerLambda = Lambda(
+                        listOf(driveVar),
+                        null,
+                        inner,
+                        position = expression.position
+                    )
+                    return Expression(Special(Predefined.FLAT_MAP_), outerLambda, matchCall)
+                }
+            }
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -388,6 +447,47 @@ class FunctionRewriter(
                 quoteAtom(expression.atoms[3])
             )
         )
+    }
+
+    /**
+     * Collect function-call sub-expressions (head is a Symbol naming a known defined
+     * function) anywhere inside [atom]. Used by [rewriteMatchCall] to detect calls
+     * nested inside a compound match template.
+     */
+    private fun collectNestedFunctionCalls(atom: Atom): List<Expression> {
+        val result = mutableListOf<Expression>()
+        fun walk(a: Atom) {
+            if (a is Expression) {
+                if (isFunctionCall(a)) result.add(a)
+                a.atoms.forEach(::walk)
+            }
+        }
+        walk(atom)
+        return result
+    }
+
+    /**
+     * Structurally replace every occurrence of [target] inside [atom] with [replacement].
+     * Used by [rewriteMatchCall] to splice a nested call's fresh result variable back into
+     * the surrounding template. ([Expression.equals] is structural.)
+     */
+    private fun replaceSubExpression(atom: Atom, target: Expression, replacement: Atom): Atom =
+        when {
+            atom == target -> replacement
+            atom is Expression -> atom.copy(atom.atoms.map { replaceSubExpression(it, target, replacement) })
+            else -> atom
+        }
+
+    /**
+     * Whether [name] is a multivalued (List-returning) function, mirroring the
+     * single-clause/linear test in [mkFunctions]: a function is single-valued only if it
+     * has exactly one clause with no constants and no repeated variables in its pattern.
+     */
+    private fun isMultivaluedFunction(name: String): Boolean {
+        val list = patterns[name] ?: return false
+        return !(list.size == 1 &&
+            !hasConstantsInPattern(list[0].pattern) &&
+            !hasRepeatedVariables(list[0].pattern))
     }
 
     private fun isMatchCall(atom: Atom): Boolean {

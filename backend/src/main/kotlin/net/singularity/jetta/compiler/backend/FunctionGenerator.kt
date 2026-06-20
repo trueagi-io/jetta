@@ -478,13 +478,94 @@ open class FunctionGenerator(
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false)
         mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/List")
         mv.visitVarInsn(Opcodes.ASTORE, resultVar)
-        match.branches.forEach { branch -> generateMatchBranch(mv, branch, returnType, resultVar) }
+
+        // Non-reduction fallback bookkeeping. MeTTa semantics: reducing `(f a…)` is
+        // the query `(= (f a…) $r)`; if NO clause head unifies, the expression does
+        // not reduce and stays itself (its own normal form) — which is distinct from
+        // "reduced to the empty result". We track a `matched` flag (OR over branches:
+        // set when any guard passes, and always for an unconditional branch) and,
+        // only if no branch matched, append the inert `(f a…)`. The flag — NOT
+        // result.isEmpty() — is the correct trigger: an unconditional branch whose
+        // body legitimately yields empty must not fall back. Emitted only when (a)
+        // this is a named function and (b) some branch is guarded; an all-unconditional
+        // Match always matches, so the flag and fallback would be dead code.
+        val funcName = (function as? FunctionDefinition)?.name
+        val matchedVar = if (funcName != null && match.branches.any { it.cond != null }) {
+            val v = mv.newLocal(Type.BOOLEAN_TYPE)
+            mv.visitInsn(Opcodes.ICONST_0)
+            mv.visitVarInsn(Opcodes.ISTORE, v)
+            v
+        } else -1
+
+        match.branches.forEach { branch -> generateMatchBranch(mv, branch, returnType, resultVar, matchedVar) }
+
+        if (matchedVar >= 0) {
+            val skip = Label()
+            mv.visitVarInsn(Opcodes.ILOAD, matchedVar)
+            mv.visitJumpInsn(Opcodes.IFNE, skip)
+            generateNonReductionFallback(mv, funcName!!, resultVar)
+            mv.visitLabel(skip)
+        }
+
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
         generatePop(mv)
         mv.visitInsn(Opcodes.ARETURN)
     }
 
-    private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
+    /**
+     * Append the inert `(funcName param0 param1 …)` to the match result list — the
+     * non-reduction fallback for equality dispatch when no clause head matched (see
+     * [generateMatch]). Parameter values are reconstructed from their local slots:
+     * Atom params are run through [Matcher.resolveBinding] so caller-supplied free
+     * variables appear as their bound values (`(ift T …)`, not `(ift $a …)`);
+     * primitive params are loaded with their typed opcode and boxed.
+     * [net.singularity.jetta.runtime.functions.JettaCallSite.nonReduced] wraps any
+     * still-unboxed value in `Grounded`, matching the dynamic-dispatch inert form.
+     */
+    private fun generateNonReductionFallback(mv: LocalVariablesSorter, funcName: String, resultVar: Int) {
+        val paramOffset = if (isStatic) 0 else 1
+        mv.visitVarInsn(Opcodes.ALOAD, resultVar)
+        mv.visitLdcInsn(funcName)
+        generateLoadInt(function.params.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        function.params.forEachIndexed { i, param ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            val slot = i + paramOffset
+            when (val t = param.type) {
+                GroundedType.INT, GroundedType.BOOLEAN -> {
+                    mv.visitVarInsn(Opcodes.ILOAD, slot); generateBoxingIfNeeded(t)
+                }
+                GroundedType.LONG -> { mv.visitVarInsn(Opcodes.LLOAD, slot); generateBoxingIfNeeded(t) }
+                GroundedType.DOUBLE -> { mv.visitVarInsn(Opcodes.DLOAD, slot); generateBoxingIfNeeded(t) }
+                GroundedType.ATOM -> {
+                    mv.visitVarInsn(Opcodes.ALOAD, slot)
+                    mv.visitMethodInsn(
+                        Opcodes.INVOKESTATIC,
+                        Type.getInternalName(Matcher::class.java),
+                        "resolveBinding",
+                        "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                        false
+                    )
+                }
+                // Any other reference-typed param (Expression, String, Seq, …): load
+                // raw; nonReduced.toAtom passes Atoms through and wraps the rest.
+                else -> mv.visitVarInsn(Opcodes.ALOAD, slot)
+            }
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/functions/JettaCallSite",
+            "nonReduced",
+            "(Ljava/lang/String;[Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            false
+        )
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
+        mv.visitInsn(Opcodes.POP)
+    }
+
+    private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int, matchedVar: Int) {
         val elseLabel = Label()
         if (branch.cond != null) {
             emitLineNumber(branch.cond!!)
@@ -547,6 +628,16 @@ open class FunctionGenerator(
             mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
         }
         mv.visitInsn(Opcodes.POP)
+
+        if (matchedVar >= 0) {
+            // Reached only when this branch's guard passed (guarded branch) or
+            // unconditionally (no guard) — record that a clause head matched so the
+            // non-reduction fallback in generateMatch is suppressed. Set regardless
+            // of how many results the body produced (the flag tracks guard passage,
+            // not result count).
+            mv.visitInsn(Opcodes.ICONST_1)
+            mv.visitVarInsn(Opcodes.ISTORE, matchedVar)
+        }
 
         destructuredLocals.clear()
         destructuredLocals.putAll(savedLocals)

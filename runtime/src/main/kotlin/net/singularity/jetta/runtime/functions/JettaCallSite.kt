@@ -5,6 +5,7 @@ import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Special
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.JettaProgram
 import net.singularity.jetta.runtime.Matcher
@@ -123,6 +124,26 @@ object JettaCallSite {
     private fun buildInertExpression(head: Any?, args: Array<Any?>): Expression {
         val atoms = ArrayList<Atom>(args.size + 1)
         atoms.add(toAtom(head))
+        args.forEach { atoms.add(toAtom(it)) }
+        return Expression(atoms)
+    }
+
+    /**
+     * Build the inert (non-reduced) form `(name args…)` for the **non-reduction
+     * fallback** emitted by `FunctionGenerator.generateMatch`: when a compiled
+     * equality-dispatch function is called and *no clause head matched* (every
+     * guarded branch's guard failed), MeTTa leaves the expression unreduced as
+     * its own normal form rather than yielding an empty result. The head is a
+     * named [Symbol] (the [net.singularity.jetta.compiler.frontend.ir.FunctionDefinition]);
+     * args are the runtime parameter values, already `Matcher.resolveBinding`-resolved
+     * (Atom params) or boxed (primitive params) at the call site — [toAtom] wraps
+     * any still-unboxed value in [Grounded], exactly as the dynamic-dispatch
+     * [buildInertExpression] does, so both inert forms are structurally identical.
+     */
+    @JvmStatic
+    fun nonReduced(name: String, args: Array<Any?>): Expression {
+        val atoms = ArrayList<Atom>(args.size + 1)
+        atoms.add(Symbol(name))
         args.forEach { atoms.add(toAtom(it)) }
         return Expression(atoms)
     }
