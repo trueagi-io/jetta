@@ -326,14 +326,20 @@ class CanonicalFormRewriter(
                             return false
                         }
                         val def = context.definedFunctions[f.name]
-                        if (def != null && def.func.isMultivalued()) {
+                        val userMultivalued = def != null && def.func.isMultivalued()
+                        // A system multivalued function (e.g. `superpose`, `generate`):
+                        // present in systemFunctions with isMultiValued, absent from
+                        // definedFunctions. `match` is already excluded above.
+                        val systemMultivalued = def == null &&
+                                context.resolve(f.name)?.isMultiValued == true
+                        if (userMultivalued || systemMultivalued) {
                             // Check if arguments contain multivalued sub-calls.
                             // If so, don't register this call at the parent scope —
                             // instead, let the children be scoped to this call.
                             val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
                                 arg is Expression && arg.atoms.isNotEmpty() &&
                                         arg.atoms[0] is Symbol &&
-                                        context.definedFunctions[(arg.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
                             }
                             // A bare multivalued call that is a direct barrier argument is
                             // handed over whole (as its List result) — skip lifting it so
@@ -341,11 +347,22 @@ class CanonicalFormRewriter(
                             // once per element.
                             if (!hasMultivaluedArgs && !barrierArg) {
                                 val scopeId = reducedScopeId ?: getScopeId(atom)
-                                multivaluedCalls[atom.id] = variableCount
-                                multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
-                                    .add(variableCount to atom)
-                                variableCount++
-                                isMultivalued = true
+                                // User @multivalued functions are lifted everywhere — even at
+                                // the tail (scopeId == own id), because match-branch
+                                // destructuring depends on that registration. System
+                                // multivalued calls are lifted ONLY in argument position; at
+                                // the tail/result position they return their bag directly,
+                                // matching the prior behaviour where system calls were never
+                                // lifted (a tail `!(superpose …)` / `!(generate …)` must not
+                                // gain a spurious identity `(map? (\ ($v) $v) call)`, which
+                                // would also need a mapImpl pure-symbolic programs lack).
+                                if (userMultivalued || scopeId != atom.id) {
+                                    multivaluedCalls[atom.id] = variableCount
+                                    multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
+                                        .add(variableCount to atom)
+                                    variableCount++
+                                    isMultivalued = true
+                                }
                             }
                         }
                     }
@@ -409,8 +426,20 @@ class CanonicalFormRewriter(
         return false
     }
 
+    // True for a multivalued call — a user-defined function annotated @multivalued,
+    // OR a system function (e.g. `superpose`) whose resolved symbol reports
+    // isMultiValued. `match` is excluded: it owns its own result scope and is
+    // special-cased throughout this pass, so a `(match …)` in argument position is
+    // never lifted.
+    private fun isMultivaluedHead(name: String): Boolean {
+        if (name == "match") return false
+        return context.definedFunctions[name]?.func?.isMultivalued()
+            ?: (context.resolve(name)?.isMultiValued == true)
+    }
+
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
-        context.definedFunctions[name]?.func?.arrowType?.types?.let { types ->
+        (context.definedFunctions[name]?.func?.arrowType?.types
+            ?: context.resolve(name)?.arrowType?.types)?.let { types ->
             val returnType = types.last()
             // If the function is multivalued (returns SeqType), the map/flatMap
             // lambda receives individual elements, not the whole list.
