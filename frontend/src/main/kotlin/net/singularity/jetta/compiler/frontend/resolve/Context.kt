@@ -1105,11 +1105,28 @@ class Context(
             }
 
             is Lambda -> {
-                if (atom.arrowType != null) {
-                    resolveAtom(atom, scope)
-                } else {
-                    unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
+                // Inline lambda application `((\ ($x …) body) arg …)` — the shape
+                // `let` desugars into. Resolve the argument(s) first so their types
+                // are known, propagate them onto the bound parameters, then resolve
+                // the lambda body (so grounded calls such as superpose/collapse inside
+                // it are resolved, not left inert). The application's type is the
+                // body's resolved type — which may be multivalued (Atom*) when the
+                // body is e.g. `(superpose …)`.
+                val args = expression.arguments()
+                args.forEach { resolveAtom(it, scope) }
+                if (atom.params.size == args.size) {
+                    val paramTypes = atom.params.mapIndexed { index, param ->
+                        param.type ?: args[index].type ?: GroundedType.ATOM
+                    }
+                    // Provisional arrowType so resolveAtom(lambda) stamps the params;
+                    // the return slot is refined from the resolved body below.
+                    atom.arrowType = ArrowType(paramTypes + GroundedType.ATOM)
                 }
+                resolveAtom(atom, scope)
+                val bodyType = atom.body.type ?: GroundedType.ATOM
+                atom.arrowType = ArrowType(atom.params.map { it.type ?: GroundedType.ATOM } + bodyType)
+                atom.type = atom.arrowType
+                expression.type = bodyType
             }
 
             is Expression -> {
