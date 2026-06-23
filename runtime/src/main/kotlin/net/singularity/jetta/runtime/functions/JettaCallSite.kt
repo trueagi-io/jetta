@@ -148,6 +148,51 @@ object JettaCallSite {
         return Expression(atoms)
     }
 
+    /**
+     * Tier-0 dynamic fallback for COMPILED equality dispatch (the partial-eval
+     * residual the AOT `==`-path can't handle). Used by the non-reduction fallback
+     * in `FunctionGenerator.generateMatch`: when every compiled clause guard fails,
+     * before declaring `(name args…)` non-reducible we try the canonical MeTTa rule
+     * lookup `(= (name args…) $r)` by *unification* against the space. This binds
+     * free-variable arguments the boolean `==`-dispatch cannot bind backward (e.g.
+     * `(prevents (making $y) (making (air wet)))` unifies `$y = (air dry)` against
+     * the fact rule) and returns the FULL non-determinism bag of matching `$r`s —
+     * each still a `BoundAtom` carrying its own bindings, so the surrounding
+     * `flat-map?`/`map?` (simpleFlatMap/simpleMap) foliates them per branch exactly
+     * as for any other match result. Only when no rule unifies do we emit the inert
+     * `(name args…)` — true non-reduction (its own normal form).
+     *
+     * Shares one resolution semantics with [reduceOnce]/[dispatch]; a future JIT
+     * tier specializes the hot lookups but plugs into this same seam.
+     */
+    @JvmStatic
+    fun reduceOrInert(spaceName: String, name: String, args: Array<Any?>): List<Atom> {
+        val atoms = ArrayList<Atom>(args.size + 1)
+        atoms.add(Symbol(name))
+        args.forEach { atoms.add(resolveDeep(toAtom(it))) }
+        val callExpr = Expression(atoms)
+        val r = Variable(REDUCE_VAR)
+        val pattern = Expression(listOf(Special(PATTERN_EQ), callExpr, r))
+        val results = JettaProgram.match(spaceName, pattern, r)
+        return results.ifEmpty { listOf(callExpr) }
+    }
+
+    /**
+     * Resolve every bound variable in [atom], recursing into sub-expressions.
+     * [Matcher.resolveBinding] is shallow (a top-level [Variable] only), but a
+     * call argument is typically a compound like `(making $y)` whose variable is
+     * bound by an *enclosing* non-deterministic branch (the cross-conjunct binding
+     * in a deduction: `$y` produced by the outer `(makes $z $y)`, consumed by the
+     * inner `(prevents (making $y) …)`). Without deep resolution the unification
+     * lookup in [reduceOrInert] would see `$y` still free and re-bind it freely,
+     * dropping the cross-branch constraint. Free (unbound) variables are left as-is
+     * so the lookup can bind them.
+     */
+    private fun resolveDeep(atom: Atom): Atom = when (val resolved = Matcher.resolveBinding(atom)) {
+        is Expression -> Expression(resolved.atoms.map { resolveDeep(it) })
+        else -> resolved
+    }
+
     private fun toAtom(value: Any?): Atom = when (value) {
         is Atom -> value
         null -> throw IllegalStateException(

@@ -513,18 +513,23 @@ open class FunctionGenerator(
     }
 
     /**
-     * Append the inert `(funcName param0 param1 …)` to the match result list — the
-     * non-reduction fallback for equality dispatch when no clause head matched (see
-     * [generateMatch]). Parameter values are reconstructed from their local slots:
-     * Atom params are run through [Matcher.resolveBinding] so caller-supplied free
-     * variables appear as their bound values (`(ift T …)`, not `(ift $a …)`);
-     * primitive params are loaded with their typed opcode and boxed.
-     * [net.singularity.jetta.runtime.functions.JettaCallSite.nonReduced] wraps any
-     * still-unboxed value in `Grounded`, matching the dynamic-dispatch inert form.
+     * Non-reduction fallback for equality dispatch when no compiled clause head
+     * matched (see [generateMatch]). Reconstructs `(funcName param0 param1 …)` from
+     * the local slots — Atom params run through [Matcher.resolveBinding] so caller
+     * free variables appear as their bound values; primitive params loaded with
+     * their typed opcode and boxed — then hands it to
+     * [net.singularity.jetta.runtime.functions.JettaCallSite.reduceOrInert]. That
+     * tier-0 dynamic step tries a space `(= (funcName args…) $r)` unification first
+     * (binding free-variable args the compiled `==`-path can't, e.g.
+     * `(prevents (making $y) …)`), returning the FULL match bag, and falls back to
+     * the inert `(funcName args…)` only when no rule unifies. The bag is `addAll`-ed
+     * into the result list — each element a `BoundAtom` the enclosing
+     * `flat-map?`/`map?` foliates per branch.
      */
     private fun generateNonReductionFallback(mv: LocalVariablesSorter, funcName: String, resultVar: Int) {
         val paramOffset = if (isStatic) 0 else 1
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
+        mv.visitLdcInsn(moduleSpaceName)
         mv.visitLdcInsn(funcName)
         generateLoadInt(function.params.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
@@ -557,11 +562,11 @@ open class FunctionGenerator(
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
             "net/singularity/jetta/runtime/functions/JettaCallSite",
-            "nonReduced",
-            "(Ljava/lang/String;[Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            "reduceOrInert",
+            "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/List;",
             false
         )
-        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "addAll", "(Ljava/util/Collection;)Z", true)
         mv.visitInsn(Opcodes.POP)
     }
 
