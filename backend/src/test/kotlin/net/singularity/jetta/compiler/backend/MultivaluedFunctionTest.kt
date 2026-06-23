@@ -103,7 +103,10 @@ class MultivaluedFunctionTest : GeneratorTestBase() {
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             val value = classes["RewriteNestedExpression"]!!.getMethod("bar", Int::class.java).invoke(null, 2)
-            assertEquals(listOf(3, 4, 5, 5, 6, 7, 7, 8, 9), value)
+            // Left-to-right evaluation: the FIRST (foo) is the outer loop, the second
+            // (inside `* $x`) the inner. So for $x=2: (1+2*1,1+2*2,1+2*3, 2+2*1,…) =
+            // [3,5,7, 4,6,8, 5,7,9]. Matches the reference / PeTTa argument order.
+            assertEquals(listOf(3, 5, 7, 4, 6, 8, 5, 7, 9), value)
         }
 
     @Test

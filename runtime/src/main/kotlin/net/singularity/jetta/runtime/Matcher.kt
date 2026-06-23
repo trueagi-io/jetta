@@ -85,6 +85,18 @@ object Matcher {
         return target
     }
 
+    /**
+     * Like [resolveBinding] but recurses into sub-expressions, so a bound variable
+     * nested in a compound (e.g. `$z` in `(stop $z)`, or `$y` in `(making $y)`) is
+     * substituted with its value. Free (unbound) variables are left intact. Used to
+     * materialise a non-deterministic branch's result against the bindings its branch
+     * installed — [resolveBinding] alone only handles a top-level variable.
+     */
+    fun resolveDeep(atom: Atom): Atom = when (val resolved = resolveBinding(atom)) {
+        is Expression -> Expression(resolved.atoms.map { resolveDeep(it) }, position = resolved.position)
+        else -> resolved
+    }
+
     fun match(space: Space, src: Expression, dst: Atom): List<Atom> =
         space.match(src, dst)
 

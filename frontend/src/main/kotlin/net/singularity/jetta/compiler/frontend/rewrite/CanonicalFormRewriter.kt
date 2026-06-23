@@ -218,14 +218,43 @@ class CanonicalFormRewriter(
         }
         if (!expression.isNonDeterministic()) return expression
 
+        // A multivalued COMPOUND argument — e.g. `(And C1 C2)` where C1/C2 are
+        // themselves multivalued calls — is a non-deterministic function call, not a
+        // simple registered leaf call. Its parent must be lifted OVER its result bag:
+        // `(ift (And …) T)` → `flat-map?(\$c. (ift $c T), (And …))`. Without this the
+        // parent receives the whole bag as a single argument (b4's
+        // `(ift <bag> (stop $z))` → `toAtom(List)` crash). Such args are collected
+        // here, replaced by a fresh variable in the body, and lifted out below.
+        // A barrier (assertEqual/assertEqualToResult/collapse) consumes the WHOLE bag
+        // of each argument, so a multivalued compound argument here must be inlined
+        // (handed over as its full List result), NOT lifted — same rule the simple-call
+        // path already follows via the `barrierArg` flag in collection.
+        val isBarrierParent = (expression.atoms.getOrNull(0) as? Symbol)?.name in BARRIER_FUNCTIONS
+        val compoundLifts = mutableListOf<Triple<Int, Atom, Atom?>>()
+        fun rewriteOrLift(atom: Atom): Atom {
+            multivaluedCalls[atom.id]?.let { return mkVariable(it, expression.position) }
+            if (!isBarrierParent
+                && atom is Expression
+                && atom.isNonDeterministic()
+                && atom.atoms.isNotEmpty()
+                && atom.atoms[0] is Symbol
+                && isMultivaluedHead((atom.atoms[0] as Symbol).name)
+            ) {
+                val v = variableCount++
+                compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
+                return mkVariable(v, expression.position)
+            }
+            return rewriteAtom(atom)
+        }
+
         val body = multivaluedCalls[expression.id]?.let {
             mkVariable(it, expression.position)
-        } ?: Expression(atoms = expression.atoms.map { atom ->
-            multivaluedCalls[atom.id]?.let {
-                mkVariable(it, expression.position)
-            } ?: rewriteAtom(atom)
-        }, position = expression.position)
+        } ?: Expression(
+            atoms = expression.atoms.map { rewriteOrLift(it) },
+            position = expression.position
+        )
         // check the expression is a scope
+        var result: Atom = body
         val replacement = multivaluedCallsInverse[expression.id]
         if (replacement != null) {
             // Determine the innermost op: if the body expression calls
@@ -236,9 +265,39 @@ class CanonicalFormRewriter(
                 && body.atoms[0] is Symbol
                 && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
             ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
-            return createMaps(replacement, body, innermostOp)
+            // Reversed so the FIRST-registered (left-most) multivalued call is the
+            // OUTERMOST loop — left-to-right evaluation, matching both the reference
+            // interpreter (b4 `(pair (bin) (bin))` → `((A A)(A B)(B A)(B B))`) and
+            // PeTTa (Prolog left-to-right goal order). `createMaps` wraps
+            // `replacement[0]` innermost. Result ORDER is invisible to the compat
+            // suite (assertEqual/assertEqualToResult compare multisets), but the
+            // SET matters for cross-binding deductions: a wrongly-outer conjunct
+            // over-binds a shared variable and leaks non-reducing branches (b4 #11/#12).
+            result = createMaps(replacement.reversed(), body, innermostOp)
         }
-        return body
+        // Lift the (map-wrapped) body over each compound multivalued argument's bag.
+        for ((v, source, type) in compoundLifts) {
+            result = Expression(
+                PredefinedAtoms.FLAT_MAP_,
+                Lambda(
+                    listOf(mkVariable(v, expression.position)),
+                    flatMapLambdaTypeFor(type),
+                    result,
+                    position = expression.position
+                ),
+                source,
+                position = expression.position
+            )
+        }
+        return result
+    }
+
+    // Lambda arrow type for the flat-map? that lifts a multivalued compound argument:
+    // the lambda receives one element of the argument's result bag and returns a bag.
+    private fun flatMapLambdaTypeFor(type: Atom?): ArrowType {
+        val t = type ?: GroundedType.ATOM
+        val elementType = if (t is SeqType) t.elementType else t
+        return ArrowType(elementType, SeqType(elementType))
     }
 
     /*

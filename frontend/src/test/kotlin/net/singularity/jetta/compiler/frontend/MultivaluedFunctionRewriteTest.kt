@@ -95,9 +95,10 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
             """.trimIndent().replace('_', '$'),
             mapImpl, flatMapImpl
         ).let { (result, _) ->
-            // (flat-map? (\ ($__var1)   ; λ: Int -> Int
-            //     (map? (\ ($__var0) ; λ: Int -> Int
-            //         (f $__var0 $__var1)) (foo))) (foo))
+            // Left-to-right: the first (foo) ($__var0) is the OUTER flat-map?, the
+            // second ($__var1) the inner map?. Body var references are by argument
+            // position and unchanged: (f $__var0 $__var1).
+            // (flat-map? (\ ($__var0) (map? (\ ($__var1) (f $__var0 $__var1)) (foo))) (foo))
             println(result)
             val def = result.code.findFunctionDefinition("bar")
             assertNotNull(def)
@@ -110,7 +111,7 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                 assertNotNull(lambda.arrowType)
                 assertEquals(listOf(GroundedType.INT, SeqType(GroundedType.INT)), lambda.arrowType!!.types)
                 assertEquals(1, lambda.params.size)
-                assertEquals("__var1", lambda.params[0].name)
+                assertEquals("__var0", lambda.params[0].name)
                 assertTrue { lambda.body is Expression }
                 val lBody = lambda.body as Expression
                 assertEquals(PredefinedAtoms.MAP_, lBody.atoms[0])
@@ -118,7 +119,7 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                 (lBody.atoms[1] as Lambda).let { lambda1 ->
                     assertNotNull(lambda1.arrowType)
                     assertEquals(listOf(GroundedType.INT, GroundedType.INT), lambda1.arrowType!!.types)
-                    assertEquals("__var0", lambda1.params[0].name)
+                    assertEquals("__var1", lambda1.params[0].name)
                     assertTrue { lambda1.body is Expression }
                     val l1Body = lambda1.body as Expression
                     l1Body.let { body ->
@@ -196,9 +197,9 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
             """.trimIndent().replace('_', '$'),
             mapImpl, flatMapImpl
         ).let { (result, _) ->
-            // (flat-map? (\ ($__var1)
-            //      (map? (\ ($__var0)
-            //            (+ $__var0 (* $x $__var1)) (foo)))
+            // Left-to-right: the first (foo) ($__var0) is the OUTER flat-map?, the
+            // second (inside `* $x`) ($__var1) the inner map?. Body unchanged.
+            // (flat-map? (\ ($__var0) (map? (\ ($__var1) (+ $__var0 (* $x $__var1))) (foo))) (foo))
             println(result)
             val def = result.code.findFunctionDefinition("bar")
             assertNotNull(def)
@@ -211,14 +212,14 @@ class MultivaluedFunctionRewriteTest : BaseFrontendTest() {
                 assertNotNull(lambda.arrowType)
                 assertEquals(listOf(GroundedType.INT, SeqType(GroundedType.INT)), lambda.arrowType!!.types)
                 assertEquals(1, lambda.params.size)
-                assertEquals("__var1", lambda.params[0].name)
+                assertEquals("__var0", lambda.params[0].name)
                 val lBody = lambda.body as Expression
                 assertEquals(PredefinedAtoms.MAP_, lBody.atoms[0])
                 assertTrue { lBody.atoms[1] is Lambda }
                 (lBody.atoms[1] as Lambda).let { lambda1 ->
                     assertNotNull(lambda1.arrowType)
                     assertEquals(listOf(GroundedType.INT, GroundedType.INT), lambda1.arrowType!!.types)
-                    assertEquals("__var0", lambda1.params[0].name)
+                    assertEquals("__var1", lambda1.params[0].name)
                     assertTrue { lambda1.body is Expression }
                     (lambda1.body as Expression).let { body ->
                         assertEquals(3, body.atoms.size)
