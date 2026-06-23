@@ -153,9 +153,23 @@ class FunctionRewriter(
         operator fun set(name: String, newName: String) {
             changeVariables[name] = newName
         }
+
+        fun contains(name: String): Boolean = changeVariables.containsKey(name)
     }
 
-    private fun substitute(arrowType: ArrowType?, pattern: Pattern): Pair<Atom, List<DestructureBinding>> {
+    private fun collectVariableNames(atom: Atom, acc: MutableSet<String>) {
+        when (atom) {
+            is Variable -> acc.add(atom.name)
+            is Expression -> atom.atoms.forEach { collectVariableNames(it, acc) }
+            else -> {}
+        }
+    }
+
+    private fun substitute(
+        arrowType: ArrowType?,
+        pattern: Pattern,
+        branchIndex: Int,
+    ): Pair<Atom, List<DestructureBinding>> {
         val changeVariables = ChangeVariables()
         val destructuredBindings = mutableListOf<DestructureBinding>()
 
@@ -170,6 +184,23 @@ class FunctionRewriter(
                     collectNestedVariables(atom, index, intArrayOf(), destructuredBindings, changeVariables)
                 }
                 else -> { /* constant — nothing to rename */ }
+            }
+        }
+        // Alpha-rename clause-local (body-only) variables — those NOT bound by this
+        // clause's pattern/params — with a per-branch-unique suffix. Independent
+        // clauses of one function routinely reuse a name (two `(= (make $x) … $y …)`
+        // rules both writing `$y`); the runtime Matcher keys bindings by NAME, so a
+        // binding propagated out of one clause's branch would otherwise poison a
+        // sibling clause's free `$y`. Unique names give each clause-scope its own
+        // variable identity — which also keeps per-branch binding snapshots
+        // independent, the basis for parallel/distributed non-determinism. Pattern
+        // variables keep their name (they are the call interface — incoming bindings
+        // a caller passes in and reads back, e.g. `$x` in `(deduce (… $x))`).
+        val bodyVars = mutableSetOf<String>()
+        collectVariableNames(pattern.value, bodyVars)
+        bodyVars.forEach { name ->
+            if (!changeVariables.contains(name)) {
+                changeVariables[name] = "${name}__c$branchIndex"
             }
         }
         if (arrowType != null) types.add(arrowType.types.last())
@@ -231,8 +262,8 @@ class FunctionRewriter(
                     name,
                     params,
                     arrowType,
-                    Match(list.map {
-                        val (body, bindings) = substitute(arrowType, it)
+                    Match(list.mapIndexed { branchIndex, it ->
+                        val (body, bindings) = substitute(arrowType, it, branchIndex)
                         MatchBranch(
                             mkCond(params, it.pattern),
                             body,
