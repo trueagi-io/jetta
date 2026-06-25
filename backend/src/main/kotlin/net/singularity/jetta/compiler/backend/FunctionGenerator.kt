@@ -163,7 +163,21 @@ open class FunctionGenerator(
 
                         Predefined.IF -> generateIf(mv, arguments, exit, doReturn)
                         Predefined.RUN_SEQ -> {
+                            // In __main, each argument is an independent top-level `!` run.
+                            // Clear variable bindings between them so one run's bindings
+                            // don't leak into the next (e.g. b4 (is (air dry)) → (is (air
+                            // wet))). RUN_SEQ is also used for `let` desugaring inside
+                            // ordinary functions — there bindings MUST persist, so only
+                            // __main's top-level RUN_SEQ resets. ("__main" = FunctionRewriter.MAIN.)
+                            val isMain = (function as? FunctionDefinition)?.name == "__main"
                             arguments.forEach {
+                                if (isMain) {
+                                    mv.visitMethodInsn(
+                                        Opcodes.INVOKESTATIC,
+                                        Type.getInternalName(Matcher::class.java),
+                                        "clearAll", "()V", false
+                                    )
+                                }
                                 generateAtom(mv, it, null, false)
                             }
                         }

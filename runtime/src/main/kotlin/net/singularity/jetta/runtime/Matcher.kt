@@ -56,6 +56,19 @@ object Matcher {
         }
     }
 
+    /**
+     * Clear the CONTENTS of every binding frame, keeping the stack shape/depth intact
+     * (so push/pop balance is preserved — safe to call mid-sequence, unlike [pop]).
+     * Emitted between top-level `!` runs in `__main`: each run is an independent query,
+     * so a variable bound in one must not leak into the next — e.g. b4's `(is (air dry))`
+     * leaving `$y` bound when `(is (air wet))` then runs. (Spaces/states live elsewhere
+     * and are unaffected.)
+     */
+    @JvmStatic
+    fun clearAll() {
+        bindingStack.get().forEach { it.clear() }
+    }
+
     @JvmStatic
     fun getBindings(): MutableMap<String, Atom> = bindingStack.get().last()
 

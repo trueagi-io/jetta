@@ -253,17 +253,39 @@ class CanonicalFormRewriter(
             atoms = expression.atoms.map { rewriteOrLift(it) },
             position = expression.position
         )
+        // Apply compound-argument lifts INNERMOST: the compound (e.g. `(And $v1 $v2)`)
+        // and the enclosing call over it must sit where the compound's leaf-call
+        // variables are bound, so a variable bound inside the compound (`$z` from the
+        // `makes` flat-map) is in scope for the enclosing call (`(stop $z)` in `ift`).
+        // `flat-map?(\$v3. (ift $v3 (stop $z)), (And $v1 $v2))`. The simple leaf calls
+        // (prevents, makes) — bubbled to THIS scope in collection — then wrap OUTSIDE
+        // via createMaps, binding $v1/$v2 the compound source references.
+        var inner: Atom = body
+        for ((v, source, type) in compoundLifts) {
+            inner = Expression(
+                PredefinedAtoms.FLAT_MAP_,
+                Lambda(
+                    listOf(mkVariable(v, expression.position)),
+                    flatMapLambdaTypeFor(type),
+                    inner,
+                    position = expression.position
+                ),
+                source,
+                position = expression.position
+            )
+        }
         // check the expression is a scope
-        var result: Atom = body
+        var result: Atom = inner
         val replacement = multivaluedCallsInverse[expression.id]
         if (replacement != null) {
-            // Determine the innermost op: if the body expression calls
-            // a multivalued function, use FLAT_MAP_ so its List results
-            // are flattened rather than nested.
-            val innermostOp = if (body is Expression
-                && body.atoms.isNotEmpty()
-                && body.atoms[0] is Symbol
-                && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+            // Innermost op: if `inner` yields a List (a compound lift, or the body
+            // calls a multivalued function), the innermost wrap must FLAT_MAP_ so its
+            // results are flattened rather than nested.
+            val innermostOp = if (compoundLifts.isNotEmpty()
+                || (body is Expression
+                    && body.atoms.isNotEmpty()
+                    && body.atoms[0] is Symbol
+                    && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true)
             ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
             // Reversed so the FIRST-registered (left-most) multivalued call is the
             // OUTERMOST loop — left-to-right evaluation, matching both the reference
@@ -273,21 +295,7 @@ class CanonicalFormRewriter(
             // suite (assertEqual/assertEqualToResult compare multisets), but the
             // SET matters for cross-binding deductions: a wrongly-outer conjunct
             // over-binds a shared variable and leaks non-reducing branches (b4 #11/#12).
-            result = createMaps(replacement.reversed(), body, innermostOp)
-        }
-        // Lift the (map-wrapped) body over each compound multivalued argument's bag.
-        for ((v, source, type) in compoundLifts) {
-            result = Expression(
-                PredefinedAtoms.FLAT_MAP_,
-                Lambda(
-                    listOf(mkVariable(v, expression.position)),
-                    flatMapLambdaTypeFor(type),
-                    result,
-                    position = expression.position
-                ),
-                source,
-                position = expression.position
-            )
+            result = createMaps(replacement.reversed(), inner, innermostOp)
         }
         return result
     }
@@ -449,9 +457,32 @@ class CanonicalFormRewriter(
                     // When the current expression is a function call,
                     // scope any multivalued children to THIS expression
                     // so the flatMap chain wraps this call.
-                    val childScope = if (atom.atoms[0] is Symbol
-                        && context.definedFunctions[(atom.atoms[0] as Symbol).name] != null
-                    ) atom.id else reducedScopeId
+                    val headName = (atom.atoms[0] as? Symbol)?.name
+                    // A multivalued COMPOUND call — multivalued head with a multivalued
+                    // argument, e.g. `(And (prevents …) (makes …))` — is NOT registered
+                    // as a leaf (see hasMultivaluedArgs above); it gets compound-lifted in
+                    // rewriteExpression with the enclosing call applied per result. For the
+                    // lift to thread bindings, a variable bound inside the compound (e.g.
+                    // `$z` from `makes`) must be in scope for the enclosing call (`(stop $z)`
+                    // in `ift`). That requires the compound's leaf calls to lift at the
+                    // PARENT scope (around the enclosing call), not nested under the
+                    // compound — so bubble its children to reducedScopeId.
+                    // …unless this compound is itself a direct barrier argument: a
+                    // barrier (assertEqual/collapse) consumes the WHOLE bag, so the
+                    // compound stays self-contained (children scoped to it) and is NOT
+                    // compound-lifted — bubbling here would desync with rewriteExpression,
+                    // which leaves barrier args inlined.
+                    val isMvCompound = !barrierArg && headName != null && isMultivaluedHead(headName) &&
+                            atom.atoms.drop(1).any { arg ->
+                                arg is Expression && arg.atoms.isNotEmpty() &&
+                                        arg.atoms[0] is Symbol &&
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
+                            }
+                    val childScope = if (isMvCompound) {
+                        reducedScopeId
+                    } else if (headName != null && context.definedFunctions[headName] != null) {
+                        atom.id
+                    } else reducedScopeId
 
                     // Direct arguments of a barrier (assertEqual/collapse/…) are tagged
                     // so a bare multivalued call among them is handed over as a whole bag.

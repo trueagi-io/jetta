@@ -257,4 +257,49 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             assertTrue(value[0].toString().contains("And"), "expected inert And, got: $value")
         }
     }
+
+    @Test
+    fun `deep deduction over And with cross-conjunct binding (b4 11 12)`() {
+        compile(
+            "DeepDeduction.metta",
+            $$"""
+                ; b4_nondeterm's deep deduction. `make` rule B's condition is an `And`
+                ; over two multivalued conjuncts sharing $y: $y is produced by the left
+                ; `prevents` (outer, left-to-right) and consumed by the right `makes`;
+                ; $z then flows from `makes` to the result `(stop $z)`. The outer `ift`
+                ; must apply per And-result with $z LIVE (compiled ift-innermost), not
+                ; over a collapsed bag. The two `!` runs are independent — bindings from
+                ; the first must not leak into the second.
+                (= (ift T $then) $then)
+                (= (And T T) T)
+                (= (make $x) (ift (makes $y $x) (start $y)))
+                (= (make $x) (ift (And (prevents (making $y) (making $x))
+                                       (makes $z $y)) (stop $z)))
+                (= (prevents (making (air dry)) (making (air wet))) T)
+                (= (prevents (making (air wet)) (making (air dry))) T)
+                (= (makes humidifier (air wet)) T)
+                (= (makes kettle (air wet)) T)
+                (= (makes ventilation (air dry)) T)
+                (= (is (air dry)) (make (air wet)))
+                (= (is (air wet)) (make (air dry)))
+
+                !(assertEqual (is (air dry))
+                  (superpose ((stop ventilation) (start kettle) (start humidifier))))
+                !(assertEqual (is (air wet))
+                  (superpose ((stop kettle) (stop humidifier) (start ventilation))))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("DeepDeduction")
+            // __main runs both asserts in sequence (clearAll between them); a failed
+            // assert throws, so reaching the end means both deductions reduced to the
+            // expected bag.
+            classes["DeepDeduction"]!!.getMethod("__main").invoke(null)
+        }
+    }
 }
