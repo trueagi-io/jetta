@@ -13,7 +13,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.LowerAssertExpressionsRew
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.QuotePureSymbolicBodiesRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
-import net.singularity.jetta.runtime.space.SpaceImpl
+import net.singularity.jetta.runtime.space.Space
 import net.singularity.jetta.compiler.logger.Logger
 import kotlin.collections.component1
 import kotlin.collections.component2
@@ -21,7 +21,8 @@ import kotlin.collections.component2
 class Context(
     private val messageCollector: MessageCollector,
     mapImpl: JvmMethod? = null,
-    flatMapImpl: JvmMethod? = null
+    flatMapImpl: JvmMethod? = null,
+    private val space: Space
 ) {
     private val logger = Logger.getLogger(Context::class.java)
     val definedFunctions = mutableMapOf<String, SymbolDef>()
@@ -34,10 +35,9 @@ class Context(
     private var typeInferenceDone = false
     private val mapSymbol = mapImpl?.let { ResolvedSymbol(it, null, false) }
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
-    private val space = SpaceImpl()
     private val matchPatterns = mutableSetOf<Expression>()
 
-    fun getSpace(): SpaceImpl {
+    fun getSpace(): Space {
         if (matchPatterns.isNotEmpty()) {
             space.mkIndex(matchPatterns.distinct())
             matchPatterns.clear()

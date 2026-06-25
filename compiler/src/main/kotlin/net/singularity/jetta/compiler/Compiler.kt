@@ -68,7 +68,7 @@ class Compiler(
 
     fun compileMultipleSources(sources: List<Source>): Pair<Boolean, List<Message>> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
+        val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, SpaceImpl())
         addSystemFunctions(context)
         val parser = createParserFacade()
         val cache = ModuleCompilationCache()

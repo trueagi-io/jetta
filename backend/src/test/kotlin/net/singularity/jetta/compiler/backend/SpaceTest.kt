@@ -14,6 +14,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
+import net.singularity.jetta.runtime.space.SpaceImpl
 import java.nio.file.Files
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.deleteRecursively
@@ -87,7 +88,7 @@ class SpaceTest : GeneratorTestBase() {
         val tempDir = Files.createTempDirectory("jetta-space-test")
         try {
             val messageCollector = MessageCollector()
-            val context = Context(messageCollector)
+            val context = Context(messageCollector, space = SpaceImpl())
             registerExternals(context)
             val parser = AntlrParserFacadeImpl()
             val rewriter = CompositeRewriter()
@@ -105,7 +106,7 @@ class SpaceTest : GeneratorTestBase() {
             context.resolveRecursively(rewritten)
 
             // Save the space collected by the frontend
-            val space = context.getSpace()
+            val space = context.getSpace() as SpaceImpl
             SpaceDirectorySerializer.save(space, tempDir, programName = "SaveSpace")
 
             // Verify files were created
@@ -131,7 +132,7 @@ class SpaceTest : GeneratorTestBase() {
         val tempDir = Files.createTempDirectory("jetta-space-test")
         try {
             val messageCollector = MessageCollector()
-            val context = Context(messageCollector)
+            val context = Context(messageCollector, space = SpaceImpl())
             registerExternals(context)
             val parser = AntlrParserFacadeImpl()
             val rewriter = CompositeRewriter()
@@ -151,7 +152,7 @@ class SpaceTest : GeneratorTestBase() {
             val rewritten = rewriter.rewrite(parsed)
             context.resolveRecursively(rewritten)
 
-            val space = context.getSpace()
+            val space = context.getSpace() as SpaceImpl
             SpaceDirectorySerializer.save(space, tempDir, programName = "MultiExpr")
 
             // Load from disk and verify matching
@@ -183,7 +184,7 @@ class SpaceTest : GeneratorTestBase() {
         val tempDir = Files.createTempDirectory("jetta-space-test")
         try {
             val messageCollector = MessageCollector()
-            val context = Context(messageCollector)
+            val context = Context(messageCollector, space = SpaceImpl())
             registerExternals(context)
             val parser = AntlrParserFacadeImpl()
             val rewriter = CompositeRewriter()
@@ -199,7 +200,7 @@ class SpaceTest : GeneratorTestBase() {
             val rewritten = rewriter.rewrite(parsed)
             context.resolveRecursively(rewritten)
 
-            val space = context.getSpace()
+            val space = context.getSpace() as SpaceImpl
             SpaceDirectorySerializer.save(space, tempDir, programName = "NoSpace")
 
             // Load and verify it's empty

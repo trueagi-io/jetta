@@ -12,6 +12,8 @@ repositories {
 
 dependencies {
     implementation(project(":frontend-api"))
+    implementation(project(":frontend"))
+    implementation(project(":backend"))
     implementation(project(":logger"))
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
     implementation("org.ow2.asm:asm:9.4")

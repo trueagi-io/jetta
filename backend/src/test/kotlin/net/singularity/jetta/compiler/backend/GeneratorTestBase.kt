@@ -16,6 +16,7 @@ import net.singularity.jetta.compiler.logger.Logger
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.runtime.JettaProgram
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
+import net.singularity.jetta.runtime.space.SpaceImpl
 import java.io.File
 import kotlin.io.path.Path
 
@@ -36,7 +37,7 @@ abstract class GeneratorTestBase {
         init: (Context) -> Unit = {}
     ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, mapImpl, flatMapImpl)
+        val context = Context(messageCollector, mapImpl, flatMapImpl, SpaceImpl())
         init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
@@ -52,7 +53,7 @@ abstract class GeneratorTestBase {
         }
         val outputDir = Path("/tmp/metta")
         val programName = filename.substringBeforeLast('.')
-        SpaceDirectorySerializer.save(context.getSpace(), outputDir, programName = programName)
+        SpaceDirectorySerializer.save(context.getSpace() as SpaceImpl, outputDir, programName = programName)
         JettaProgram.setDataDir(outputDir)
 
         val generator = Generator()
@@ -70,7 +71,7 @@ abstract class GeneratorTestBase {
         flatMapImpl: JvmMethod? = null
     ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, mapImpl, flatMapImpl)
+        val context = Context(messageCollector, mapImpl, flatMapImpl, SpaceImpl())
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }

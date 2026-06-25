@@ -2,7 +2,6 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.*
-import net.singularity.jetta.runtime.Matcher
 import org.objectweb.asm.Handle
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
@@ -32,7 +31,7 @@ open class FunctionGenerator(
 
     fun generate() {
         emitLineNumber(function)
-        val matcherType = Type.getInternalName(Matcher::class.java)
+        val matcherType = RuntimeNames.MATCHER
 
         // Matcher.push()
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, matcherType, "push", "()V", false)
@@ -174,7 +173,7 @@ open class FunctionGenerator(
                                 if (isMain) {
                                     mv.visitMethodInsn(
                                         Opcodes.INVOKESTATIC,
-                                        Type.getInternalName(Matcher::class.java),
+                                        RuntimeNames.MATCHER,
                                         "clearAll", "()V", false
                                     )
                                 }
@@ -561,7 +560,7 @@ open class FunctionGenerator(
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
                     mv.visitMethodInsn(
                         Opcodes.INVOKESTATIC,
-                        Type.getInternalName(Matcher::class.java),
+                        RuntimeNames.MATCHER,
                         "resolveBinding",
                         "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
                         false
@@ -597,7 +596,7 @@ open class FunctionGenerator(
                 mv.visitVarInsn(Opcodes.ALOAD, i + paramOffset)
                 mv.visitMethodInsn(
                     Opcodes.INVOKESTATIC,
-                    Type.getInternalName(Matcher::class.java),
+                    RuntimeNames.MATCHER,
                     "resolveBinding",
                     "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
                     false
@@ -821,7 +820,7 @@ open class FunctionGenerator(
     private fun generateReturn(mv: MethodVisitor) {
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
-            Type.getInternalName(Matcher::class.java),
+            RuntimeNames.MATCHER,
             "pop",
             "()V",
             false
@@ -966,7 +965,7 @@ open class FunctionGenerator(
                                 generateQuote(mv, right)
                                 mv.visitMethodInsn(
                                     Opcodes.INVOKESTATIC,
-                                    Type.getInternalName(Matcher::class.java),
+                                    RuntimeNames.MATCHER,
                                     "structuralMatch",
                                     "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Z",
                                     false
@@ -1155,7 +1154,7 @@ open class FunctionGenerator(
 private fun generatePop(mv: LocalVariablesSorter) {
     mv.visitMethodInsn(
         Opcodes.INVOKESTATIC,
-        Type.getInternalName(Matcher::class.java),
+        RuntimeNames.MATCHER,
         "pop",
         "()V",
         false

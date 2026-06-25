@@ -6,30 +6,25 @@ import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
-import net.singularity.jetta.runtime.Assertions
-import net.singularity.jetta.runtime.IO
-import net.singularity.jetta.runtime.Matcher
-import net.singularity.jetta.runtime.Random
-import net.singularity.jetta.runtime.functions.JettaFunction
 import org.objectweb.asm.Type
 
 fun registerExternals(context: Context) {
     val random = JvmMethod(
-        owner = Type.getInternalName(Random::class.java),
+        owner = RuntimeNames.RANDOM,
         name = "random",
         descriptor = "()D"
     )
     val seed = JvmMethod(
-        owner = Type.getInternalName(Random::class.java),
+        owner = RuntimeNames.RANDOM,
         name = "seed",
         descriptor = "(J)V"
     )
     context.addSystemFunction(ResolvedSymbol(random, null, false))
     context.addSystemFunction(ResolvedSymbol(seed, null, false))
     val generate = JvmMethod(
-        owner = Type.getInternalName(Random::class.java),
+        owner = RuntimeNames.RANDOM,
         name = "generate",
-        descriptor = "(L${Type.getInternalName(JettaFunction::class.java)};DDD)Ljava/util/List;",
+        descriptor = "(L${RuntimeNames.JETTA_FUNCTION};DDD)Ljava/util/List;",
     )
     context.addSystemFunction(ResolvedSymbol(generate,
         ArrowType(ArrowType(GroundedType.DOUBLE, GroundedType.DOUBLE),
@@ -39,7 +34,7 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(IO::class.java),
+                owner = RuntimeNames.IO,
                 name = "println",
                 descriptor = "(Ljava/lang/Object;)V"
             ), null, false
@@ -48,7 +43,7 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(Assertions::class.java),
+                owner = RuntimeNames.ASSERTIONS,
                 name = "assertEqual",
                 descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
@@ -59,7 +54,7 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(Assertions::class.java),
+                owner = RuntimeNames.ASSERTIONS,
                 name = "assertEqualToResult",
                 descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
