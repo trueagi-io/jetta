@@ -43,6 +43,10 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
         when (atom) {
             is Expression -> {
                 if (atom.atoms.isEmpty()) return false
+                // `quote` is inert data: a multivalued call inside a quote does not make
+                // the enclosing function multivalued — its result is the single quoted
+                // atom. Mirrors the quote boundary in CanonicalFormRewriter's lift pass.
+                if (atom.atoms[0] == PredefinedAtoms.QUOTE) return false
                 // Non-determinism barriers (assertEqual/assertEqualToResult/collapse)
                 // consume the whole bag of results of their arguments, so a multivalued
                 // call inside them must NOT propagate multivaluedness to the caller.

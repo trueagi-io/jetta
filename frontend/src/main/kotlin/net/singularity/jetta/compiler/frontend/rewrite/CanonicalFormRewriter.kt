@@ -384,6 +384,12 @@ class CanonicalFormRewriter(
             is Expression -> {
                 if (atom.atoms.isEmpty()) return false
 
+                // `quote` is a hard boundary: its contents are inert DATA, never
+                // evaluated, so a multivalued call inside a quote — e.g. the `superpose`
+                // in `(eval '(superpose …))` — must NOT be lifted out to the enclosing
+                // scope. Same rule as `match` below, which owns its own result scope.
+                if (atom.atoms[0] == PredefinedAtoms.QUOTE) return false
+
                 when (val f = atom.atoms[0]) {
                     is Symbol -> {
                         // match expressions have their own variable scope —

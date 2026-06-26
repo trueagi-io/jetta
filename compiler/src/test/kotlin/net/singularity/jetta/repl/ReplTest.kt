@@ -249,5 +249,27 @@ class ReplTest {
         }
     }
 
+    @Test
+    fun `jit-eval of a quoted arithmetic expression`() {
+        val repl = createRepl()
+        // `'(+ 1 2)` is inert data (the tick reader macro); `eval` JIT-compiles and runs
+        // it at call time via JettaJit. Result is the multivalued bag [3].
+        repl.eval("""!(eval '(+ 1 2))""").let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[3]", it.result.toString())
+        }
+    }
+
+    @Test
+    fun `jit-eval of a quoted multivalued superpose`() {
+        val repl = createRepl()
+        repl.eval("""!(eval '(superpose (red yellow green)))""").let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[red, yellow, green]", it.result.toString())
+        }
+    }
+
     private fun createRepl(): Repl = ReplImpl()
 }

@@ -95,6 +95,21 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // eval — the JIT-eval primitive. `(eval (quote EXPR))` hands the inert EXPR to
+    // JettaJit, which compiles+loads+invokes it at call time and returns the result bag.
+    // The argument must arrive as DATA (hence `quote`): the param type Atom keeps the
+    // resolver from reducing it at the call site. Multivalued — returns a List<Atom>.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/functions/JettaJit",
+                name = "eval",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
