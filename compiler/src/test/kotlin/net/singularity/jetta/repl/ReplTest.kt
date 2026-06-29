@@ -271,5 +271,24 @@ class ReplTest {
         }
     }
 
+    @Test
+    fun `jit-eval links against a compiled user function`() {
+        val repl = createRepl()
+        // Define a multivalued user function, compiled to a real static method.
+        repl.eval("""
+            (@ color multivalued)
+            (: color (-> Atom))
+            (= (color) (superpose (red yellow green)))
+        """.trimIndent()).let { assertTrue(it.isSuccess) }
+        // `(eval '(color))` forks the live AOT Context, resolves `color` to its compiled
+        // class, and emits INVOKESTATIC against it (links, not recompiles) — the bag
+        // comes back from the already-compiled function.
+        repl.eval("""!(eval '(color))""").let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[red, yellow, green]", it.result.toString())
+        }
+    }
+
     private fun createRepl(): Repl = ReplImpl()
 }

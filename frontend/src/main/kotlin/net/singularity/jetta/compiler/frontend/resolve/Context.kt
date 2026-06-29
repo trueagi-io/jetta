@@ -18,17 +18,31 @@ import net.singularity.jetta.compiler.logger.Logger
 import kotlin.collections.component1
 import kotlin.collections.component2
 
-class Context(
+class Context private constructor(
     private val messageCollector: MessageCollector,
-    mapImpl: JvmMethod? = null,
-    flatMapImpl: JvmMethod? = null,
-    private val space: Space
+    private val mapImpl: JvmMethod?,
+    private val flatMapImpl: JvmMethod?,
+    private val space: Space,
+    // DURABLE symbol tables — the resolved output of AOT, shared (copy-on-write) by
+    // [fork]. Default fresh for a top-level compile.
+    val definedFunctions: MutableMap<String, SymbolDef>,
+    private val resolvedFunctions: MutableMap<String, SymbolDef>,
+    private val functions: MutableMap<String, FunctionDefinition>,
+    private val systemFunctions: MutableMap<String, ResolvedSymbol>,
 ) {
+    constructor(
+        messageCollector: MessageCollector,
+        mapImpl: JvmMethod? = null,
+        flatMapImpl: JvmMethod? = null,
+        space: Space,
+    ) : this(
+        messageCollector, mapImpl, flatMapImpl, space,
+        mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(),
+    )
+
     private val logger = Logger.getLogger(Context::class.java)
-    val definedFunctions = mutableMapOf<String, SymbolDef>()
-    private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
-    private val functions = mutableMapOf<String, FunctionDefinition>()
-    private val systemFunctions = mutableMapOf<String, ResolvedSymbol>()
+    // TRANSIENT working state — what "comes out of a resolve/match pass". Always fresh
+    // (never shared by [fork]): each eval gets its own.
     private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
     private val nodesToReplace = mutableMapOf<Atom, Atom>()
     private var main: FunctionDefinition? = null
@@ -36,6 +50,30 @@ class Context(
     private val mapSymbol = mapImpl?.let { ResolvedSymbol(it, null, false) }
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
     private val matchPatterns = mutableSetOf<Expression>()
+
+    /**
+     * Fork this resolved environment for JIT-eval (same-JVM). The durable symbol
+     * tables are shared copy-on-write via [OverlayMap] — the fork's synthetic
+     * `__evalN` lands in its own local layer and never pollutes the AOT tables, and
+     * concurrent/repeated evals stay independent. Transient working state and the
+     * space start fresh: [forkSpace] is a throwaway because FunctionRewriter writes the
+     * synthetic `(= (__evalN) …)` rule back into it (it must never be the caller's
+     * space), and [forkMessageCollector] isolates eval diagnostics.
+     *
+     * Because `resolvedFunctions` carries each program function's owner class, eval'd
+     * code that calls a user function resolves to an `INVOKESTATIC` against the
+     * already-compiled class — it LINKS, it does not recompile the rule body.
+     */
+    fun fork(forkSpace: Space, forkMessageCollector: MessageCollector): Context = Context(
+        forkMessageCollector,
+        mapImpl,
+        flatMapImpl,
+        forkSpace,
+        OverlayMap(definedFunctions),
+        OverlayMap(resolvedFunctions),
+        OverlayMap(functions),
+        OverlayMap(systemFunctions),
+    )
 
     fun getSpace(): Space {
         if (matchPatterns.isNotEmpty()) {

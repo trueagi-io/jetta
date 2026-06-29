@@ -66,7 +66,14 @@ object JettaJit {
      */
     @JvmStatic
     fun eval(code: Atom): List<Atom> {
-        val compiled = cache.getOrPut(cacheKey(code)) { compile(code) }
+        val env = JitEnvRegistry.current()
+        // The structural cache is sound only for the env-less (system-only) path: with
+        // a forked env the result depends on WHICH program is running (owner classes)
+        // and on its current rule set, which mutates on redefinition. Env-aware caching
+        // + SwitchPoint invalidation is the follow-up; for now recompile per env-eval.
+        val compiled =
+            if (env == null) cache.getOrPut(cacheKey(code)) { compile(code, null) }
+            else compile(code, env)
         val raw = compiled.clazz.getMethod(compiled.entryMethod).invoke(null)
         return normalize(raw)
     }
@@ -79,7 +86,7 @@ object JettaJit {
      * `Compiler.compileMultipleSources`, but the input is already IR (no parse step) and
      * we emit no `__main` (we invoke the synthetic entry directly).
      */
-    private fun compile(code: Atom): CompiledEval {
+    private fun compile(code: Atom, env: JitEnv?): CompiledEval {
         val id = counter.getAndIncrement()
         val className = "JettaEval$id"
         val entry = "__eval$id"
@@ -91,7 +98,7 @@ object JettaJit {
         val source = ParsedSource(className, listOf(synthetic))
 
         val messageCollector = MessageCollector()
-        val context = newEvalContext(messageCollector)
+        val context = newEvalContext(messageCollector, env)
 
         val rewriter = CompositeRewriter()
         // FunctionRewriter writes the `(= …)` rule back into the context's space — which
@@ -107,24 +114,27 @@ object JettaJit {
         }
 
         val results = Generator(generateMain = false).generate(resolved)
-        return CompiledEval(load(results, className), entry)
+        return CompiledEval(load(results, className, env), entry)
     }
 
     /**
      * SEAM 1 — Context construction. The single point that decides which symbols the
      * eval'd code can resolve.
      *
-     * MVP: system functions only (`+`, `superpose`, `match`, …) over a fresh, throwaway
-     * [SpaceImpl]. No user rules are queried, so an empty space is correct; and because
-     * [FunctionRewriter] writes the synthetic `(= (__evalN) …)` rule into this space,
-     * keeping it throwaway is what guarantees the caller's space stays clean.
+     * With a live [env] (same-JVM: REPL / in-process run), FORK the program's resolved
+     * [Context]: eval'd code resolves the program's user functions, and because the
+     * forked `resolvedFunctions` carries their owner classes, a user call becomes an
+     * `INVOKESTATIC` against the already-compiled class (it links, not recompiles). The
+     * fork shares the durable tables copy-on-write and gets a throwaway space, so the
+     * synthetic `(= (__evalN) …)` rule never touches the caller's space.
      *
-     * Custom-function follow-up: enrich THIS method to seed `context.definedFunctions`
-     * from the caller's `(= lhs rhs)` rules — sourced from the running program's space
-     * (via `JettaProgram.entrySpace()`) — into an overlay copy of that space. Nothing
-     * else in [eval]/[compile]/[load] changes.
+     * Without an env (cross-JVM `jetta`, or a direct [eval] call): a fresh system-only
+     * [Context] — resolves `+`, `superpose`, `match`, … but no user functions. The
+     * `.jctx`-persisted-overlay path that would restore user functions cross-JVM is a
+     * later slice.
      */
-    private fun newEvalContext(messageCollector: MessageCollector): Context {
+    private fun newEvalContext(messageCollector: MessageCollector, env: JitEnv?): Context {
+        env?.let { return it.context.fork(SpaceImpl(), messageCollector) }
         val runtime = DefaultRuntime()
         val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, SpaceImpl())
         registerExternals(context)
@@ -132,15 +142,19 @@ object JettaJit {
     }
 
     /**
-     * SEAM 2 — class loading. MVP defines the synthetic classes in a child
-     * [ClassLoader] whose parent resolves the runtime symbols (`Matcher`, `Convert`, …)
-     * the bytecode calls by name. The hidden-class upgrade (GC-collectible, no metaspace
-     * growth — per the JIT-eval design invariants) swaps only this method; it is deferred
-     * because `defineHiddenClass` requires the synthetic class to share the lookup's
-     * package, which the default-package class names produced here do not yet satisfy.
+     * SEAM 2 — class loading. Defines the synthetic classes in a child [ClassLoader]
+     * whose parent resolves both the runtime symbols (`Matcher`, `Convert`, …) and, when
+     * an [env] is present, the program's compiled classes (so an eval'd user call's
+     * `INVOKESTATIC Foo.bar` links). Without an env, parent is JettaJit's own loader.
+     *
+     * The hidden-class upgrade (GC-collectible, no metaspace growth — per the JIT-eval
+     * invariants) swaps only this method; deferred because `defineHiddenClass` requires
+     * the synthetic class to share the lookup's package, which the default-package class
+     * names produced here do not yet satisfy.
      */
-    private fun load(results: List<CompilationResult>, entryClassName: String): Class<*> {
-        val loader = EvalClassLoader(JettaJit::class.java.classLoader)
+    private fun load(results: List<CompilationResult>, entryClassName: String, env: JitEnv?): Class<*> {
+        val parent = env?.classLoader ?: JettaJit::class.java.classLoader
+        val loader = EvalClassLoader(parent)
         results.forEach { loader.define(it.className, it.bytecode) }
         return loader.loadClass(entryClassName)
     }
