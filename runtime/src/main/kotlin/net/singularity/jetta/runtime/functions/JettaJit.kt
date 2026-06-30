@@ -18,6 +18,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
+import net.singularity.jetta.runtime.JettaProgram
 import net.singularity.jetta.runtime.space.SpaceImpl
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -113,7 +114,12 @@ object JettaJit {
             throw JitEvalException(code, messageCollector.list().joinToString("\n") { it.toString() })
         }
 
-        val results = Generator(generateMain = false).generate(resolved)
+        // Bake the CALLER's space name (not the unique synthetic class name) into the
+        // eval'd code's `&self`/match/dispatch sites, so they route to the running
+        // program's live space (registered by JettaProgram.init) rather than an empty
+        // space named after the throwaway synthetic class.
+        val results = Generator(generateMain = false, spaceNameOverride = JettaProgram.currentSpaceName())
+            .generate(resolved)
         return CompiledEval(load(results, className, env), entry)
     }
 

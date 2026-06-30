@@ -13,17 +13,19 @@ import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.LocalVariablesSorter
 
-class Generator(val generateMain: Boolean = false) {
+class Generator(val generateMain: Boolean = false, private val spaceNameOverride: String? = null) {
     private var lambdaCount = 1
 
     fun generate(source: ParsedSource): List<CompilationResult> {
         lambdaCount = 1
         val cw = ClassWriter(COMPUTE_MAXS or COMPUTE_FRAMES)
         val className = source.getJvmClassName()
-        // The simple class name doubles as the module's space name: every match call site
-        // generated below bakes this string in via LDC so the runtime registry can route
-        // the call to the right space.
-        val moduleSpaceName = className.substringAfterLast('/')
+        // The simple class name normally doubles as the module's space name: every match
+        // call site generated below bakes this string in via LDC so the runtime registry
+        // can route the call to the right space. [spaceNameOverride] decouples the two —
+        // used by JIT-eval to give a uniquely-named synthetic class the CALLER's space
+        // name, so eval'd `&self`/match/dispatch route to the running program's live space.
+        val moduleSpaceName = spaceNameOverride ?: className.substringAfterLast('/')
         cw.visit(
             Constants.JVM_TARGET_VERSION,
             Opcodes.ACC_PUBLIC,

@@ -1,6 +1,7 @@
 package net.singularity.jetta.runtime.functions
 
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.runtime.space.Space
 
 /**
  * A same-JVM JIT-eval environment, handed to [JettaJit] so an `eval` can run against
@@ -8,9 +9,13 @@ import net.singularity.jetta.compiler.frontend.resolve.Context
  * - [context] — the live AOT-resolved [Context] to [Context.fork] for resolving eval'd
  *   code (so user functions resolve, with their owner classes → `INVOKESTATIC` links);
  * - [classLoader] — the loader holding the program's compiled classes, so the eval'd
- *   synthetic class can link against them at load time.
+ *   synthetic class can link against them at load time;
+ * - [space] — the live COMPILE-TIME space holding the program's `(= …)` rules/facts.
+ *   In same-JVM execution there is no `.jtsf` round-trip, so [JettaProgram.init]
+ *   registers THIS space into the runtime registry (instead of a fresh empty one), and
+ *   it is the space eval'd `match`/dispatch routes to.
  */
-class JitEnv(val context: Context, val classLoader: ClassLoader)
+class JitEnv(val context: Context, val classLoader: ClassLoader, val space: Space)
 
 /**
  * Holds the [JitEnv] active for the current top-level run. The producer of the

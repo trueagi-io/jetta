@@ -54,7 +54,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
         // `(eval '(expr))` executed inside __main forks `context` to resolve user
         // functions and links against their compiled classes in `classLoader`. Cleared
         // afterwards so it can't leak into a later, unrelated run.
-        JitEnvRegistry.install(JitEnv(context, classLoader))
+        JitEnvRegistry.install(JitEnv(context, classLoader, context.getSpace()))
         try {
             val method = clazz.getMethod(FunctionRewriter.MAIN)
             return EvalResult(method.invoke(null), messages, true)

@@ -554,6 +554,12 @@ class FunctionRewriter(
     private fun rewriteExpression(expression: Expression): Atom {
         if (expression.atoms.isEmpty()) return expression
         val func = expression.atoms[0]
+        // `quote` is inert data — never rewrite its contents. Otherwise a quoted
+        // `(match …)`/function call inside `(eval '(…))` would be match-rewritten here
+        // (pattern/template wrapped in quote), then rewritten AGAIN when JIT-eval
+        // re-runs the pipeline → double-quoted pattern that matches nothing. The quoted
+        // form must reach eval exactly as the user wrote it.
+        if (func == PredefinedAtoms.QUOTE) return expression
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {

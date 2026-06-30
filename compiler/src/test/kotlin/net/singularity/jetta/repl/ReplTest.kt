@@ -290,5 +290,37 @@ class ReplTest {
         }
     }
 
+    @Test
+    fun `runtime match self finds a rule in the live space`() {
+        val repl = createRepl()
+        // Same-JVM: the rule lives in the live compile-time space, which init now
+        // registers into the runtime registry — so `match &self` finds it (previously
+        // the runtime space was a fresh empty one and this returned nothing).
+        repl.eval("""
+            (= (foo) 0)
+        """.trimIndent()).let { assertTrue(it.isSuccess) }
+        repl.eval("""!(match &self (= (foo) _x) _x)""".replace('_', '$')).let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[0]", it.result.toString())
+        }
+    }
+
+    @Test
+    fun `jit-eval of match self routes to the live space`() {
+        val repl = createRepl()
+        repl.eval("""
+            (= (foo) 0)
+        """.trimIndent()).let { assertTrue(it.isSuccess) }
+        // The eval'd `match &self` bakes the CALLER's space name (via the Generator
+        // override), so it routes to the running program's live space — not an empty
+        // space named after the throwaway synthetic eval class.
+        repl.eval("""!(eval '(match &self (= (foo) _x) _x))""".replace('_', '$')).let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[0]", it.result.toString())
+        }
+    }
+
     private fun createRepl(): Repl = ReplImpl()
 }

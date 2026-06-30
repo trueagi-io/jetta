@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.runtime.functions.JettaFunction
+import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceId
@@ -15,6 +16,18 @@ import kotlin.io.path.exists
 open class JettaProgram {
     companion object {
         private var dataDir: Path = Path.of(".")
+
+        /**
+         * The space name of the program currently running (the last [init]). It is the
+         * runtime "self" — used by JIT-eval to bake the caller's space name into eval'd
+         * code so its `&self`/match/dispatch route to the running program's live space.
+         * Single running program per JVM in this slice; `@Volatile` is visibility only.
+         */
+        @Volatile
+        private var currentSpaceName: String? = null
+
+        @JvmStatic
+        fun currentSpaceName(): String? = currentSpaceName
 
         @JvmStatic
         fun setDataDir(path: Path) {
@@ -39,6 +52,17 @@ open class JettaProgram {
         fun init(programName: String) {
             SpaceRegistry.reset()
             Matcher.getBindings().clear()
+            currentSpaceName = programName
+
+            // Same-JVM execution (REPL / in-process run): there is no `.jtsf` round-trip,
+            // so the program's rules live in the live compile-time space, not on disk.
+            // Register THAT space under the running name so runtime `match &self …` finds
+            // them — instead of the fresh empty space the disk path would create. (The
+            // env is installed by the producer for the duration of the run.)
+            JitEnvRegistry.current()?.let { env ->
+                SpaceRegistry.register(SpaceId.FromModule(programName), env.space)
+                return
+            }
 
             val manifestFile = dataDir.resolve("$programName.manifest.json")
             if (!manifestFile.exists()) {
