@@ -245,6 +245,14 @@ open class FunctionGenerator(
                 val slot = destructuredLocals[atom.name]
                 if (slot != null) {
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
+                    // A destructured pattern variable is an Atom (Grounded) at runtime.
+                    // When it is used as a primitive value (its inferred type is a
+                    // grounded value type), unwrap the Grounded and unbox so arithmetic
+                    // and primitive boxing see the raw primitive, not the Atom.
+                    val t = atom.type
+                    if (t is GroundedType && t.isGroundedValue()) {
+                        unwrapGroundedToPrimitive(mv, t)
+                    }
                 } else {
                     val paramIndex = function.getParameterIndex(atom)
                     if (paramIndex >= 0) {
@@ -444,8 +452,31 @@ open class FunctionGenerator(
 
             is Variable -> {
                 val slot = destructuredLocals[atom.name]
+                val param = function.params.find { it.name == atom.name }
+                val paramType = param?.type
                 if (slot != null) {
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
+                } else if (param != null && paramType is GroundedType && paramType.isGroundedValue()) {
+                    // Capturing a primitive-valued parameter INTO quoted data: the
+                    // quoted Expression is made of Atoms, but the param is compiled as a
+                    // raw primitive (e.g. `int`). Load it by its REAL type (via the param
+                    // node, whose type is correct — the in-quote occurrence is resolved
+                    // only to Atom), box it, and wrap it in a Grounded so it is a valid
+                    // Atom. This is what makes `(eval '(+ $x 1))` capture `$x`'s value.
+                    mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Grounded::class.java))
+                    mv.visitInsn(Opcodes.DUP)
+                    generateLoadVar(mv, param, function.params, isStatic, className)
+                    boxIfNeeded(mv, paramType)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    generateLoadInt(2)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    mv.visitMethodInsn(
+                        Opcodes.INVOKESPECIAL,
+                        Type.getInternalName(Grounded::class.java),
+                        "<init>",
+                        "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                        false
+                    )
                 } else {
                     // Use generateLoadVar which handles function params, captured
                     // lambda fields, AND falls back to generateNewVariable for
@@ -642,7 +673,25 @@ open class FunctionGenerator(
         if (branch.body.type is SeqType) {
             mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "addAll", "(Ljava/util/Collection;)Z", true)
         } else {
-            generateBoxingIfNeeded(resultType)
+            val bodyType = branch.body.type
+            if (resultType is GroundedType && resultType.isGroundedValue() &&
+                !(bodyType is GroundedType && bodyType.isGroundedValue())
+            ) {
+                // The branch produced an Atom at runtime (e.g. the body is a destructured
+                // pattern variable like `$n` in `(= (ev (Lit $n)) $n)`) but the result
+                // bag holds a primitive value type. Unwrap the Grounded to its boxed
+                // value rather than boxing the Atom reference as if it were a primitive.
+                mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Grounded::class.java))
+                mv.visitMethodInsn(
+                    Opcodes.INVOKEVIRTUAL,
+                    Type.getInternalName(Grounded::class.java),
+                    "getValue",
+                    "()Ljava/lang/Object;",
+                    false
+                )
+            } else {
+                generateBoxingIfNeeded(resultType)
+            }
             mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
         }
         mv.visitInsn(Opcodes.POP)
@@ -1077,7 +1126,18 @@ open class FunctionGenerator(
             mv.visitInsn(Opcodes.I2D)
             return
         }
-        TODO()
+        // Arithmetic over a value that is an Atom at runtime (an untyped function result
+        // or a free/Atom-typed variable that is a Grounded number) — `(+ (foo) (bar))`.
+        // Matches hyperon's grounded-op semantics: reduce the operand to its number.
+        // Unwrap the Grounded and unbox to the required primitive (Number.doubleValue
+        // copes when the Grounded holds an Int but a Double is required).
+        if ((type == GroundedType.ATOM || type == GroundedType.ANY) &&
+            requiredType is GroundedType && requiredType.isGroundedValue()
+        ) {
+            unwrapGroundedToPrimitive(mv, requiredType)
+            return
+        }
+        TODO("castIfNeeded $type -> $requiredType")
     }
 
     private fun generateDivide(

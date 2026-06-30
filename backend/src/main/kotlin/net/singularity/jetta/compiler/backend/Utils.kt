@@ -6,6 +6,17 @@ import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.commons.LocalVariablesSorter
 
+/**
+ * A grounded VALUE type — one compiled as a raw JVM primitive or bare String, not as an
+ * [net.singularity.jetta.compiler.frontend.ir.Atom] reference. Such a value must be boxed
+ * and wrapped in a `Grounded` to live inside quoted/Atom-typed data.
+ */
+fun GroundedType.isGroundedValue(): Boolean = when (this) {
+    GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE,
+    GroundedType.BOOLEAN, GroundedType.STRING -> true
+    else -> false
+}
+
 fun FunctionLike.getParameterIndex(variable: Variable): Int = params.getParameterIndex(variable)
 
 fun List<Variable>.getParameterIndex(variable: Variable): Int {
@@ -104,6 +115,25 @@ fun generateLoadVar(
 
         else -> TODO("Not implemented yet " + variable + " (" + variable.type + ")")
     }
+}
+
+/**
+ * Given a `Grounded` [net.singularity.jetta.compiler.frontend.ir.Atom] on the stack,
+ * unwrap it to the raw boxed value (`Grounded.getValue()`) and unbox to [type]'s JVM
+ * primitive. Used when a value that is an Atom at runtime — a destructured pattern
+ * variable, or the result of a multivalued/structural-dispatch call — must be consumed
+ * as a primitive (arithmetic, comparison, primitive return).
+ */
+fun unwrapGroundedToPrimitive(mv: MethodVisitor, type: GroundedType) {
+    mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Grounded")
+    mv.visitMethodInsn(
+        Opcodes.INVOKEVIRTUAL,
+        "net/singularity/jetta/compiler/frontend/ir/Grounded",
+        "getValue",
+        "()Ljava/lang/Object;",
+        false
+    )
+    unboxIfNeeded(mv, type)
 }
 
 fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
