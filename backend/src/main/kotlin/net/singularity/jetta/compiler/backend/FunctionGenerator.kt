@@ -905,15 +905,38 @@ open class FunctionGenerator(
         else -> false
     }
 
+    /**
+     * The primitive type a comparison should operate on, or null for a reference
+     * (symbol/structural) comparison. If either operand is statically a primitive
+     * (Int/Double/Boolean) the comparison is numeric/primitive, and the OTHER operand —
+     * an `Atom` at runtime, e.g. a destructured `Grounded` number — is unwrapped to that
+     * primitive (see [coerceComparisonOperand]). Matches hyperon: `(== $k 0)` compares
+     * grounded values, not object identity.
+     */
+    private fun numericCompareType(left: Atom, right: Atom): GroundedType? = when {
+        left.type == GroundedType.DOUBLE || right.type == GroundedType.DOUBLE -> GroundedType.DOUBLE
+        left.type == GroundedType.INT || right.type == GroundedType.INT -> GroundedType.INT
+        left.type == GroundedType.BOOLEAN || right.type == GroundedType.BOOLEAN -> GroundedType.BOOLEAN
+        else -> null
+    }
+
+    /** If [actual] is a reference (Atom/Any) but a primitive [target] is required for the
+     *  comparison, unwrap the Grounded and unbox. */
+    private fun coerceComparisonOperand(mv: MethodVisitor, actual: Atom?, target: GroundedType) {
+        if (actual == GroundedType.ATOM || actual == GroundedType.ANY) unwrapGroundedToPrimitive(mv, target)
+    }
+
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
         emitLineNumber(expr)
-        fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int) {
+        fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int, elemType: GroundedType = GroundedType.INT) {
             val label1 = Label()
             generateAtom(mv, left, label1, false)
             mv.visitLabel(label1)
+            coerceComparisonOperand(mv, left.type, elemType)
             val label2 = Label()
             generateAtom(mv, right, label2, false)
             mv.visitLabel(label2)
+            coerceComparisonOperand(mv, right.type, elemType)
             val jumpIfFalse = Label()
             mv.visitJumpInsn(inverseOp, jumpIfFalse)
             mv.visitInsn(Opcodes.ICONST_1)
@@ -928,7 +951,9 @@ open class FunctionGenerator(
 
             // Push operands: left, then right
             generateAtom(mv, left, null, false)
+            coerceComparisonOperand(mv, left.type, GroundedType.DOUBLE)
             generateAtom(mv, right, null, false)
+            coerceComparisonOperand(mv, right.type, GroundedType.DOUBLE)
 
             // Compare the two doubles (result is int)
             mv.visitInsn(Opcodes.DCMPG)
@@ -999,10 +1024,11 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_EQ -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFEQ)
-                        } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPNE)
+                        val cmp = numericCompareType(left, right!!)
+                        if (cmp == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFEQ)
+                        } else if (cmp == GroundedType.INT || cmp == GroundedType.BOOLEAN) {
+                            generateIntComparison(left, right, Opcodes.IF_ICMPNE, cmp)
                         } else {
                             // Reference types (Atom, Symbol, etc.)
                             // If the right side is an Expression containing Variables,
@@ -1035,10 +1061,11 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_NEQ -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFNE)
-                        } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPEQ)
+                        val cmp = numericCompareType(left, right!!)
+                        if (cmp == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFNE)
+                        } else if (cmp == GroundedType.INT || cmp == GroundedType.BOOLEAN) {
+                            generateIntComparison(left, right, Opcodes.IF_ICMPEQ, cmp)
                         } else {
                             // Reference types — use !Object.equals()
                             generateAtom(mv, left, null, false)
@@ -1058,34 +1085,34 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_GT -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFGT)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFGT)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPLE)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPLE)
                         }
                     }
 
                     Predefined.COND_LT -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFLT)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFLT)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPGE)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPGE)
                         }
                     }
 
                     Predefined.COND_GE -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFGE)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFGE)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPLT)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPLT)
                         }
                     }
 
                     Predefined.COND_LE -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFLE)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFLE)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPGT)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPGT)
                         }
                     }
 
