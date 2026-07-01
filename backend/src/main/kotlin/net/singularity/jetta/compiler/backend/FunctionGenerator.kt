@@ -1106,8 +1106,16 @@ open class FunctionGenerator(
         val elseLabel = Label()
         mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
         generateAtom(mv, thenExpr, exit, doReturn)
+        // Value-producing if (the body of a Match branch / an argument): neither branch
+        // returns nor jumps to an outer exit, so the then-branch must jump PAST the else
+        // to a join — otherwise it falls through and both branches' values pile on the
+        // stack (ASM Frame.merge fails). For the doReturn / exit cases each branch already
+        // leaves via areturn / GOTO exit, so no join is needed.
+        val joinLabel = if (!doReturn && exit == null) Label() else null
+        if (joinLabel != null) mv.visitJumpInsn(Opcodes.GOTO, joinLabel)
         mv.visitLabel(elseLabel)
         generateAtom(mv, elseExpr, exit, doReturn)
+        if (joinLabel != null) mv.visitLabel(joinLabel)
     }
 
     // FIXME: controversial, consider other options e.g. Atom <- Typed
