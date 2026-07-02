@@ -292,7 +292,12 @@ fun generateLoadInt(mv: LocalVariablesSorter, value: Int) {
         3 -> mv.visitInsn(Opcodes.ICONST_3)
         4 -> mv.visitInsn(Opcodes.ICONST_4)
         5 -> mv.visitInsn(Opcodes.ICONST_5)
-        else -> mv.visitIntInsn(Opcodes.BIPUSH, value)
+        // BIPUSH/SIPUSH take a SIGNED byte/short operand, so they must only be used
+        // within their range — else the operand wraps (144 → -112). Widen past them to
+        // an LDC of the int constant. Covers negatives too (e.g. -1 → BIPUSH).
+        in Byte.MIN_VALUE.toInt()..Byte.MAX_VALUE.toInt() -> mv.visitIntInsn(Opcodes.BIPUSH, value)
+        in Short.MIN_VALUE.toInt()..Short.MAX_VALUE.toInt() -> mv.visitIntInsn(Opcodes.SIPUSH, value)
+        else -> mv.visitLdcInsn(value)
     }
 }
 
