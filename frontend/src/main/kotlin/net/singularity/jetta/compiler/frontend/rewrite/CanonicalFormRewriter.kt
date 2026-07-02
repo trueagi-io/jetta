@@ -247,9 +247,21 @@ class CanonicalFormRewriter(
             return rewriteAtom(atom)
         }
 
-        val body = multivaluedCalls[expression.id]?.let {
-            mkVariable(it, expression.position)
-        } ?: Expression(
+        // A self-registered call (identity-lift at its own scope) is normally collapsed to
+        // its bound variable so an enclosing map/flat-map binds it (the tail-call case, e.g.
+        // lookup's `(lookup $key $rest)` → `map?(\$v. $v) (lookup …)`). BUT if this call ALSO
+        // has NESTED multivalued calls scoped under it — the inner `(ev $e $env)` buried in a
+        // data-constructor argument of `(ev $body (Cons (Bind $x (ev $e $env)) $env))` — those
+        // must be lifted OUT and their result vars substituted INTO this call's arguments, with
+        // the (substituted) call as the innermost body. Collapsing to a variable would leave
+        // the inner call inline as an unevaluated thunk (later cast Expression→Grounded → CCE).
+        // So force the substituted-body branch and drop the self-entry from the lift list.
+        val selfVar = multivaluedCalls[expression.id]
+        val scopedLifts = multivaluedCallsInverse[expression.id]
+        val hasNestedLifts = scopedLifts != null && scopedLifts.any { it.second.id != expression.id }
+        val body = if (selfVar != null && !hasNestedLifts) {
+            mkVariable(selfVar, expression.position)
+        } else Expression(
             atoms = expression.atoms.map { rewriteOrLift(it) },
             position = expression.position
         )
@@ -276,8 +288,13 @@ class CanonicalFormRewriter(
         }
         // check the expression is a scope
         var result: Atom = inner
-        val replacement = multivaluedCallsInverse[expression.id]
-        if (replacement != null) {
+        // When the substituted-body branch fired for a self-registered call with nested lifts,
+        // its own identity-lift is subsumed by the substituted body — drop the self-entry so
+        // only the genuinely nested calls are lifted around it.
+        val replacement = if (selfVar != null && hasNestedLifts)
+            scopedLifts!!.filter { it.second.id != expression.id }
+        else scopedLifts
+        if (!replacement.isNullOrEmpty()) {
             // Innermost op: if `inner` yields a List (a compound lift, or the body
             // calls a multivalued function), the innermost wrap must FLAT_MAP_ so its
             // results are flattened rather than nested.

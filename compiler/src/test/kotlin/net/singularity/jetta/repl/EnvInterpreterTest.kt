@@ -8,7 +8,13 @@ import kotlin.test.assertTrue
  * An environment-based meta-circular-style interpreter compiled by JeTTa (see
  * `examples/interp/EnvInterp.metta`). Exercises the whole guarded-recursion +
  * multivalued-composition path end to end: `lookup` over a destructured assoc list,
- * arithmetic composed over multivalued sub-evaluations, and lexical `Let`.
+ * arithmetic composed over multivalued sub-evaluations, and lexical `Let` whose bound
+ * expression is evaluated INLINE inside the environment's data constructor
+ * `(Cons (Bind x (ev e env)) env)`.
+ *
+ * That inline form pins the #4 fix: a multivalued call nested in a data-constructor
+ * argument is lifted out and its result substituted into the data (value, not thunk),
+ * instead of self-registering an identity map and leaving the call inline.
  *
  * Also pins the int-literal fix: a literal like `144` (> Byte range) must load via
  * LDC/SIPUSH, not a truncating BIPUSH (which produced -112).
@@ -28,10 +34,8 @@ class EnvInterpreterTest {
             (= (ev (Var _x) _env) (lookup _x _env))
             (= (ev (Add _a _b) _env) (+ (ev _a _env) (ev _b _env)))
             (= (ev (Mul _a _b) _env) (* (ev _a _env) (ev _b _env)))
-            (= (ev (Let _x _e _body) _env) (bindEval _x (ev _e _env) _body _env))
-
-            (: bindEval (-> Atom Int Atom Atom Int))
-            (= (bindEval _x _val _body _env) (ev _body (Cons (Bind _x _val) _env)))
+            (= (ev (Let _x _e _body) _env)
+               (ev _body (Cons (Bind _x (ev _e _env)) _env)))
             """.trimIndent().d()
         )
     }

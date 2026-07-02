@@ -17,7 +17,11 @@
 ;   - a value-producing `if` whose two arms are heterogeneous (a scalar and a
 ;     recursive multivalued call) — homogenized to a single List<Int>,
 ;   - arithmetic composed over multivalued sub-evaluations (`(+ (ev a) (ev b))`),
-;   - lexical scoping via `Let`, threading a value (not a thunk) into the env.
+;   - lexical scoping via `Let`, where the bound expression is evaluated *inline*
+;     inside the environment's data constructor — `(Cons (Bind x (ev e env)) env)`.
+;     The nested `(ev e env)` is reduced (applicative order, as in canonical MeTTa —
+;     a data constructor does not suppress reduction of its arguments) and its VALUE,
+;     not an unevaluated thunk, is threaded into the environment.
 ;
 ; Every `ev` clause has a destructuring head, so `ev` compiles to a Match and is
 ; multivalued (physically List<Int>); the driver `assertEqual` compares the whole
@@ -34,14 +38,12 @@
 (= (ev (Var $x) $env) (lookup $x $env))
 (= (ev (Add $a $b) $env) (+ (ev $a $env) (ev $b $env)))
 (= (ev (Mul $a $b) $env) (* (ev $a $env) (ev $b $env)))
-; Let: evaluate `e` in the current env (a direct argument, so its value — not an
-; unevaluated expression — is threaded into the extended environment), then
-; evaluate the body. `bindEval` keeps the eval out of the data-constructor
-; position so a value, not a thunk, lands in the binding.
-(= (ev (Let $x $e $body) $env) (bindEval $x (ev $e $env) $body $env))
-
-(: bindEval (-> Atom Int Atom Atom Int))
-(= (bindEval $x $val $body $env) (ev $body (Cons (Bind $x $val) $env)))
+; Let: evaluate the body under the environment extended with x bound to the value
+; of e. The inner `(ev $e $env)` sits directly inside the `(Bind $x …)` data
+; constructor; it is lifted out, reduced, and its value substituted in — so the
+; environment holds a value, not a thunk.
+(= (ev (Let $x $e $body) $env)
+   (ev $body (Cons (Bind $x (ev $e $env)) $env)))
 
 ; --- checks ---
 ; A constant folds to itself.
