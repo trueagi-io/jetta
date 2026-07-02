@@ -5,15 +5,28 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.frontend.resolve.getJvmDescriptor
 import net.singularity.jetta.compiler.frontend.resolve.getSignature
+import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.ClassWriter.COMPUTE_FRAMES
 import org.objectweb.asm.ClassWriter.COMPUTE_MAXS
+import org.objectweb.asm.Label
+import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.LocalVariablesSorter
 
-class Generator(val generateMain: Boolean = false, private val spaceNameOverride: String? = null) {
+/**
+ * @param autoTable when true (the AOT compile path), memoize functions the compiler proves
+ *   pure/deterministic/state-independent and recursive — see [computeMemoizable]. Off for the
+ *   REPL / JIT-eval paths, where runtime rule redefinition and space mutation would stale the
+ *   cache (needs SwitchPoint epoch invalidation, not yet implemented).
+ */
+class Generator(
+    val generateMain: Boolean = false,
+    private val spaceNameOverride: String? = null,
+    private val autoTable: Boolean = false,
+) {
     private var lambdaCount = 1
 
     fun generate(source: ParsedSource): List<CompilationResult> {
@@ -48,17 +61,29 @@ class Generator(val generateMain: Boolean = false, private val spaceNameOverride
             emitLambdaMethod(cw, className, name, lambda, moduleSpaceName)
         }
 
+        val memoized = if (autoTable)
+            computeMemoizable(source.code.filterIsInstance<FunctionDefinition>())
+        else emptySet()
+
         source.code.forEach { node ->
             when (node) {
                 is FunctionDefinition -> {
                     val access = Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC
                     val desc = node.getJvmDescriptor()
+                    // A memoized function is emitted as a wrapper `name` (memo cache keyed on
+                    // its boxed args) delegating to `name$impl` on a miss. The body is generated
+                    // unchanged into `name$impl`; its recursive calls still target `name` (the
+                    // wrapper), so the recursion is memoized. See emitMemoWrapper.
+                    val bodyMethodName = if (node.name in memoized) node.name + "\$impl" else node.name
+                    if (node.name in memoized) {
+                        emitMemoWrapper(cw, className, node, desc)
+                    }
                     val mv = LocalVariablesSorter(
                         access,
                         desc,
                         cw.visitMethod(
                             access,
-                            node.name,
+                            bodyMethodName,
                             desc,
                             node.getSignature(),
                             null
@@ -98,6 +123,159 @@ class Generator(val generateMain: Boolean = false, private val spaceNameOverride
         }
         return listOf(CompilationResult(className, cw.toByteArray()))
     }
+
+    // --- auto-tabling -------------------------------------------------------------------
+
+    // Grounded ops that read mutable state or have effects / non-determinism: a function
+    // calling any of these is NOT memoizable (its result isn't a pure function of its args).
+    private val impureGrounded = setOf(
+        "match", "matchEval", "println", "print", "random", "seed", "generate",
+        "superpose", "collapse", "eval", "assertEqual", "assertEqualToResult",
+        "add-atom!", "remove-atom!", "new-space", "bind!", "get-state", "new-state",
+        "change-state!", "get-type", "import!", "pragma!",
+    )
+
+    // Types we can use as a hashable memo key / box as a cached value.
+    private val keyable = setOf(GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE, GroundedType.BOOLEAN)
+
+    /**
+     * Functions safe (and worth it) to memoize on the AOT path: pure, deterministic,
+     * state-independent, and recursive. Pure ⇔ not multivalued, primitive args + result,
+     * body free of Match / lambda / impure grounded op, and every user-function it calls is
+     * itself memoizable (greatest fixpoint over the call graph). Recursive ⇔ transitively
+     * calls itself — bounds the cache and is where memoization pays.
+     */
+    private fun computeMemoizable(functions: List<FunctionDefinition>): Set<String> {
+        val byName = functions.associateBy { it.name }
+
+        fun bodyPure(atom: Atom): Boolean = when (atom) {
+            is Match, is Lambda -> false
+            is Expression -> {
+                val head = (atom.atoms.firstOrNull() as? Symbol)?.name
+                if (head != null && head in impureGrounded) false
+                else atom.atoms.all { bodyPure(it) }
+            }
+            else -> true
+        }
+
+        fun localOk(f: FunctionDefinition): Boolean =
+            !f.name.startsWith("__") &&
+                !f.isMultivalued() &&
+                f.params.isNotEmpty() &&
+                f.returnType in keyable &&
+                f.params.all { it.type in keyable } &&
+                bodyPure(f.body)
+
+        fun callees(atom: Atom, acc: MutableSet<String>) {
+            if (atom is Expression) {
+                (atom.atoms.firstOrNull() as? Symbol)?.name?.let { if (it in byName) acc.add(it) }
+                atom.atoms.forEach { callees(it, acc) }
+            }
+        }
+        val calls = functions.associate { f -> f.name to mutableSetOf<String>().also { callees(f.body, it) } }
+
+        val cand = functions.filter { localOk(it) }.map { it.name }.toMutableSet()
+        var changed = true
+        while (changed) {
+            changed = false
+            val remove = cand.filter { f -> calls[f]!!.any { g -> g in byName && g !in cand } }
+            if (remove.isNotEmpty()) { cand.removeAll(remove.toSet()); changed = true }
+        }
+
+        fun reachesSelf(start: String): Boolean {
+            val seen = mutableSetOf<String>()
+            val stack = ArrayDeque(calls[start] ?: emptySet())
+            while (stack.isNotEmpty()) {
+                val n = stack.removeLast()
+                if (n == start) return true
+                if (seen.add(n)) calls[n]?.let { stack.addAll(it) }
+            }
+            return false
+        }
+        return cand.filter { reachesSelf(it) }.toSet()
+    }
+
+    /**
+     * Emit the memo wrapper `node.name` for a memoized function: key on the boxed argument
+     * list, return the cached value on a hit, else call `node.name$impl`, cache, and return.
+     */
+    private fun emitMemoWrapper(cw: ClassWriter, className: String, node: FunctionDefinition, desc: String) {
+        val mv = cw.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, node.name, desc, node.getSignature(), null)
+        val fnId = "$className.${node.name}"
+        val params = node.params.map { it.type as GroundedType }
+        val ret = node.returnType as GroundedType
+        val paramsWidth = params.sumOf { primWidth(it) }
+        val keyLocal = paramsWidth
+        val valTmp = paramsWidth + 1
+
+        // key = java.util.Arrays.asList(box(p0), box(p1), …)
+        pushInt(mv, params.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        var slot = 0
+        params.forEachIndexed { i, t ->
+            mv.visitInsn(Opcodes.DUP)
+            pushInt(mv, i)
+            loadPrim(mv, t, slot)
+            boxIfNeeded(mv, t)
+            mv.visitInsn(Opcodes.AASTORE)
+            slot += primWidth(t)
+        }
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Arrays", "asList", "([Ljava/lang/Object;)Ljava/util/List;", false)
+        mv.visitVarInsn(Opcodes.ASTORE, keyLocal)
+
+        // r = JettaMemo.lookup(fnId, key)
+        mv.visitLdcInsn(fnId)
+        mv.visitVarInsn(Opcodes.ALOAD, keyLocal)
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, RuntimeNames.MEMO, "lookup", "(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;", false)
+
+        val miss = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, miss)
+        // hit: unbox and return the cached value
+        unboxIfNeeded(mv, ret)
+        returnPrim(mv, ret)
+
+        // miss: compute impl, cache, return
+        mv.visitLabel(miss)
+        mv.visitInsn(Opcodes.POP) // discard the null lookup result
+        slot = 0
+        params.forEach { t -> loadPrim(mv, t, slot); slot += primWidth(t) }
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, node.name + "\$impl", desc, false)
+        dupPrim(mv, ret)
+        boxIfNeeded(mv, ret)
+        mv.visitVarInsn(Opcodes.ASTORE, valTmp)
+        mv.visitLdcInsn(fnId)
+        mv.visitVarInsn(Opcodes.ALOAD, keyLocal)
+        mv.visitVarInsn(Opcodes.ALOAD, valTmp)
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, RuntimeNames.MEMO, "store", "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V", false)
+        returnPrim(mv, ret)
+
+        mv.visitMaxs(0, 0)
+    }
+
+    private fun primWidth(t: GroundedType) = if (t == GroundedType.LONG || t == GroundedType.DOUBLE) 2 else 1
+
+    private fun pushInt(mv: MethodVisitor, v: Int) =
+        if (v in 0..5) mv.visitInsn(Opcodes.ICONST_0 + v) else mv.visitIntInsn(Opcodes.BIPUSH, v)
+
+    private fun loadPrim(mv: MethodVisitor, t: GroundedType, slot: Int) = when (t) {
+        GroundedType.INT, GroundedType.BOOLEAN -> mv.visitVarInsn(Opcodes.ILOAD, slot)
+        GroundedType.LONG -> mv.visitVarInsn(Opcodes.LLOAD, slot)
+        GroundedType.DOUBLE -> mv.visitVarInsn(Opcodes.DLOAD, slot)
+        else -> error("non-primitive memo param $t")
+    }
+
+    private fun dupPrim(mv: MethodVisitor, t: GroundedType) =
+        mv.visitInsn(if (t == GroundedType.LONG || t == GroundedType.DOUBLE) Opcodes.DUP2 else Opcodes.DUP)
+
+    private fun returnPrim(mv: MethodVisitor, t: GroundedType) = mv.visitInsn(
+        when (t) {
+            GroundedType.INT, GroundedType.BOOLEAN -> Opcodes.IRETURN
+            GroundedType.LONG -> Opcodes.LRETURN
+            GroundedType.DOUBLE -> Opcodes.DRETURN
+            else -> error("non-primitive memo return $t")
+        }
+    )
 
     private fun findLambdas(source: ParsedSource): Map<String, Lambda> {
         val result = mutableMapOf<String, Lambda>()

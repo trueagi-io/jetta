@@ -34,6 +34,7 @@ abstract class GeneratorTestBase {
         code: String,
         mapImpl: JvmMethod? = null,
         flatMapImpl: JvmMethod? = null,
+        autoTable: Boolean = false,
         init: (Context) -> Unit = {}
     ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
@@ -56,7 +57,7 @@ abstract class GeneratorTestBase {
         SpaceDirectorySerializer.save(context.getSpace() as SpaceImpl, outputDir, programName = programName)
         JettaProgram.setDataDir(outputDir)
 
-        val generator = Generator()
+        val generator = Generator(autoTable = autoTable)
         val compiled = generator.generate(result)
         compiled.forEach {
             log.debug { "Writing " + it.className }

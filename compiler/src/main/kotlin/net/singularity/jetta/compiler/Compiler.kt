@@ -159,7 +159,9 @@ class Compiler(
         }
 
         resolved.forEach {
-            val generator = Generator(generateMain = true)
+            // autoTable = true: AOT is a closed world (rules fixed at compile), so memoizing
+            // pure/deterministic recursive functions is sound without cache invalidation.
+            val generator = Generator(generateMain = true, autoTable = true)
             val compiled = generator.generate(it)
             compiled.forEach(::writeResult)
         }
