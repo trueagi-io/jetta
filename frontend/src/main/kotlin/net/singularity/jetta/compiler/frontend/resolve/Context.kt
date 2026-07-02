@@ -213,9 +213,12 @@ class Context private constructor(
                                 }
 
                                 is Grounded<*> -> {
-                                    if (arg.type != null && !isAssignableFrom(type, arg.type!!)) {
-                                        TODO()
-                                    }
+                                    // A literal whose type doesn't match the param type
+                                    // (an Int reaching a still-Atom param mid-inference,
+                                    // or a genuine mismatch) is left for the authoritative
+                                    // resolve pass to box or report via
+                                    // IncompatibleTypesMessage — this heuristic pass must
+                                    // not crash on it.
                                 }
 
                                 is Expression -> inferTypeForExpression(arg, scope)
@@ -278,9 +281,9 @@ class Context private constructor(
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS,
                 Predefined.DIVIDE, Predefined.DIV, Predefined.MOD -> {
-                    expression.arguments().forEach {
-                        inferType(it, scope)
-                    }
+                    val operands = expression.arguments()
+                    operands.forEach { inferType(it, scope) }
+                    inferArithmeticOperandTypes(atom.value, operands, scope)
                 }
 
                 Predefined.RUN_SEQ, Predefined.SEQ -> {
@@ -401,33 +404,149 @@ class Context private constructor(
         typeInferenceDone = true
     }
 
-    private fun refineFunctionArrowTypes() {
-        resolvedFunctions.forEach { (_, def) ->
+    private fun refineFunctionArrowTypes(): Boolean {
+        var changed = false
+        resolvedFunctions.toList().forEach { (_, def) ->
             val arrowType = def.func.arrowType ?: return@forEach
             val paramTypes = arrowType.types.dropLast(1)
-            if (paramTypes.none { it == GroundedType.ATOM }) return@forEach
+            val currentReturn = arrowType.types.last()
 
-            val inferredParamTypes = mutableMapOf<String, Atom>()
-            collectVariableTypes(def.func.body, inferredParamTypes)
-
-            val refinedTypes = def.func.params.mapIndexed { index, param ->
-                if (paramTypes[index] == GroundedType.ATOM) {
-                    val inferred = inferredParamTypes[param.name]
-                    if (inferred != null && inferred != GroundedType.ATOM) {
-                        param.type = inferred
-                        inferred
+            // 1. Lift ATOM parameters to a concrete type collected from the body
+            //    (e.g. `$n` typed Int by a comparison or an arithmetic operand).
+            val refinedParams = if (paramTypes.any { it == GroundedType.ATOM }) {
+                val inferredParamTypes = mutableMapOf<String, Atom>()
+                collectVariableTypes(def.func.body, inferredParamTypes)
+                def.func.params.mapIndexed { index, param ->
+                    if (paramTypes[index] == GroundedType.ATOM) {
+                        val inferred = inferredParamTypes[param.name]
+                        if (inferred != null && inferred != GroundedType.ATOM) {
+                            param.type = inferred
+                            inferred
+                        } else {
+                            paramTypes[index]
+                        }
                     } else {
                         paramTypes[index]
                     }
-                } else {
-                    paramTypes[index]
                 }
+            } else {
+                paramTypes
             }
-            if (refinedTypes != paramTypes) {
-                def.func.arrowType = ArrowType(refinedTypes + arrowType.types.last())
+
+            // 2. Lift an ATOM/ANY return type to the resolved body type. An untyped
+            //    `fib` resolves its body (`if`) to Int, but the arrow's return was
+            //    frozen at Any on the first pass (it is only ever *set*, never
+            //    refined). Codegen would then emit `ireturn` of a primitive against
+            //    an Object descriptor → VerifyError. Only widen the dynamic top
+            //    (Atom/Any) toward a concrete grounded type, never a SeqType (the
+            //    multivalued List contract owns that), so this is monotonic and the
+            //    enclosing fixpoint converges.
+            val bodyType = inferReturnFromBody(def.func)
+            val refinedReturn = if ((currentReturn == GroundedType.ATOM || currentReturn == GroundedType.ANY) &&
+                bodyType != null && bodyType != GroundedType.ATOM && bodyType != GroundedType.ANY &&
+                bodyType !is SeqType
+            ) {
+                bodyType
+            } else {
+                currentReturn
+            }
+
+            val refinedTypes = refinedParams + refinedReturn
+            if (refinedTypes != arrowType.types) {
+                def.func.arrowType = ArrowType(refinedTypes)
                 addResolvedFunction(def.owner, def.func)
+                changed = true
             }
         }
+        return changed
+    }
+
+    /**
+     * Arithmetic operands are numeric, so pin any still-untyped variable operand
+     * to a numeric type. This is the mechanism that lets an untyped `(+ $x $x)`
+     * infer `$x: Int` — the same symmetry the comparison operators already use to
+     * type `(== $v 5)`. `+ - *` are Int unless a sibling operand is Double (float
+     * contagion); `div`/`mod` are integer-only. Writing both the operand's own
+     * `.type` and `scope.data` lets sibling occurrences resolve immediately and
+     * lets [refineFunctionArrowTypes] lift the type onto the function's parameter.
+     * Only genuinely untyped (null) operands are touched, never a concrete type.
+     */
+    private fun inferArithmeticOperandTypes(op: String, operands: List<Atom>, scope: Scope) {
+        val numeric = when {
+            op == Predefined.DIV || op == Predefined.MOD -> GroundedType.INT
+            operands.any { it.type == GroundedType.DOUBLE } -> GroundedType.DOUBLE
+            else -> GroundedType.INT
+        }
+        operands.forEach {
+            if (it is Variable && it.type == null) {
+                it.type = numeric
+                scope.data[it.name] = numeric
+            }
+        }
+    }
+
+    /**
+     * Infer a function's return type from the result-position types in its body,
+     * unifying the branches of an `if`/Match. A *self-recursive* call whose type is
+     * still the unrefined dynamic top (Atom/Any/null) contributes no information —
+     * this is a least-fixpoint from bottom, so a tail-recursive body such as gcd's
+     * `(if (== $b 0) $a (gcd $b (mod $a $b)))` yields Int (from the base case)
+     * rather than collapsing to Any when unified with the recursive call's
+     * provisional Atom. A *genuinely* Atom leaf (a Symbol, or a call to some other
+     * Atom-returning function) is kept, so heterogeneous functions still type as
+     * Atom. Returns the plain body type when no branch is informative.
+     */
+    private fun inferReturnFromBody(func: FunctionDefinition): Atom? {
+        val types = mutableListOf<Atom>()
+        collectResultTypes(func.body, func.name, types)
+        if (types.isEmpty()) return func.body.type
+        return types.reduce { acc, t -> unifyType(acc, t) }
+    }
+
+    private fun collectResultTypes(atom: Atom, funcName: String, acc: MutableList<Atom>) {
+        when (atom) {
+            is Expression -> {
+                val head = atom.atoms.firstOrNull()
+                if ((head as? Special)?.value == Predefined.IF && atom.atoms.size == 4) {
+                    collectResultTypes(atom.atoms[2], funcName, acc)
+                    collectResultTypes(atom.atoms[3], funcName, acc)
+                    return
+                }
+                val type = atom.type
+                val isSelfRecursive = (head as? Symbol)?.name == funcName
+                val isUnrefinedTop =
+                    type == null || type == GroundedType.ATOM || type == GroundedType.ANY
+                if (isSelfRecursive && isUnrefinedTop) return
+                type?.let { acc.add(it) }
+            }
+
+            is Match -> atom.branches.forEach { collectResultTypes(it.body, funcName, acc) }
+            else -> atom.type?.let { acc.add(it) }
+        }
+    }
+
+    /**
+     * A comparison forces both operands to a common type. When one side is a
+     * concrete grounded type and the other is a still-untyped variable, pin the
+     * variable — this is how `(== $m 0)` infers `$m: Int`, mirroring the symmetry
+     * the [inferType] pass already performs and complementing the arithmetic
+     * operand inference so a parameter used only in comparisons still gets a
+     * concrete type. Only a genuinely untyped (null) variable is touched — an Atom
+     * operand (e.g. a symbol or a destructured pattern var) is left alone so the
+     * comparison-over-Atom codegen path is preserved, and a symbolic comparison
+     * such as `(== $x Foo)` (concrete side is Atom) propagates nothing.
+     */
+    private fun propagateComparisonOperandType(lhs: Atom, rhs: Atom, scope: Scope) {
+        fun pin(variable: Atom, other: Atom) {
+            val t = other.type ?: return
+            if (t == GroundedType.ATOM || t == GroundedType.ANY) return
+            if (variable is Variable && variable.type == null) {
+                variable.type = t
+                scope.data[variable.name] = t
+            }
+        }
+        pin(lhs, rhs)
+        pin(rhs, lhs)
     }
 
     private fun collectVariableTypes(atom: Atom, result: MutableMap<String, Atom>) {
@@ -624,8 +743,17 @@ class Context private constructor(
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
         resolveSource(source)
         typeInferenceLoop(source)
-        refineFunctionArrowTypes()
-        resolveSource(source)
+        // Refine ATOM params and ATOM/ANY return types from resolved body types,
+        // re-resolving between rounds so a refined return type propagates to the
+        // (recursive) call sites that consume it — which in turn can make another
+        // body/param type concrete. Refinement only widens the dynamic top toward a
+        // concrete type, so it is monotonic and converges; the bound is a safety net.
+        var round = 0
+        do {
+            val changed = refineFunctionArrowTypes()
+            resolveSource(source)
+            round++
+        } while (changed && round < 16)
         val normalizedMain = normalizeMainForCodegen(source)
         val postprocessed = applyPostResolveRewriters(normalizedMain)
         messageCollector.clear()
@@ -792,10 +920,8 @@ class Context private constructor(
         functionDefinition.typedParameters?.forEach {
             functionDefinition.params.find { v -> v.name == it.name }?.type = it.type
         }
-        resolveAtom(
-            functionDefinition.body,
-            Scope(functionDefinition)
-        )
+        val scope = Scope(functionDefinition)
+        resolveAtom(functionDefinition.body, scope)
         // If arrowType is still null after resolving, try to infer it.
         // This handles purely symbolic functions like (= (And T T) T)
         // where body type is known but no explicit type annotation exists.
@@ -805,7 +931,15 @@ class Context private constructor(
                 ?: inferBodyType(functionDefinition.body)
             if (bodyType != null) {
                 functionDefinition.body.type = bodyType
-                val types = functionDefinition.params.map { it.type ?: GroundedType.ATOM } + bodyType
+                // Prefer a type inferred into the scope (e.g. `$m` pinned to Int by
+                // an arithmetic operand or a comparison) over the head param
+                // Variable's own type: the head's param instances are distinct
+                // objects from the body occurrences and never receive the inferred
+                // type directly, so reading `param.type` alone would freeze an
+                // arithmetic-only parameter at Atom.
+                val types = functionDefinition.params.map {
+                    it.type ?: scope.data[it.name] ?: GroundedType.ATOM
+                } + bodyType
                 functionDefinition.arrowType = ArrowType(types)
                 addResolvedFunction(owner, functionDefinition)
             }
@@ -814,7 +948,12 @@ class Context private constructor(
     }
 
     private fun isAssignableFrom(left: Atom, right: Atom): Boolean {
-        if (left == GroundedType.ANY) return true
+        // Atom and Any are the dynamic top: any value is assignable to them (the
+        // call site boxes a primitive as needed). Without this, passing an Int to
+        // an Atom-typed parameter — routine when a self-recursive callee's param
+        // type is still the provisional Atom — is falsely reported as an
+        // incompatibility instead of being boxed.
+        if (left == GroundedType.ANY || left == GroundedType.ATOM) return true
         return left == right
     }
 
@@ -1060,15 +1199,15 @@ class Context private constructor(
                     val (_, lhs, rhs) = expression.atoms
                     resolveAtom(lhs, scope)
                     resolveAtom(rhs, scope)
+                    propagateComparisonOperandType(lhs, rhs, scope)
                     expression.type = GroundedType.BOOLEAN
                 }
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
-                    var hasDouble = false
-                    expression.atoms.drop(1).forEach {
-                        resolveAtom(it, scope)
-                        if (it.type == GroundedType.DOUBLE) hasDouble = true
-                    }
+                    val operands = expression.arguments()
+                    operands.forEach { resolveAtom(it, scope) }
+                    inferArithmeticOperandTypes(atom.value, operands, scope)
+                    val hasDouble = operands.any { it.type == GroundedType.DOUBLE }
                     expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
                 }
 
@@ -1083,6 +1222,7 @@ class Context private constructor(
                     val (_, lhs, rhs) = expression.atoms
                     resolveAtom(lhs, scope)
                     resolveAtom(rhs, scope)
+                    inferArithmeticOperandTypes(atom.value, listOf(lhs, rhs), scope)
                     expression.type = GroundedType.INT
                 }
 
