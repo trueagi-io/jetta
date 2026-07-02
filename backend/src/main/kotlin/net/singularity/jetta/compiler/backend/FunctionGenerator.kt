@@ -811,6 +811,28 @@ open class FunctionGenerator(
         )
     }
 
+    /**
+     * Emit a grounded VALUE arg wrapped in a `Grounded` Atom: `new Grounded(box(value))`.
+     * Used when a primitive/String arg reaches an Atom-typed parameter (see [generateCall]) —
+     * mirrors the capture-into-quote path so both produce the same runtime Atom shape.
+     */
+    private fun generateGroundedValueArg(mv: LocalVariablesSorter, arg: Atom, type: GroundedType) {
+        mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Grounded::class.java))
+        mv.visitInsn(Opcodes.DUP)
+        generateAtom(mv, arg, null, false)
+        generateBoxingIfNeeded(type)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        generateLoadInt(mv, 2)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESPECIAL,
+            Type.getInternalName(Grounded::class.java),
+            "<init>",
+            "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+            false
+        )
+    }
+
     private fun generateBoxingIfNeeded(type: Atom) {
         val (owner, name, desc) = when (type) {
             GroundedType.INT -> Triple("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
@@ -830,7 +852,17 @@ open class FunctionGenerator(
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
         arguments.forEachIndexed { index, arg ->
-            generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
+            val argType = arg.type
+            if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
+                // A grounded VALUE (Int/Double/String/…) passed to an Atom-typed parameter
+                // must be wrapped in a Grounded: a bare box (Integer) is not an Atom subtype,
+                // so the verifier rejects `Integer` where `Atom` is expected. Routine in
+                // higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load the
+                // raw value, box it, wrap in Grounded (which IS an Atom).
+                generateGroundedValueArg(mv, arg, argType)
+            } else {
+                generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
+            }
         }
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,

@@ -53,6 +53,21 @@ object JettaCallSite {
     fun dispatch(spaceName: String, head: Any?, args: Array<Any?>): Any? {
         if (head is JettaFunction) return head.apply(args)
         val callExpr = buildInertExpression(head, args)
+        // When a JIT env is installed (same-JVM: REPL / in-process run), EVALUATE the
+        // application by compiling+running it. This is what makes higher-order code like
+        // `(= (apply $f $x) ($f $x))` yield a value: `$f` bound to a function-naming Symbol
+        // gives `(inc 5)`, which JIT-eval compiles to `INVOKESTATIC inc` and runs — so
+        // grounded ops (+, *) evaluate and user functions LINK against their compiled
+        // classes, neither of which the space-rule tree-walk below can do. Falls back to
+        // rule reduction when no env is present (cross-JVM AOT binary).
+        if (JitEnvRegistry.current() != null) {
+            val results = JettaJit.eval(callExpr)
+            return when (results.size) {
+                0 -> callExpr          // produced nothing — leave the application inert
+                1 -> results[0]        // the usual single-valued application
+                else -> results        // non-deterministic application — return the bag
+            }
+        }
         return reduceToFixedPoint(spaceName, callExpr)
     }
 

@@ -144,6 +144,9 @@ fun JvmMethod.arrowType(): ArrowType = ArrowType(
 fun JvmMethod.doesParameterHaveAnyType(index: Int) =
     descriptor.parseDescriptor()[index] == "Ljava/lang/Object;"
 
+fun JvmMethod.isParameterAtomType(index: Int) =
+    descriptor.parseDescriptor()[index] == "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+
 private fun toType(jvmType: String): Atom =
     when (jvmType) {
         "I" -> GroundedType.INT
