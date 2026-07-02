@@ -1028,7 +1028,27 @@ class Context private constructor(
                     // implemented). Fall back to ATOM rather than crashing.
                     val thenT = thenBranch.type ?: GroundedType.ATOM
                     val elseT = elseBranch.type ?: GroundedType.ATOM
-                    expression.type = unifyType(thenT, elseT)
+                    // A homogenized multivalued `if` stays a List. CanonicalFormRewriter
+                    // seq-wraps the scalar arm of an `if` whose other arm is a multivalued
+                    // (List) call, so both arms are Lists (upholding "multivalued `-> T` is
+                    // physically `List<T>`"). If either arm is a SeqType, the `if` is a
+                    // SeqType — and BOTH arms must carry the SAME element type so the
+                    // consuming map?/flat-map? lambda (typed to that element) can unbox
+                    // uniformly. A seq-wrapped scalar arm's element type came from the scalar
+                    // (typically Atom); re-pin that seq artifact to the more specific element
+                    // type (a grounded value beats Atom) so generateSeq unwraps its Grounded
+                    // instead of leaving a raw Atom (Grounded→Number CCE downstream).
+                    if (thenT is SeqType || elseT is SeqType) {
+                        val thenE = (thenT as? SeqType)?.elementType ?: thenT
+                        val elseE = (elseT as? SeqType)?.elementType ?: elseT
+                        val elem = mostSpecificElementType(thenE, elseE)
+                        val seqType = SeqType(elem)
+                        if (thenBranch.isSeqArtifact()) thenBranch.type = seqType
+                        if (elseBranch.isSeqArtifact()) elseBranch.type = seqType
+                        expression.type = seqType
+                    } else {
+                        expression.type = unifyType(thenT, elseT)
+                    }
                 }
 
                 Predefined.COND_EQ,
@@ -1097,7 +1117,21 @@ class Context private constructor(
                     resolveAtom(lambda, scope)
                     expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
                     val bodyType = lambda.body.type ?: GroundedType.ATOM
-                    expression.type = SeqType(bodyType, lambda.body.position)
+                    // A map? lambda whose body is a void/Unit call — e.g. mapping `println`
+                    // over a multivalued bag, `(map? (\ _x (println _x)) (pick))` — must
+                    // still return a reference for the `JettaFunction` SAM: generateCall
+                    // leaves a null placeholder on the stack after a void call, and the
+                    // lambda ARETURNs it. A Unit/primitive return type would emit a void
+                    // return / IRETURN of that null → VerifyError. Retype the lambda's
+                    // return (and the map?'s element) as ANY so codegen ARETURNs; the map?
+                    // then yields a bag of Units (side effects already happened).
+                    val elementType = if (bodyType == GroundedType.UNIT) {
+                        lambda.arrowType = lambda.arrowType?.let {
+                            ArrowType(it.types.dropLast(1) + GroundedType.ANY)
+                        }
+                        GroundedType.ANY
+                    } else bodyType
+                    expression.type = SeqType(elementType, lambda.body.position)
                     expression.resolved = mapSymbol
                 }
 
@@ -1197,6 +1231,24 @@ class Context private constructor(
         if (lhsType == null || lhsType == rhsType) return rhsType
         return GroundedType.ANY // FIXME: too narrow, please introduce NUMBER
     }
+
+    // Pick the more specific of two element types when homogenizing the arms of a
+    // multivalued `if`. Atom / ANY are the dynamic "top" — a concrete grounded value
+    // (Int, Double, …) on the other side wins, so a seq-wrapped scalar arm inherits the
+    // real element type of the other (List) arm. Genuinely conflicting concrete types
+    // fall back to unifyType (ANY).
+    private fun mostSpecificElementType(a: Atom, b: Atom): Atom = when {
+        a == b -> a
+        a == GroundedType.ATOM || a == GroundedType.ANY -> b
+        b == GroundedType.ATOM || b == GroundedType.ANY -> a
+        else -> unifyType(a, b)
+    }
+
+    // True for a `(seq …)` produced by rewriteIf's homogenization of a scalar `if` arm —
+    // the arm whose element type should be re-pinned to match the other (List) arm.
+    private fun Atom.isSeqArtifact(): Boolean =
+        this is Expression && atoms.isNotEmpty() &&
+                (atoms[0] as? Special)?.value == Predefined.SEQ
 
     fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolvedFunctions[name]

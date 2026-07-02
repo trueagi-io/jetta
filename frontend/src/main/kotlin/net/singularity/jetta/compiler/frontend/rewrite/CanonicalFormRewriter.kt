@@ -324,6 +324,10 @@ class CanonicalFormRewriter(
                 expression.atoms[other].isNonDeterministic()
             ) {
                 val inner = rewriteAtom(expression.atoms[ind])
+                // Element type is provisional here (inner is often a destructured Atom); the
+                // authoritative element type is pinned when the enclosing `if` is re-resolved
+                // (resolveExpression's IF case homogenizes the two arms' element types), so
+                // generateSeq coerces this scalar to match the other arm's List elements.
                 return Expression(Special(Predefined.SEQ), inner, type = SeqType(inner.type!!))
             } else {
                 return rewriteAtom(expression.atoms[ind])
@@ -356,6 +360,33 @@ class CanonicalFormRewriter(
                     position = expression.position
                 ),
                 replacement[0].second
+            )
+        }
+
+        // The `if` is not itself a lifted multivalued CALL (replacement == null), yet it
+        // can still be HETEROGENEOUS: one arm scalar, the other a multivalued (List) call
+        // — e.g. `(if (== …) $v (lookup … $rest))` as the body of a multivalued function,
+        // where the else arm is a tail recursive call registered at its OWN scope (so it
+        // never lands in multivaluedCallsInverse[if.id]). The compiled result must uphold
+        // the invariant "a multivalued `-> T` function is physically `List<T>`": both arms
+        // must yield a List. Seq-wrap the scalar arm so the `if`'s type becomes SeqType and
+        // generateMatchBranch takes the addAll (flatten) path — instead of coercing a List
+        // as if it were a single Grounded value (ClassCastException at runtime).
+        if (expression.isNonDeterministic()) {
+            val thenArm = rewriteAndMkSeqIfNeeded(expression, 2)
+            val elseArm = rewriteAndMkSeqIfNeeded(expression, 3)
+            val seqType = (thenArm.type as? SeqType)
+                ?: (elseArm.type as? SeqType)
+                ?: SeqType(expression.type ?: GroundedType.ATOM)
+            return Expression(
+                atoms = listOf(
+                    expression.atoms[0],
+                    rewriteAtom(expression.atoms[1]),
+                    thenArm,
+                    elseArm
+                ),
+                type = seqType,
+                id = expression.id
             )
         }
         return expression

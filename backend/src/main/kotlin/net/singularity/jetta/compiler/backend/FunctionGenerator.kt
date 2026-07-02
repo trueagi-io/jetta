@@ -314,7 +314,13 @@ open class FunctionGenerator(
                 generateLoad(mv, atom)
             }
         }
-        if (needBoxing) generateBoxingIfNeeded(atom.type!!)
+        // A multivalued call already yields a `List` (a reference) on the stack at runtime,
+        // regardless of its scalar element `type` (e.g. a barrier argument like
+        // `(assertEqual (pick) 2)` where `pick` is `@multivalued -> Int` but its descriptor
+        // returns List). Boxing it as that primitive would emit `Integer.valueOf(I)` over a
+        // reference → VerifyError. Skip boxing for such calls — the List is already an Object.
+        val isMultivaluedCall = (atom as? Expression)?.resolved?.isMultiValued == true
+        if (needBoxing && !isMultivaluedCall) generateBoxingIfNeeded(atom.type!!)
         if (doReturn) {
             generateReturn(mv)
         } else {
@@ -724,8 +730,28 @@ open class FunctionGenerator(
         mv.visitVarInsn(Opcodes.ALOAD, arr)
         arguments.forEachIndexed { index, arg ->
             generateLoadInt(index)
-            generateLoad(mv, arg)
-            generateBoxingIfNeeded(arg.type!!)
+            val argType = arg.type
+            if (elementType is GroundedType && elementType.isGroundedValue() &&
+                !(argType is GroundedType && argType.isGroundedValue())
+            ) {
+                // The list holds a primitive (grounded value) element type, but this arg is
+                // an Atom at runtime — e.g. a destructured `$v` in a seq-wrapped scalar `if`
+                // arm, whose type is Atom while the seq's element type comes from the other
+                // (List) arm. Unwrap the Grounded to its raw value and re-box to the element
+                // type so the singleton list is element-compatible with the other arm's List
+                // (mirrors generateMatchBranch's scalar-result coercion). Without this the
+                // consuming map?/flat-map? lambda unboxes the element and hits a
+                // Grounded→Number ClassCastException.
+                generateAtom(mv, arg, null, false)
+                unwrapGroundedToPrimitive(mv, elementType)
+                generateBoxingIfNeeded(elementType)
+            } else {
+                // Route the element load through generateAtom (not the raw generateLoad) so a
+                // destructured-pattern local loads from its slot rather than being looked up
+                // as a function parameter. Literals still take the `else -> generateLoad`
+                // path; needBoxing boxes primitives / leaves Atom references untouched.
+                generateAtom(mv, arg, null, false, needBoxing = true)
+            }
             mv.visitInsn(Opcodes.AASTORE)
             mv.visitVarInsn(Opcodes.ALOAD, arr)
         }
