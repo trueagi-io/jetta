@@ -29,8 +29,26 @@ open class FunctionGenerator(
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
+    // Whether this function's body actually touches the thread-local binding stack
+    // (`Matcher`). If it doesn't, the per-call `Matcher.push()`/`pop()` frame is a pure
+    // no-op — `push` adds an empty map and `pop` does `parent.putAll(emptyMap)` — so it
+    // can be elided. This removes the per-call binding-stack overhead from purely
+    // computational functions (e.g. compiled `fib`: primitive params, `if` + arithmetic +
+    // self-recursion, no match/destructuring). See [usesMatcher] for the criterion.
+    private val usesMatcher: Boolean = computeUsesMatcher()
+
     fun generate() {
         emitLineNumber(function)
+
+        if (!usesMatcher) {
+            // No binding-stack interaction: emit the body directly, no push/pop, no
+            // exception-safe finally (there is no frame to unwind). generateReturn also
+            // skips its pop when usesMatcher is false.
+            generateAtom(mv, function.body, null, true)
+            mv.visitMaxs(maxStack, maxLocals)
+            return
+        }
+
         val matcherType = RuntimeNames.MATCHER
 
         // Matcher.push()
@@ -55,6 +73,35 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.ATHROW)
 
         mv.visitMaxs(maxStack, maxLocals)
+    }
+
+    /**
+     * A function needs its `Matcher` frame iff its body reads or writes the binding stack.
+     * Conservative — any doubt returns true (keep the frame). It touches the Matcher when:
+     *  - it is multivalued (composes via `map?`/`flat-map?` → per-branch push/pop + BoundAtom);
+     *  - it has an `Atom`-typed parameter (resolved via `Matcher.resolveBinding` in dispatch);
+     *  - its body contains a `Match` (destructuring dispatch → resolveBinding / non-reduction
+     *    fallback), a `match` space query, a multivalued call, or a lambda.
+     * Lambdas (non-FunctionDefinition) always keep their frame — they run inside `simpleMap`/
+     * `simpleFlatMap`, whose per-branch bindings we must not disturb.
+     */
+    private fun computeUsesMatcher(): Boolean {
+        val fn = function as? FunctionDefinition ?: return true
+        if (fn.isMultivalued()) return true
+        if (fn.params.any { it.type == GroundedType.ATOM }) return true
+        return bodyTouchesMatcher(fn.body)
+    }
+
+    private fun bodyTouchesMatcher(atom: Atom): Boolean = when (atom) {
+        is Match -> true
+        is Lambda -> true
+        is Expression -> {
+            if (atom.atoms.isEmpty()) false
+            else if ((atom.atoms[0] as? Symbol)?.name == "match") true
+            else if (atom.resolved?.isMultiValued == true) true
+            else atom.atoms.any { bodyTouchesMatcher(it) }
+        }
+        else -> false
     }
 
     protected var maxStack = 0
@@ -893,13 +940,16 @@ open class FunctionGenerator(
     }
 
     private fun generateReturn(mv: MethodVisitor) {
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            RuntimeNames.MATCHER,
-            "pop",
-            "()V",
-            false
-        )
+        // Only balance the entry push when this function actually established a frame.
+        if (usesMatcher) {
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                RuntimeNames.MATCHER,
+                "pop",
+                "()V",
+                false
+            )
+        }
         if (function is FunctionDefinition && function.isMultivalued()) {
             mv.visitInsn(Opcodes.ARETURN)
             return
