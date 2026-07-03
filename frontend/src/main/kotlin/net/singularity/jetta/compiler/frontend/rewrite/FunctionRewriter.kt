@@ -257,7 +257,26 @@ class FunctionRewriter(
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
                 val params = mkFormalParams(list[0].pattern)
-                enforceMultivaluedAnn(name)
+                // A multi-clause (or constant-guarded) function compiles to a Match. It is
+                // STRUCTURALLY multivalued only when two clause heads can match the same
+                // input (overlapping patterns) — then reducing `(f a…)` yields several
+                // results. When the clauses are provably mutually exclusive, at most one
+                // branch matches, so the Match is single-valued at the match level; any
+                // remaining multivaluedness comes solely from the bodies (a `superpose` /
+                // `match` / multivalued-callee), which MarkMultivaluedFunctionsRewriter
+                // detects post-resolve and propagates. Only seed the annotation for the
+                // genuinely non-deterministic (overlapping) case; an exclusive Match then
+                // compiles to fast scalar dispatch (see FunctionGenerator.generateScalarMatch).
+                // Restrict scalar dispatch to a grounded-VALUE return type (Int/Double/Bool/…):
+                // those functions are computational (ev/lookup/fib) and benefit from raw
+                // primitive arithmetic. Symbolic, Atom-returning functions (d, deduce, And, a
+                // `(f X)/(f Y)` symbol mapper) stay multivalued even with exclusive clauses —
+                // they lean on the List machinery: lifting of reducible calls nested in data
+                // constructors, and the reduceOrInert space-unification fallback for free-var
+                // arguments (b2/b4 backchaining). Neither has a scalar equivalent yet.
+                if (!clausesAreMutuallyExclusive(list) || !returnsGroundedValue(arrowType)) {
+                    enforceMultivaluedAnn(name)
+                }
                 FunctionDefinition(
                     name,
                     params,
@@ -280,6 +299,71 @@ class FunctionRewriter(
         val list = annotations.getOrPut(name) { listOf() }.toMutableList()
         list.add(PredefinedAtoms.MULTIVALUED)
         annotations[name] = list
+    }
+
+    /**
+     * True when the function's declared return type is a grounded VALUE (Int/Double/Bool/
+     * Long/String) — a computational function that can go the scalar dispatch path. Null
+     * (untyped) or a symbolic/reference return (Atom, a data type) keeps the safe
+     * multivalued default. Inlines the value-type set to avoid a backend dependency.
+     */
+    private fun returnsGroundedValue(arrowType: ArrowType?): Boolean =
+        when (arrowType?.types?.lastOrNull()) {
+            GroundedType.INT, GroundedType.DOUBLE, GroundedType.BOOLEAN,
+            GroundedType.LONG, GroundedType.STRING -> true
+            else -> false
+        }
+
+    /**
+     * True when the clause heads are provably pairwise disjoint — no input can match
+     * two of them, so the merged Match yields at most one result. Sound but conservative:
+     * it only reports exclusivity on a *concrete* discriminant difference (distinct head
+     * symbol / literal / constructor tag at some argument position); anything it cannot
+     * prove disjoint (a variable/wildcard position, same-constructor patterns differing
+     * only deeper) is treated as possibly-overlapping, keeping the safe multivalued
+     * default. Single-clause functions are trivially exclusive.
+     */
+    private fun clausesAreMutuallyExclusive(list: List<Pattern>): Boolean {
+        if (list.size <= 1) return true
+        for (i in list.indices) {
+            for (j in i + 1 until list.size) {
+                if (!clausesDisjoint(list[i].pattern, list[j].pattern)) return false
+            }
+        }
+        return true
+    }
+
+    private fun clausesDisjoint(a: Expression, b: Expression): Boolean {
+        val aArgs = a.atoms.drop(1)
+        val bArgs = b.atoms.drop(1)
+        if (aArgs.size != bArgs.size) return true // different arity → cannot both match
+        // Disjoint iff some argument position carries two concrete, differing
+        // discriminants. A wildcard (variable) position never establishes disjointness.
+        return aArgs.indices.any { k ->
+            val da = discriminant(aArgs[k])
+            val db = discriminant(bArgs[k])
+            da != null && db != null && da != db
+        }
+    }
+
+    /**
+     * The concrete shape a pattern position matches on, or null for a wildcard (a
+     * variable, which matches anything). Two positions with differing non-null
+     * discriminants can never both match the same value; data-class equality gives a
+     * sound, collision-free comparison.
+     */
+    private sealed interface Discriminant {
+        data class Sym(val name: String) : Discriminant
+        data class Lit(val value: Any?) : Discriminant
+        data class Ctor(val head: String, val arity: Int) : Discriminant
+    }
+
+    private fun discriminant(atom: Atom): Discriminant? = when (atom) {
+        is Variable -> null
+        is Symbol -> Discriminant.Sym(atom.name)
+        is Grounded<*> -> Discriminant.Lit(atom.value)
+        is Expression -> (atom.atoms.firstOrNull() as? Symbol)?.let { Discriminant.Ctor(it.name, atom.atoms.size) }
+        else -> null
     }
 
     private fun mkMain(): List<Atom> {

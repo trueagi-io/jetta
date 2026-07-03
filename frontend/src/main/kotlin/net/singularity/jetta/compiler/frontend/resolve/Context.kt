@@ -957,6 +957,23 @@ class Context private constructor(
         return left == right
     }
 
+    /**
+     * Within an inert data constructor, resolve reducible sub-calls (applicative order)
+     * while leaving genuine data untouched. Descends through nested data constructors; when
+     * a sub-expression's head is a KNOWN function it is resolved as a call (so it carries
+     * `.resolved` + a concrete type and codegen evaluates it), otherwise the sub-atom stays
+     * inert. Pure symbols/literals/variables are left as-is.
+     */
+    private fun resolveNestedCallsInData(atom: Atom, scope: Scope) {
+        if (atom !is Expression) return
+        val headName = (atom.atoms.firstOrNull() as? Symbol)?.name
+        if (headName != null && resolve(headName) != null) {
+            resolveExpression(atom, scope)
+        } else {
+            atom.atoms.forEach { resolveNestedCallsInData(it, scope) }
+        }
+    }
+
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
         logger.trace { "Resolving atom: $atom" }
         when (atom) {
@@ -974,6 +991,12 @@ class Context private constructor(
                     resolve((head as? Symbol)?.name ?: "") == null
                 ) {
                     atom.type = GroundedType.ATOM
+                    // Applicative order: a data constructor does not suppress reduction of
+                    // its arguments. Descend through the (data) constructor and resolve any
+                    // reducible call nested inside — e.g. `(Cons (Bind $x (ev $e $env)) …)`,
+                    // so codegen evaluates `(ev …)` and stores its VALUE, not an inert thunk.
+                    // Pure data (symbols, literals, unknown sub-constructors) is left inert.
+                    atom.arguments().forEach { resolveNestedCallsInData(it, scope) }
                 } else {
                     resolveExpression(atom, scope)
                 }
