@@ -24,8 +24,32 @@ class SpaceImpl : Space {
     var enablePerCallBindings: Boolean = true
 
     override fun add(expression: Expression) {
+        val storeIndex = store.size
         store.add(expression)
+        // Keep every already-built index live: fold the new atom into each cached indexer
+        // incrementally (O(cached patterns), no store rescan) instead of invalidating. This
+        // is what makes a `match` immediately after an `add-atom` observe the new fact — for
+        // both lazily-built and pre-compiled (.jtsi) indexers, which all live in `indexers`.
+        indexers.values.forEach { it.indexOne(this, expression, storeIndex) }
     }
+
+    /**
+     * Remove the first structurally-equal stored atom. Removal shifts every later store
+     * position, invalidating the store-index references baked into the packed indexers, so
+     * the cached indexers are rebuilt against the compacted store. `remove-atom` is far
+     * rarer than `add-atom` (and seldom in a hot loop), so a rebuild here is an acceptable
+     * trade for keeping `add` incremental. Structural equality (Expression.equals compares
+     * atoms, ignoring id/type) matches the freshly-parsed atom against the stored one.
+     */
+    override fun remove(expression: Expression): Boolean {
+        val idx = store.indexOfFirst { it == expression }
+        if (idx < 0) return false
+        store.removeAt(idx)
+        indexers.values.forEach { it.index(this, it.pattern) }
+        return true
+    }
+
+    override fun getAtoms(): List<Expression> = store.toList()
 
     override fun mkIndex(patterns: List<Expression>) {
         patterns.forEach { pattern ->

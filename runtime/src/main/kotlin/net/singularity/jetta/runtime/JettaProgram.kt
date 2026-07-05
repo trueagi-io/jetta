@@ -97,6 +97,39 @@ open class JettaProgram {
         fun match(spaceName: String, src: Expression, dst: Atom): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst)
 
+        /** The unit atom `()` — hyperon's return value for the side-effecting space ops. */
+        private val UNIT_ATOM: Atom = Expression(emptyList())
+
+        /**
+         * `add-atom` — add [atom] to the space named [spaceName] as DATA (unreduced; the
+         * system-function signature types the argument `Atom`, suppressing call-site
+         * reduction, matching hyperon). The atom is folded into that space's live indexes
+         * immediately (see [net.singularity.jetta.runtime.space.SpaceImpl.add]), so a
+         * subsequent `match` observes it. Named with a hyphen — legal for a JVM method,
+         * and codegen emits the MeTTa symbol verbatim as the INVOKESTATIC target. Returns
+         * the unit atom `()` (an ordinary Atom, as in hyperon) rather than `Unit`/void, so
+         * the result composes as data when `add-atom` is nested in a larger expression.
+         */
+        @JvmStatic
+        fun `add-atom`(spaceName: String, atom: Atom): Atom {
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+                .add(atom as? Expression ?: Expression(listOf(atom)))
+            return UNIT_ATOM
+        }
+
+        /** `remove-atom` — remove the first atom structurally equal to [atom] from [spaceName]. */
+        @JvmStatic
+        fun `remove-atom`(spaceName: String, atom: Atom): Atom {
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+                .remove(atom as? Expression ?: Expression(listOf(atom)))
+            return UNIT_ATOM
+        }
+
+        /** `get-atoms` — the full non-deterministic bag of atoms currently in [spaceName]. */
+        @JvmStatic
+        fun `get-atoms`(spaceName: String): List<Atom> =
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
+
         /**
          * Like [match], but each result is fed through [templateFn] for nested evaluation.
          * The template function receives the fully substituted template atom and returns

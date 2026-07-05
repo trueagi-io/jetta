@@ -84,6 +84,46 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // Space mutation built-ins. First arg is the space (an ATOM in the arrow type; `&self`
+    // lowers to the module's space-name String at the call site, exactly like `match`). The
+    // atom arg is typed ATOM so the resolver does NOT reduce it — `add-atom` stores data
+    // verbatim (hyperon's `add-reduct` is the reducing variant). `add-atom`/`remove-atom`
+    // return the unit atom `()` (an ATOM value, as in hyperon — NOT void: a void/UNIT
+    // return can't be unboxed when the call is nested in a lambda-lifted context); not
+    // multivalued. `get-atoms` returns the space's atom bag (multivalued).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "add-atom",
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "remove-atom",
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-atoms",
+                descriptor = "(Ljava/lang/String;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
