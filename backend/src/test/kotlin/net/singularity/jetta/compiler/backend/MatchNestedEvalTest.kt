@@ -156,13 +156,12 @@ class MatchNestedEvalTest : GeneratorTestBase() {
                 "combine", Atom::class.java, Atom::class.java
             )
 
-            // combine(X, Y): f(X)=[A], f(Y)=[B], myPair(A, B)=[(Pair A B)]
-            val results = combineMethod.invoke(null, Symbol("X"), Symbol("Y")) as List<*>
-            assertTrue(results.isNotEmpty(), "combine(X, Y) should produce results from both f calls")
-            assertTrue(
-                results.any { it.toString() == "(Pair A B)" },
-                "Expected (Pair A B) in results but got: $results"
-            )
+            // f/myPair/combine are all DETERMINISTIC (exclusive/single clause, only ever
+            // called with ground args) so they compile to scalar dispatch: combine(X, Y)
+            // reduces f(X)=A, f(Y)=B, myPair(A, B)=(Pair A B) to a single Atom, matching
+            // hyperon (a deterministic reduction yields one value, not a singleton bag).
+            val result = combineMethod.invoke(null, Symbol("X"), Symbol("Y"))
+            assertEquals("(Pair A B)", result.toString(), "Expected scalar (Pair A B) but got: $result")
         }
     }
 

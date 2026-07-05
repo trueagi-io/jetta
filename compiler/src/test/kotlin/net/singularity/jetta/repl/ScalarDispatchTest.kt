@@ -66,4 +66,23 @@ class ScalarDispatchTest {
             assertEquals("144", it.result.toString()) // n := (2+10); n*n = 144 — value, not thunk
         }
     }
+
+    /**
+     * An ATOM-returning function (not a grounded value) also compiles to scalar dispatch
+     * when it is FUNCTIONAL: exclusive clause heads and only ever called with ground/bound
+     * arguments. It reduces to a single Atom, not a singleton bag. This is what frees the
+     * symbolic differentiator `d`; the old gate kept every Atom-returning function
+     * multivalued regardless. The relational counterpart — an Atom-returning function
+     * called with a free-variable argument, which must stay multivalued for the
+     * space-unification fallback — is covered by MettaB2BackchainTest.
+     */
+    @Test
+    fun `functional atom-returning function is scalar`() {
+        val r = ReplImpl()
+        r.eval("(= (tag A) (Wrap A))\n(= (tag B) (Wrap B))")
+        r.eval("!(tag A)").let {
+            assertTrue(it.isSuccess, it.messages.toString())
+            assertEquals("(Wrap A)", it.result.toString()) // scalar Atom, not [(Wrap A)]
+        }
+    }
 }

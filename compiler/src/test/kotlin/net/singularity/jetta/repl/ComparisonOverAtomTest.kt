@@ -18,17 +18,19 @@ class ComparisonOverAtomTest {
     @Test
     fun `equality of a destructured value against an int literal`() {
         val r = repl()
+        // pick has one exclusive clause and only ground call args → scalar dispatch,
+        // so the deterministic reduction yields a bare value, not a singleton bag.
         r.eval("(= (pick (Pair _a _b)) (if (== _a 0) _b _a))".d())
-        r.eval("""!(pick (Pair 0 7))""").let { assertTrue(it.isSuccess); assertEquals("[7]", it.result.toString()) }
-        r.eval("""!(pick (Pair 3 7))""").let { assertTrue(it.isSuccess); assertEquals("[3]", it.result.toString()) }
+        r.eval("""!(pick (Pair 0 7))""").let { assertTrue(it.isSuccess); assertEquals("7", it.result.toString()) }
+        r.eval("""!(pick (Pair 3 7))""").let { assertTrue(it.isSuccess); assertEquals("3", it.result.toString()) }
     }
 
     @Test
     fun `ordering of two destructured values`() {
         val r = repl()
         r.eval("(= (mx (Pair _a _b)) (if (> _a _b) _a _b))".d())
-        r.eval("""!(mx (Pair 3 8))""").let { assertTrue(it.isSuccess); assertEquals("[8]", it.result.toString()) }
-        r.eval("""!(mx (Pair 9 2))""").let { assertTrue(it.isSuccess); assertEquals("[9]", it.result.toString()) }
+        r.eval("""!(mx (Pair 3 8))""").let { assertTrue(it.isSuccess); assertEquals("8", it.result.toString()) }
+        r.eval("""!(mx (Pair 9 2))""").let { assertTrue(it.isSuccess); assertEquals("9", it.result.toString()) }
     }
 
     @Test

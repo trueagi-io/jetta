@@ -240,8 +240,9 @@ class FunctionRewriter(
         return result
     }
 
-    private fun mkFunctions(): List<Atom> =
-        patterns.map { (name, list) ->
+    private fun mkFunctions(): List<Atom> {
+        val relationalCallees = computeRelationalCallees()
+        return patterns.map { (name, list) ->
             if (list.size == 1 && !hasConstantsInPattern(list[0].pattern) &&
                 !hasRepeatedVariables(list[0].pattern)
             ) {
@@ -267,14 +268,24 @@ class FunctionRewriter(
                 // detects post-resolve and propagates. Only seed the annotation for the
                 // genuinely non-deterministic (overlapping) case; an exclusive Match then
                 // compiles to fast scalar dispatch (see FunctionGenerator.generateScalarMatch).
-                // Restrict scalar dispatch to a grounded-VALUE return type (Int/Double/Bool/…):
-                // those functions are computational (ev/lookup/fib) and benefit from raw
-                // primitive arithmetic. Symbolic, Atom-returning functions (d, deduce, And, a
-                // `(f X)/(f Y)` symbol mapper) stay multivalued even with exclusive clauses —
-                // they lean on the List machinery: lifting of reducible calls nested in data
-                // constructors, and the reduceOrInert space-unification fallback for free-var
-                // arguments (b2/b4 backchaining). Neither has a scalar equivalent yet.
-                if (!clausesAreMutuallyExclusive(list) || !returnsGroundedValue(arrowType)) {
+                //
+                // Beyond overlap, an Atom-returning function must ALSO stay multivalued when
+                // it is called RELATIONALLY — some call site passes a FREE (unbound) variable
+                // argument (b2/b4 backchaining `(prevents (making $y) …)`). A free-var arg
+                // cannot be bound by the compiled ==-dispatch, so reduction must fall to the
+                // space-unification path (JettaCallSite.reduceOrInert) that ONLY the
+                // multivalued Match provides; the scalar fallback (nonReduced) merely returns
+                // the inert form. A function whose args are always ground/bound is FUNCTIONAL
+                // (0-or-1 result: d, ev, lookup, a `(f X)/(f Y)` symbol mapper) and compiles
+                // to scalar dispatch even when it returns an Atom. A grounded-VALUE return
+                // (Int/Double/Bool/…) is always scalar-eligible regardless — an Int can never
+                // be a free-var query result, so it never needs reduceOrInert. This subsumes
+                // and widens the old grounded-value-only gate: it additionally frees the
+                // symbolic differentiator `d`, whose recursion `(d $a)`/`(d $b)` only ever
+                // passes pattern-bound (ground) arguments. See computeRelationalCallees.
+                if (!clausesAreMutuallyExclusive(list) ||
+                    (!returnsGroundedValue(arrowType) && name in relationalCallees)
+                ) {
                     enforceMultivaluedAnn(name)
                 }
                 FunctionDefinition(
@@ -294,6 +305,44 @@ class FunctionRewriter(
                 )
             }
         }
+    }
+
+    /**
+     * Whole-program set of function names that are ever called RELATIONALLY — i.e. some
+     * call site anywhere passes an argument that carries a FREE (unbound) variable. Such
+     * a call needs the space-unification fallback ([reduceOrInert]) to bind the free var,
+     * which only the multivalued Match code path emits; so a relational callee must NOT be
+     * de-marked into scalar dispatch.
+     *
+     * Soundness by over-approximation toward "relational": the bound set at a call site is
+     * just the enclosing clause's LHS pattern variables (top-level runs bind nothing), and
+     * ANY free variable appearing anywhere inside an argument — even nested under a
+     * reducible sub-call — counts. Both choices can only ADD names to the set, i.e. keep a
+     * function multivalued. That is the safe direction: a functional fn mis-flagged
+     * relational merely misses the scalar optimization, whereas a relational fn mis-flagged
+     * functional would lose reduceOrInert and reduce incorrectly. A function is freed to
+     * scalar only when NO call site can pass it a free var (d/ev/lookup/fib).
+     */
+    private fun computeRelationalCallees(): Set<String> {
+        val relational = mutableSetOf<String>()
+
+        fun walk(atom: Atom, bound: Set<String>) {
+            if (atom !is Expression) return
+            (atom.atoms.firstOrNull() as? Symbol)?.let { head ->
+                val argsHaveFreeVar = atom.atoms.drop(1).any { arg ->
+                    collectVariableNames(arg).any { it !in bound }
+                }
+                if (argsHaveFreeVar) relational.add(head.name)
+            }
+            atom.atoms.forEach { walk(it, bound) }
+        }
+
+        patterns.forEach { (_, list) ->
+            list.forEach { p -> walk(p.value, collectVariableNames(p.pattern)) }
+        }
+        runs.forEach { walk(it, emptySet()) }
+        return relational
+    }
 
     private fun enforceMultivaluedAnn(name: String) {
         val list = annotations.getOrPut(name) { listOf() }.toMutableList()
