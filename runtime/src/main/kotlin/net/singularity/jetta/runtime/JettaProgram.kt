@@ -49,16 +49,38 @@ open class JettaProgram {
          * registered under [programName] and nothing else is loaded.
          */
         @JvmStatic
-        fun init(programName: String) {
+        fun init(programName: String) = initInternal(programName, null, null)
+
+        /**
+         * Init with a space fingerprint baked into the compiled program (see `SpaceDigest`).
+         * Emitted by the AOT `__main`. When artifacts ARE present, verifies they carry the
+         * SAME fingerprint the program was compiled against; a mismatch throws a clear error
+         * rather than silently running against stale/wrong artifacts (which surfaces only as
+         * incorrect `match` results). Missing artifacts stay lenient (empty space) — a
+         * program's `=` rules are compiled to functions, so most never touch the space. The
+         * fingerprint is stored on both sides at compile time, so a correct artifact pair
+         * always matches — this can never reject a valid run.
+         */
+        @JvmStatic
+        fun init(programName: String, expectedAtomCount: Int, expectedContentHash: String) =
+            initInternal(programName, expectedAtomCount, expectedContentHash)
+
+        private fun initInternal(programName: String, expectedAtomCount: Int?, expectedContentHash: String?) {
             SpaceRegistry.reset()
             Matcher.getBindings().clear()
             currentSpaceName = programName
+
+            // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
+            // directory regardless of cwd. The intended way to run a compiled program from
+            // anywhere (the `bin/jetta` output lives beside the .class files under `-d`).
+            System.getProperty("jetta.dataDir")?.let { dataDir = Path.of(it) }
 
             // Same-JVM execution (REPL / in-process run): there is no `.jtsf` round-trip,
             // so the program's rules live in the live compile-time space, not on disk.
             // Register THAT space under the running name so runtime `match &self …` finds
             // them — instead of the fresh empty space the disk path would create. (The
-            // env is installed by the producer for the duration of the run.)
+            // env is installed by the producer for the duration of the run.) The live space
+            // is authoritative, so the fingerprint check does not apply here.
             JitEnvRegistry.current()?.let { env ->
                 SpaceRegistry.register(SpaceId.FromModule(programName), env.space)
                 return
@@ -66,11 +88,27 @@ open class JettaProgram {
 
             val manifestFile = dataDir.resolve("$programName.manifest.json")
             if (!manifestFile.exists()) {
+                // No artifacts at dataDir → run against an empty space, as before. A MISSING
+                // .jtsf is intentionally NOT an error: a program's `=` rules are compiled to
+                // functions, so most programs never query the space and run fine without it.
+                // The fingerprint check below fires only when artifacts ARE present but were
+                // produced by a different build ("нашли не то" — found the wrong thing).
+                // Point the loader at the artifacts with -Djetta.dataDir when `match &self`
+                // over compiled facts is actually needed.
                 SpaceRegistry.register(SpaceId.FromModule(programName), SpaceImpl())
                 return
             }
 
             val (entrySpace, manifest) = SpaceDirectorySerializer.loadWithManifest(dataDir, programName)
+
+            // Artifacts found — verify they belong to THIS compiled program. A mismatch means
+            // stale or wrong .jtsf/manifest next to (or ahead of) the class on the classpath.
+            if (expectedAtomCount != null && expectedContentHash != null &&
+                (manifest.atomCount != expectedAtomCount || manifest.contentHash != expectedContentHash)
+            ) {
+                throw spaceMismatch(programName, expectedAtomCount, expectedContentHash, manifest)
+            }
+
             SpaceRegistry.register(SpaceId.FromModule(programName), entrySpace)
 
             when (val ext = manifest.extension) {
@@ -83,6 +121,25 @@ open class JettaProgram {
                 is ManifestExtension.Alias ->
                     TODO("Track 2F — alias-strategy runtime loading not yet implemented")
             }
+        }
+
+        private fun spaceMismatch(
+            programName: String,
+            expectedCount: Int,
+            expectedHash: String?,
+            loaded: net.singularity.jetta.runtime.space.ManifestV2?,
+        ): IllegalStateException {
+            val found = if (loaded == null) {
+                "no space artifacts were found under '${dataDir.toAbsolutePath()}'"
+            } else {
+                "the artifacts there hold ${loaded.atomCount} atoms (fingerprint ${loaded.contentHash})"
+            }
+            return IllegalStateException(
+                "JeTTa space artifact mismatch for program '$programName': it was compiled " +
+                    "expecting $expectedCount atoms (fingerprint ${expectedHash ?: "?"}), but $found. " +
+                    "The .jtsf/.manifest.json are stale, from a different build, or absent — " +
+                    "recompile with bin/jettac, or run from the -d output directory (or set -Djetta.dataDir)."
+            )
         }
 
         /**

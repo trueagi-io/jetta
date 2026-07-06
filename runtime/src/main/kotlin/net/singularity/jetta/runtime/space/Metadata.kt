@@ -43,6 +43,9 @@ sealed interface ManifestExtension {
  * - [kind] mirrors `StorageStrategy.kind` so `JettaProgram.init` can dispatch to the
  *   right loader.
  * - [extension] carries strategy-specific data (e.g. DeepCopy's loadModules list).
+ * - [atomCount] / [contentHash] are the space fingerprint (see `SpaceDigest`), also baked
+ *   into the compiled program; `JettaProgram.init` compares the two to detect a
+ *   wrong/stale/absent artifact pair. Default 0/"" keeps older manifests loadable.
  */
 data class ManifestV2(
     val version: Int = 2,
@@ -52,6 +55,8 @@ data class ManifestV2(
     val created: Instant,
     val indices: List<IndexMetadata>,
     val extension: ManifestExtension,
+    val atomCount: Int = 0,
+    val contentHash: String = "",
 )
 
 /**

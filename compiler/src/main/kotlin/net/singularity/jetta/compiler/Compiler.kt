@@ -26,6 +26,7 @@ import net.singularity.jetta.compiler.frontend.ir.formatter.TextIrFormatter
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.compiler.storage.DeepCopyStrategy
+import net.singularity.jetta.compiler.storage.SpaceDigest
 import net.singularity.jetta.compiler.storage.StorageStrategy
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceImpl
@@ -144,10 +145,16 @@ class Compiler(
         // resolved[i] corresponds to allSources[i]. The strategy keys spaces by the
         // pre-rewrite ParsedSource (allSources[i]); save under the post-resolver
         // source's class name to match the bytecode that will look it up at runtime.
+        // The space fingerprint is computed once per module here and written to BOTH the
+        // manifest and (below) the compiled class, so JettaProgram.init can verify the
+        // artifacts loaded at runtime are the ones this program was compiled against.
+        val fingerprints = mutableMapOf<String, SpaceDigest.Fingerprint>()
         allSources.forEachIndexed { i, preRewriteSource ->
             val resolvedSource = resolved[i]
             val programName = resolvedSource.getJvmClassName().substringAfterLast('/')
             val space = (spaces[preRewriteSource] as? SpaceImpl) ?: SpaceImpl()
+            val fingerprint = SpaceDigest.of(space.getAtoms())
+            fingerprints[programName] = fingerprint
             val ext = storageStrategy.manifestExtensionFor(preRewriteSource, cache, importsBySource)
             SpaceDirectorySerializer.save(
                 space = space,
@@ -155,13 +162,22 @@ class Compiler(
                 programName = programName,
                 manifestExtension = ext,
                 strategyKind = storageStrategy.kind,
+                atomCount = fingerprint.atomCount,
+                contentHash = fingerprint.contentHash,
             )
         }
 
         resolved.forEach {
             // autoTable = true: AOT is a closed world (rules fixed at compile), so memoizing
             // pure/deterministic recursive functions is sound without cache invalidation.
-            val generator = Generator(generateMain = true, autoTable = true)
+            val programName = it.getJvmClassName().substringAfterLast('/')
+            val fingerprint = fingerprints[programName]
+            val generator = Generator(
+                generateMain = true,
+                autoTable = true,
+                spaceAtomCount = fingerprint?.atomCount,
+                spaceContentHash = fingerprint?.contentHash,
+            )
             val compiled = generator.generate(it)
             compiled.forEach(::writeResult)
         }

@@ -35,6 +35,8 @@ object SpaceDirectorySerializer {
         spaceId: UUID = UUID.randomUUID(),
         manifestExtension: ManifestExtension = ManifestExtension.DeepCopy(emptyList()),
         strategyKind: String = "deep-copy",
+        atomCount: Int = 0,
+        contentHash: String = "",
     ) {
         if (!directory.exists()) {
             directory.createDirectories()
@@ -56,6 +58,8 @@ object SpaceDirectorySerializer {
             created = Instant.now(),
             indices = indexMetadataList,
             extension = manifestExtension,
+            atomCount = atomCount,
+            contentHash = contentHash,
         )
         ManifestSerializer.save(manifest, manifestFile)
     }

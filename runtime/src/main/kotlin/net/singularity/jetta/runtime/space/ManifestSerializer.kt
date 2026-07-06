@@ -50,6 +50,8 @@ object ManifestSerializer {
         val indices: List<IndexMetadataDto>,
         val loadModules: List<ModuleLoadDto> = emptyList(),
         val aliases: List<String> = emptyList(),
+        val atomCount: Int = 0,
+        val contentHash: String = "",
     )
 
     fun save(manifest: ManifestV2, path: Path) {
@@ -76,6 +78,8 @@ object ManifestSerializer {
             },
             loadModules = loadModules,
             aliases = aliases,
+            atomCount = manifest.atomCount,
+            contentHash = manifest.contentHash,
         )
 
         Files.writeString(path, json.encodeToString(dto))
@@ -130,6 +134,8 @@ object ManifestSerializer {
                 )
             },
             extension = extension,
+            atomCount = dto.atomCount,
+            contentHash = dto.contentHash,
         )
     }
 }

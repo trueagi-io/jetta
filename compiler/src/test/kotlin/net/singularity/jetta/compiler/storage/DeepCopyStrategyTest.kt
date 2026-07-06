@@ -139,8 +139,10 @@ class DeepCopyStrategyTest {
         // Run via a fresh JVM with the test JVM's classpath plus the compile output
         // directory. java.class.path already carries runtime/frontend-api/backend, so
         // JettaProgram + SpaceImpl + the compiled mainx/utilsx classes resolve cleanly.
+        // -Djetta.dataDir points the space loader at the artifacts dir (the subprocess cwd
+        // is the test's working dir, not `out`), so init's fingerprint check finds them.
         val classpath = "${out.toAbsolutePath()}${File.pathSeparator}${System.getProperty("java.class.path")}"
-        val proc = ProcessBuilder("java", "-cp", classpath, "mainx")
+        val proc = ProcessBuilder("java", "-Djetta.dataDir=${out.toAbsolutePath()}", "-cp", classpath, "mainx")
             .redirectErrorStream(true)
             .start()
         val output = proc.inputStream.bufferedReader().readText()

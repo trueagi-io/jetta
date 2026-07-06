@@ -26,6 +26,14 @@ class Generator(
     val generateMain: Boolean = false,
     private val spaceNameOverride: String? = null,
     private val autoTable: Boolean = false,
+    /**
+     * The compile-time space fingerprint (see `SpaceDigest`). When both are non-null the
+     * `__main` init call is emitted with them so the runtime can verify the loaded
+     * artifacts match this program; null (REPL / JIT-eval / tests) emits the plain
+     * `init(String)` that skips the check.
+     */
+    private val spaceAtomCount: Int? = null,
+    private val spaceContentHash: String? = null,
 ) {
     private var lambdaCount = 1
 
@@ -91,13 +99,27 @@ class Generator(
                     )
                     if (node.name == FunctionRewriter.MAIN) {
                         mv.visitLdcInsn(moduleSpaceName)
-                        mv.visitMethodInsn(
-                            Opcodes.INVOKESTATIC,
-                            "net/singularity/jetta/runtime/JettaProgram",
-                            "init",
-                            "(Ljava/lang/String;)V",
-                            false
-                        )
+                        if (spaceAtomCount != null && spaceContentHash != null) {
+                            // init(name, expectedAtomCount, expectedContentHash) — verifies the
+                            // loaded .jtsf/manifest carries this program's space fingerprint.
+                            mv.visitLdcInsn(spaceAtomCount)
+                            mv.visitLdcInsn(spaceContentHash)
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/JettaProgram",
+                                "init",
+                                "(Ljava/lang/String;ILjava/lang/String;)V",
+                                false
+                            )
+                        } else {
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/JettaProgram",
+                                "init",
+                                "(Ljava/lang/String;)V",
+                                false
+                            )
+                        }
                     }
                     FunctionGenerator(mv, node, true, null, moduleSpaceName, className).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
