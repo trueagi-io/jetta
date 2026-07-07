@@ -32,6 +32,24 @@ class NamedSpaceMatchTest {
     }
 
     @Test
+    fun `match works indirectly through a variable space argument`() {
+        // A match-wrapper: `$sp` is bound to a named space at the call. `match`'s space
+        // parameter is Object, and JettaProgram.match resolves the Symbol to its space name,
+        // so the wrapped `(match $sp …)` no longer VerifyErrors on an Atom-vs-String space.
+        ReplImpl().eval(
+            """
+            (= (query _sp _p _r) (match _sp _p _r))
+            !(add-atom &kb (foo a))
+            !(add-atom &kb (foo b))
+            !(collapse (query &kb (foo _x) _x))
+            """.trimIndent().d()
+        ).let {
+            assertTrue(it.isSuccess, it.messages.toString())
+            assertEquals("(a b)", it.result.toString())
+        }
+    }
+
+    @Test
     fun `bare-variable pattern matches every atom (match-all)`() {
         ReplImpl().eval(
             """

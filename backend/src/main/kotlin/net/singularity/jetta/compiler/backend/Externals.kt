@@ -67,11 +67,14 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "match",
-                // Pattern arg is Atom (not Expression) so a bare-variable match-all pattern
-                // `(match &kb $x $x)` is legal; JettaProgram.match dispatches on its shape.
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                // Space arg is Object (not String) so `match` works INDIRECTLY too — when the
+                // space arrives through a variable as an Atom (e.g. a match-single wrapper),
+                // not just as a baked-in name String. Pattern arg is Atom (not Expression) so
+                // a bare-variable match-all pattern `(match &kb $x $x)` is legal.
+                // JettaProgram.match resolves the space name and dispatches on the pattern shape.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true
         )
     )

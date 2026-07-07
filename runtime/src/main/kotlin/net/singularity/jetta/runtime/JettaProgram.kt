@@ -144,12 +144,14 @@ open class JettaProgram {
         }
 
         /**
-         * Match [src] against the space identified by [spaceName].
+         * Match [src] against the space identified by [space].
          *
-         * The space-name string is baked into bytecode at codegen time — every `match`
-         * call site carries the name of the module that produced it. Resolution happens
-         * here via [SpaceRegistry.getOrCreate]; an unfamiliar id auto-creates an empty
-         * space, which is the right behaviour for cold starts.
+         * [space] is `Object`, not `String`, so `match` works both DIRECTLY — where codegen
+         * bakes the space name in as a String LDC (`&self` → the module name, `&kb` → "&kb")
+         * — and INDIRECTLY, where the space arrives through a variable as an [Atom] (e.g.
+         * `(= (match-single $space $pat $ret) (once (match $space $pat $ret)))`). A String is
+         * the name verbatim; a `Symbol` name is the space name, with `&self` resolved to the
+         * running program ([currentSpaceName]). See [resolveSpaceName].
          *
          * [src] is typed `Atom` (not `Expression`) so a bare-VARIABLE pattern like
          * `(match &kb $x $x)` — which matches EVERY atom — is legal. Such a pattern can't
@@ -160,8 +162,25 @@ open class JettaProgram {
          * matches nothing.
          */
         @JvmStatic
-        fun match(spaceName: String, src: Atom, dst: Atom): List<Atom> {
-            val space = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+        fun match(space: Any?, src: Atom, dst: Atom): List<Atom> {
+            val spaceObj = SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
+            return matchIn(spaceObj, src, dst)
+        }
+
+        /**
+         * Resolve a space reference to its registry name. Direct call sites pass a String;
+         * indirect ones pass the [Atom] a variable is bound to — a `Symbol` whose name is the
+         * space name (`&self` → the running program's name; `&kb`/`&wuspace` → that literal).
+         */
+        private fun resolveSpaceName(space: Any?): String = when (space) {
+            is String -> space
+            is BoundAtom -> resolveSpaceName(space.atom)
+            is net.singularity.jetta.compiler.frontend.ir.Symbol ->
+                if (space.name == "&self") currentSpaceName ?: space.name else space.name
+            else -> currentSpaceName ?: ""
+        }
+
+        private fun matchIn(space: net.singularity.jetta.runtime.space.Space, src: Atom, dst: Atom): List<Atom> {
             return when (src) {
                 is Expression -> space.match(src, dst)
                 is Variable -> space.getAtoms().map { atom ->
