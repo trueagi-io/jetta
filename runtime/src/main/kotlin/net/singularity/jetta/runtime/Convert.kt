@@ -43,4 +43,41 @@ object Convert {
             else -> Expression(listOf(unwrap(value)))
         }
     }
+
+    /**
+     * `once` — a non-determinism barrier that keeps only the FIRST result of its argument.
+     * The multivalued argument arrives as the full [List] (like `collapse`); `once` returns
+     * its first element (unwrapping the per-branch [BoundAtom] to the substituted value), or
+     * the unit atom `()` when there are no results. Used to make a query deterministic, e.g.
+     * `(once (match &self …))`.
+     */
+    @JvmStatic
+    fun once(value: Any?): Atom {
+        val first = when (value) {
+            is List<*> -> value.firstOrNull()
+            else -> value
+        } ?: return Expression(emptyList())
+        return (if (first is BoundAtom) first.atom else first) as Atom
+    }
+
+    /**
+     * `msort` — sort the elements of a tuple into a canonical (deterministic) order, by the
+     * atoms' textual form. Its typical use is `(msort (collapse …))`: `collapse` gathers a
+     * nondeterministic bag into an [Expression], and `msort` makes that bag order-independent
+     * so it can be compared against an expected literal. A non-Expression argument (already a
+     * single value) is returned unchanged.
+     */
+    @JvmStatic
+    fun msort(value: Any?): Atom {
+        val atom = when (value) {
+            is BoundAtom -> value.atom
+            is Atom -> value
+            is List<*> -> Expression(value.map { (if (it is BoundAtom) it.atom else it) as Atom })
+            else -> return Expression(emptyList())
+        }
+        return when (atom) {
+            is Expression -> Expression(atom.atoms.sortedBy { it.toString() })
+            else -> atom
+        }
+    }
 }

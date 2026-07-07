@@ -135,6 +135,33 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // msort — sort a tuple (typically the result of `collapse`) into a canonical order so a
+    // nondeterministic bag can be compared against a literal. ANY param → the argument is
+    // reduced (the `collapse` runs) before sorting; single-valued (returns one Atom).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "msort",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
+    // once — non-determinism barrier keeping only the first result (see CanonicalFormRewriter
+    // / MarkMultivaluedFunctionsRewriter BARRIER_FUNCTIONS, which route the full bag here).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "once",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
     // eval — the JIT-eval primitive. `(eval (quote EXPR))` hands the inert EXPR to
     // JettaJit, which compiles+loads+invokes it at call time and returns the result bag.
     // The argument must arrive as DATA (hence `quote`): the param type Atom keeps the
