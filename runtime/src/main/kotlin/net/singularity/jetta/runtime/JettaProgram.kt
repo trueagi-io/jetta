@@ -3,6 +3,8 @@ package net.singularity.jetta.runtime
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Grounded
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
@@ -29,6 +31,13 @@ open class JettaProgram {
 
         @JvmStatic
         fun currentSpaceName(): String? = currentSpaceName
+
+        /**
+         * Tokens bound by `bind!` (token name → bound atom, typically a state cell). Reset per
+         * program in [init]. Concurrent map for parity with SpaceRegistry, though the current
+         * pipeline runs a single program per JVM.
+         */
+        private val tokens = java.util.concurrent.ConcurrentHashMap<String, Atom>()
 
         @JvmStatic
         fun setDataDir(path: Path) {
@@ -69,6 +78,7 @@ open class JettaProgram {
         private fun initInternal(programName: String, expectedAtomCount: Int?, expectedContentHash: String?) {
             SpaceRegistry.reset()
             Matcher.getBindings().clear()
+            tokens.clear()
             currentSpaceName = programName
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
@@ -230,6 +240,53 @@ open class JettaProgram {
         @JvmStatic
         fun `get-atoms`(spaceName: String): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
+
+        // --- mutable state (hyperon `new-state`/`get-state`/`change-state!` + `bind!`) ------
+        //
+        // A state is a mutable [StateCell] wrapped in a Grounded atom. `bind!` names it via a
+        // token in [tokens]; `get-state`/`change-state!` accept either that token (a Symbol,
+        // resolved through the registry) or the state atom directly. The value arguments are
+        // stored as data (ATOM params suppress reduction), matching hyperon.
+
+        /** `new-state` — create a fresh mutable cell holding [value]. */
+        @JvmStatic
+        fun `new-state`(value: Atom): Atom = Grounded(StateCell(value))
+
+        /**
+         * `bind!` — bind [token] (a Symbol name) to [value] in the token registry. [value] is
+         * reduced at the call site (ANY param), so `(bind! s (new-state x))` stores the cell.
+         */
+        @JvmStatic
+        fun `bind!`(token: Atom, value: Any?): Atom {
+            val name = (token as? Symbol)?.name ?: token.toString()
+            tokens[name] = (if (value is BoundAtom) value.atom else value) as Atom
+            return UNIT_ATOM
+        }
+
+        /** `get-state` — the current value of the state [token] refers to (or is). */
+        @JvmStatic
+        fun `get-state`(token: Atom): Atom =
+            cellOf(token)?.value ?: nonReducedState("get-state", token)
+
+        /** `change-state!` — set the state's value to [newValue]; returns the state atom. */
+        @JvmStatic
+        fun `change-state!`(token: Atom, newValue: Atom): Atom {
+            val cell = cellOf(token) ?: return nonReducedState("change-state!", token)
+            cell.value = newValue
+            return Grounded(cell)
+        }
+
+        /** Resolve a state token/atom to its [StateCell]: a bound Symbol via [tokens], or a state atom directly. */
+        private fun cellOf(token: Atom): StateCell? {
+            val resolved = when (token) {
+                is Symbol -> tokens[token.name] ?: token
+                is BoundAtom -> token.atom
+                else -> token
+            }
+            return ((resolved as? Grounded<*>)?.value as? StateCell)
+        }
+
+        private fun nonReducedState(op: String, token: Atom): Atom = Expression(listOf(Symbol(op), token))
 
         /**
          * Like [match], but each result is fed through [templateFn] for nested evaluation.
