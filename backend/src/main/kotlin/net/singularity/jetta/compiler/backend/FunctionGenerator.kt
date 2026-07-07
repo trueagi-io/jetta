@@ -294,7 +294,14 @@ open class FunctionGenerator(
                         // The resolver already stamps these as inert ATOM data; quote
                         // the whole expression so it lives as a runtime Expression atom
                         // (runtime dispatch may still reduce it via space rules).
-                        generateQuote(mv, atom)
+                        // Applicative order (symmetric with the unresolved-Symbol-head
+                        // case above): in this value position, a reducible SCALAR call
+                        // among the tuple elements is evaluated for its value/side effect
+                        // — e.g. `(hide ((add-atom …) (remove-atom …)))` must run its
+                        // element calls. Genuinely inert data (elements with
+                        // resolved == null, like `(stop ventilation)`) stays quoted, so
+                        // `superpose`'s data tuples are unaffected.
+                        generateQuote(mv, atom, evalCalls = true)
                     }
                 }
             }

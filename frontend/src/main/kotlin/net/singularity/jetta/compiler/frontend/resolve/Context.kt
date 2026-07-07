@@ -757,10 +757,37 @@ class Context private constructor(
         val normalizedMain = normalizeMainForCodegen(source)
         val postprocessed = applyPostResolveRewriters(normalizedMain)
         messageCollector.clear()
+        registerUntypedFunctions(postprocessed)
         resolveSource(postprocessed)
         validateExecutableCalls(postprocessed)
         defaultUntypedToAtom(postprocessed)
         return postprocessed
+    }
+
+    /**
+     * After type inference has converged and the post-resolve rewriters have run, any
+     * user function still lacking an arrowType has a body whose type could not be
+     * inferred: a bare-variable identity body (`(= (I $x) $x)`) or a body headed by an
+     * unresolved symbol (`(= (hide $x) (empty))`). In MeTTa these are ordinary rewrite
+     * rules — `(I 5)` and `(hide …)` must still reduce — so default their signature to
+     * Atom and register them. Without this the final [resolveSource] below leaves such
+     * calls inert: `resolve(name)` returns null, the call gets no `.resolved`, and
+     * codegen quotes it as data (so an argument's applicative side effects are lost).
+     * [defaultUntypedToAtom] fabricates the same arrowType for the method body later, but
+     * it runs *after* call-site resolution — too late to turn the call into an
+     * INVOKESTATIC. Only `=`-rule heads reach here as FunctionDefinitions (plain data
+     * facts are space atoms, never functions), so genuine data constructors are untouched.
+     */
+    private fun registerUntypedFunctions(source: ParsedSource) {
+        val owner = source.getJvmClassName()
+        source.code.forEach { fd ->
+            if (fd is FunctionDefinition && fd.name != FunctionRewriter.MAIN && fd.arrowType == null) {
+                val paramTypes = fd.params.map { it.type ?: GroundedType.ATOM }
+                val returnType = fd.body.type ?: GroundedType.ATOM
+                fd.arrowType = ArrowType(paramTypes + returnType)
+                addResolvedFunction(owner, fd)
+            }
+        }
     }
 
     /**
@@ -996,7 +1023,12 @@ class Context private constructor(
                     // reducible call nested inside — e.g. `(Cons (Bind $x (ev $e $env)) …)`,
                     // so codegen evaluates `(ev …)` and stores its VALUE, not an inert thunk.
                     // Pure data (symbols, literals, unknown sub-constructors) is left inert.
-                    atom.arguments().forEach { resolveNestedCallsInData(it, scope) }
+                    // Scan ALL elements including the head: for a plain tuple whose head is
+                    // itself a call — `((add-atom …) (remove-atom …))`, the argument of
+                    // `hide`/`superpose` — element 0 is a value too and must be reduced.
+                    // A Symbol constructor head (`Cons`) is a no-op in resolveNestedCallsInData
+                    // (not an Expression), so genuine constructors are unaffected.
+                    atom.atoms.forEach { resolveNestedCallsInData(it, scope) }
                 } else {
                     resolveExpression(atom, scope)
                 }
