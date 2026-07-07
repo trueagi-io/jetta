@@ -76,8 +76,27 @@ object Convert {
             else -> return Expression(emptyList())
         }
         return when (atom) {
-            is Expression -> Expression(atom.atoms.sortedBy { it.toString() })
+            is Expression -> Expression(atom.atoms.sortedWith(::compareAtoms))
             else -> atom
         }
+    }
+
+    /**
+     * Canonical structural order over atoms, matching hyperon's `msort`. Expressions are
+     * compared element-wise with a shorter prefix ordering FIRST — so `(wu)` precedes
+     * `(wu 42)` — rather than by raw text (where the `)` vs space at the divergence point
+     * would flip them). Leaves fall back to their textual form and sort before expressions.
+     */
+    private fun compareAtoms(a: Atom, b: Atom): Int = when {
+        a is Expression && b is Expression -> {
+            val n = minOf(a.atoms.size, b.atoms.size)
+            var i = 0
+            var c = 0
+            while (i < n && c == 0) { c = compareAtoms(a.atoms[i], b.atoms[i]); i++ }
+            if (c != 0) c else a.atoms.size - b.atoms.size
+        }
+        a is Expression -> 1
+        b is Expression -> -1
+        else -> a.toString().compareTo(b.toString())
     }
 }

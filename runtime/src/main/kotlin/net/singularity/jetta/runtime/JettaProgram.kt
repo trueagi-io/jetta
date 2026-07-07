@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.space.ManifestExtension
@@ -149,10 +150,34 @@ open class JettaProgram {
          * call site carries the name of the module that produced it. Resolution happens
          * here via [SpaceRegistry.getOrCreate]; an unfamiliar id auto-creates an empty
          * space, which is the right behaviour for cold starts.
+         *
+         * [src] is typed `Atom` (not `Expression`) so a bare-VARIABLE pattern like
+         * `(match &kb $x $x)` — which matches EVERY atom — is legal. Such a pattern can't
+         * go through the packed indexer (there is no structure to index on), so it is
+         * handled here: bind the variable to each stored atom and render [dst]. A
+         * non-variable pattern is an [Expression] and takes the normal indexed path; any
+         * other atom shape (a bare Symbol/Grounded, which no stored Expression can equal)
+         * matches nothing.
          */
         @JvmStatic
-        fun match(spaceName: String, src: Expression, dst: Atom): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst)
+        fun match(spaceName: String, src: Atom, dst: Atom): List<Atom> {
+            val space = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            return when (src) {
+                is Expression -> space.match(src, dst)
+                is Variable -> space.getAtoms().map { atom ->
+                    Matcher.setBinding(src.name, atom) // upward propagation, mirroring SpaceImpl.match
+                    BoundAtom(substituteVar(dst, src.name, atom), mutableMapOf(src.name to atom))
+                }
+                else -> emptyList()
+            }
+        }
+
+        /** Replace every occurrence of the variable named [name] in [template] with [value]. */
+        private fun substituteVar(template: Atom, name: String, value: Atom): Atom = when (template) {
+            is Variable -> if (template.name == name) value else template
+            is Expression -> Expression(template.atoms.map { substituteVar(it, name, value) })
+            else -> template
+        }
 
         /** The unit atom `()` — hyperon's return value for the side-effecting space ops. */
         private val UNIT_ATOM: Atom = Expression(emptyList())

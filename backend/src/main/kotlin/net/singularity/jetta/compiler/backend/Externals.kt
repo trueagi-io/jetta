@@ -67,7 +67,9 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "match",
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                // Pattern arg is Atom (not Expression) so a bare-variable match-all pattern
+                // `(match &kb $x $x)` is legal; JettaProgram.match dispatches on its shape.
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true

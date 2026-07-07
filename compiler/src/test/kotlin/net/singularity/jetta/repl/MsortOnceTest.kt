@@ -29,6 +29,16 @@ class MsortOnceTest {
     }
 
     @Test
+    fun `msort orders nested expressions structurally, shorter prefix first`() {
+        // `(wu)` before `(wu 42)` — a structural/prefix order, NOT raw text (where the `)`
+        // vs space at the divergence point would flip them). Mirrors the corpus `spaces3`.
+        ReplImpl().eval("!(msort (superpose ((wu (wu 42)) (wu (wu)))))").let {
+            assertTrue(it.isSuccess, it.messages.toString())
+            assertEquals("((wu (wu)) (wu (wu 42)))", it.result.toString())
+        }
+    }
+
+    @Test
     fun `once keeps only the first result`() {
         ReplImpl().eval("!(once (superpose (a b c)))").let {
             assertTrue(it.isSuccess, it.messages.toString())
