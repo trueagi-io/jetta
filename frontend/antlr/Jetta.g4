@@ -148,6 +148,7 @@ package
 
 variable
     : DOLLAR identifier
+    | DOLLAR INTEGER
     ;
 
 identifier
@@ -314,6 +315,6 @@ RPAREN
 // The leading '!' for statement-level evaluation (see `run`) is unaffected
 // because '!' is not in the start-character class.
 IDENT
-    : [a-zA-Z_&.%,] [a-zA-Z0-9_\-%]* [!?]?
-    | ':' ':' [a-zA-Z0-9_\-%]* [!?]?
+    : [a-zA-Z_&.%,] [a-zA-Z0-9_\-%*]* [!?]?
+    | ':' ':' [a-zA-Z0-9_\-%*]* [!?]?
     ;

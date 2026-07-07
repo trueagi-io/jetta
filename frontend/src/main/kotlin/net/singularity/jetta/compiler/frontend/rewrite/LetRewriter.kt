@@ -49,6 +49,24 @@ class LetRewriter : Rewriter {
         if (expression.atoms.isEmpty()) return expression
 
         val head = expression.atoms[0]
+        // `let*` — sequential bindings. `(let* (($v1 e1) ($v2 e2) …) body)` desugars to
+        // right-nested `let`s, `(let $v1 e1 (let $v2 e2 … body))`, so each later binding sees
+        // the earlier ones. The nested `let`s are then rewritten to lambdas by the branch below.
+        if (head is Symbol && head.name == LETSTAR_KEYWORD && expression.atoms.size == 3) {
+            val bindings = expression.atoms[1]
+            if (bindings is Expression) {
+                var acc = expression.atoms[2]
+                for (pair in bindings.atoms.reversed()) {
+                    if (pair is Expression && pair.atoms.size == 2) {
+                        acc = Expression(
+                            listOf(Symbol(LET_KEYWORD), pair.atoms[0], pair.atoms[1], acc),
+                            position = expression.position,
+                        )
+                    }
+                }
+                return rewriteAtom(acc)
+            }
+        }
         if (head is Symbol && head.name == LET_KEYWORD && expression.atoms.size == 4) {
             val lhs = expression.atoms[1]
             val rawValue = expression.atoms[2]
@@ -78,5 +96,6 @@ class LetRewriter : Rewriter {
 
     companion object {
         const val LET_KEYWORD = "let"
+        const val LETSTAR_KEYWORD = "let*"
     }
 }
