@@ -105,7 +105,12 @@ object JettaJit {
         // FunctionRewriter writes the `(= …)` rule back into the context's space — which
         // is precisely why that space must be a throwaway (see newEvalContext): the
         // synthetic rule must never leak into the caller's space.
-        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
+        rewriter.add {
+            FunctionRewriter(
+                messageCollector, context.getSpace(),
+                isReducibleName = { context.resolve(it) != null }
+            )
+        }
         rewriter.add { LetRewriter() }
         rewriter.add { LambdaRewriter(messageCollector) }
         val resolved = context.resolve(rewriter.rewrite(source))

@@ -42,7 +42,12 @@ abstract class GeneratorTestBase {
         init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
+        rewriter.add {
+            FunctionRewriter(
+                messageCollector, context.getSpace(),
+                isReducibleName = { context.resolve(it) != null }
+            )
+        }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }

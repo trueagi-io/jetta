@@ -214,25 +214,32 @@ open class JettaProgram {
         /**
          * `add-atom` — add [atom] to the space named [spaceName] as DATA (unreduced; the
          * system-function signature types the argument `Atom`, suppressing call-site
-         * reduction, matching hyperon). The atom is folded into that space's live indexes
-         * immediately (see [net.singularity.jetta.runtime.space.SpaceImpl.add]), so a
-         * subsequent `match` observes it. Named with a hyphen — legal for a JVM method,
-         * and codegen emits the MeTTa symbol verbatim as the INVOKESTATIC target. Returns
-         * the unit atom `()` (an ordinary Atom, as in hyperon) rather than `Unit`/void, so
-         * the result composes as data when `add-atom` is nested in a larger expression.
+         * reduction, matching hyperon). Bound variables in the atom ARE substituted first
+         * ([Matcher.resolveDeep]): when `add-atom` runs inside a reduced match template
+         * (`(match … (add-atom &self (transitive $1 $2 $3)))`), `$1/$2/$3` are bound in the
+         * Matcher and must land as their values, not as free variables. In the ordinary case
+         * (arguments are already-resolved function parameters) resolveDeep is a no-op. The
+         * atom is folded into that space's live indexes immediately (see
+         * [net.singularity.jetta.runtime.space.SpaceImpl.add]), so a subsequent `match`
+         * observes it. Named with a hyphen — legal for a JVM method, and codegen emits the
+         * MeTTa symbol verbatim as the INVOKESTATIC target. Returns the unit atom `()` (an
+         * ordinary Atom, as in hyperon) rather than `Unit`/void, so the result composes as
+         * data when `add-atom` is nested in a larger expression.
          */
         @JvmStatic
         fun `add-atom`(spaceName: String, atom: Atom): Atom {
+            val resolved = Matcher.resolveDeep(atom)
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
-                .add(atom as? Expression ?: Expression(listOf(atom)))
+                .add(resolved as? Expression ?: Expression(listOf(resolved)))
             return UNIT_ATOM
         }
 
         /** `remove-atom` — remove the first atom structurally equal to [atom] from [spaceName]. */
         @JvmStatic
         fun `remove-atom`(spaceName: String, atom: Atom): Atom {
+            val resolved = Matcher.resolveDeep(atom)
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
-                .remove(atom as? Expression ?: Expression(listOf(atom)))
+                .remove(resolved as? Expression ?: Expression(listOf(resolved)))
             return UNIT_ATOM
         }
 

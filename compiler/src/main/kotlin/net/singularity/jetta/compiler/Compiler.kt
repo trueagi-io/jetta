@@ -100,7 +100,12 @@ class Compiler(
             val collector = mutableListOf<Expression>()
             atomsBySource[source] = collector
             val rewriter = CompositeRewriter()
-            rewriter.add { FunctionRewriter(messageCollector, context.getSpace(), collector) }
+            rewriter.add {
+                FunctionRewriter(
+                    messageCollector, context.getSpace(), collector,
+                    isReducibleName = { context.resolve(it) != null }
+                )
+            }
             rewriter.add { LetRewriter() }
             rewriter.add { LambdaRewriter(messageCollector) }
             val result = rewriter.rewrite(source)

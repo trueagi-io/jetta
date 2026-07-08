@@ -20,6 +20,20 @@ class FunctionRewriter(
      * for per-module serialization. Null in tests / REPL where the collector isn't wired.
      */
     private val ownAtomsCollector: MutableList<Expression>? = null,
+    /**
+     * Whether [name] names a reducible call — a system builtin (`add-atom`, `remove-atom`,
+     * …) or an already-registered external/imported function — as opposed to a data
+     * constructor. User `=`-functions are tracked locally in [patterns]; this predicate
+     * covers the calls the rewriter can't see there. Used by [rewriteMatchCall] to decide
+     * whether a `match` template must be reduced per binding (a template that CONTAINS such
+     * a call, e.g. `((add-atom …) (remove-atom …))`) rather than quoted as inert data.
+     *
+     * Backed by `Context.resolve` at the call sites: system functions are registered before
+     * any rewriting, and imported-module functions before user sources are rewritten, so the
+     * predicate is populated when it matters. Defaults to a no-op (tests/REPL that don't wire
+     * it keep the pre-existing quote-the-template behaviour).
+     */
+    private val isReducibleName: (String) -> Boolean = { false },
 ) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
     private val annotations = mutableMapOf<String, List<Atom>>()
@@ -603,6 +617,41 @@ class FunctionRewriter(
             }
         }
 
+        // General case: the template CONTAINS a reducible call (a system builtin such as
+        // add-atom/remove-atom, a user function, or an imported one) but is not one of the
+        // specific single-call shapes handled above — e.g. a tuple of side-effecting calls
+        // `((add-atom …) (remove-atom …))`, the body of the `hide` idiom, or a lone system
+        // call `(add-atom …)` (the whole-template case above only catches USER calls, which
+        // are the only ones in `patterns`). Quoting it (the default below) would leave those
+        // calls inert. Instead evaluate the template once per match binding: the outer match
+        // installs every pattern-variable binding (its BoundAtom snapshot flows into the
+        // Matcher via flat-map?'s unwrap), and the lambda body — the template — reduces with
+        // its free variables resolved from those bindings. Reducible sub-calls run (see
+        // FunctionGenerator's evalCalls path); genuine data stays inert. The lambda parameter
+        // is a throwaway: the pattern vars flow through the binding stack, not the argument.
+        if (templateHasReducibleCall(template)) {
+            val throwaway = Variable("__matchTmpl")
+            val matchCall = expression.copy(
+                listOf(
+                    expression.atoms[0],
+                    expression.atoms[1],
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(throwaway)
+                )
+            )
+            val lambda = Lambda(
+                listOf(throwaway),
+                null,
+                rewriteAtom(template),
+                position = expression.position
+            )
+            // map?, not flat-map?: the lambda reduces the template to ONE value per binding
+            // (the substituted template — for `hide` a discarded unit tuple), so results are
+            // collected 1:1 with matches. flat-map? would require the lambda to return a List
+            // to flatten and ClassCasts on the scalar template value.
+            return Expression(Special(Predefined.MAP_), lambda, matchCall)
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -611,6 +660,24 @@ class FunctionRewriter(
                 quoteAtom(expression.atoms[3])
             )
         )
+    }
+
+    /**
+     * Does [atom] contain, anywhere, a reducible call — an Expression whose head Symbol is a
+     * user function ([patterns]) or a system/imported function ([isReducibleName])? A nested
+     * `match` is excluded (the chained-match path handles it); Special-headed forms
+     * (arithmetic/if/…) are naturally excluded since their head is not a Symbol. Drives
+     * [rewriteMatchCall]'s decision to reduce the template per binding rather than quote it.
+     */
+    private fun templateHasReducibleCall(atom: Atom): Boolean = when (atom) {
+        is Expression -> {
+            val headName = (atom.atoms.firstOrNull() as? Symbol)?.name
+            val headIsReducible = headName != null && headName != "match" &&
+                (patterns.containsKey(headName) || isReducibleName(headName))
+            headIsReducible || atom.atoms.any { templateHasReducibleCall(it) }
+        }
+
+        else -> false
     }
 
     /**

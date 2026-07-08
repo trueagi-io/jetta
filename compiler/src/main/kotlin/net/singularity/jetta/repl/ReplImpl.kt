@@ -73,7 +73,12 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
     private fun compile(filename: String, code: String): List<CompilationResult> {
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
+        rewriter.add {
+            FunctionRewriter(
+                messageCollector, context.getSpace(),
+                isReducibleName = { context.resolve(it) != null }
+            )
+        }
         rewriter.add { LetRewriter() }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
