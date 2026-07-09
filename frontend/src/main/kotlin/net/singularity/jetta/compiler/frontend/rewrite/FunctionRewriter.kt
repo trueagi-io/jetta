@@ -740,6 +740,45 @@ class FunctionRewriter(
         return result
     }
 
+    /**
+     * `(case S ((P1 B1) (P2 B2) …))` — evaluate the scrutinee once and return the body of the
+     * first matching pattern. Desugars to a `let` (binding the scrutinee so it is not
+     * re-evaluated) over a right-nested `if` chain:
+     *   - a literal / symbol pattern Pi becomes `(if (== $case Pi) Bi rest)`;
+     *   - a variable pattern binds and short-circuits — `(let Pi $case Bi)` — so it is the
+     *     catch-all default and anything after it is unreachable (as in hyperon);
+     *   - the `Empty` pattern (matches only a no-result scrutinee) is not handled by this
+     *     scalar chain yet — it is skipped, leaving the remaining chain.
+     * The chain's final fallthrough is the empty tuple `()`. Structural patterns (a
+     * constructor with sub-patterns) rely on `==` and only match when structurally equal;
+     * full unification is a later step.
+     */
+    private fun rewriteCaseCall(expression: Expression): Atom {
+        val scrutinee = rewriteAtom(expression.atoms[1])
+        val clausesExpr = expression.atoms[2] as? Expression ?: return expression
+        val clauses = clausesExpr.atoms.filterIsInstance<Expression>().filter { it.atoms.size == 2 }
+        val caseVar = Variable("__case")
+        var acc: Atom = Expression(emptyList())
+        for (clause in clauses.asReversed()) {
+            val pat = clause.atoms[0]
+            val body = rewriteAtom(clause.atoms[1])
+            acc = when {
+                pat is Variable ->
+                    Expression(Symbol(LetRewriter.LET_KEYWORD), pat, caseVar, body)
+
+                pat is Symbol && pat.name == "Empty" -> acc
+
+                else -> Expression(
+                    Special(Predefined.IF),
+                    Expression(Special(Predefined.COND_EQ), caseVar, pat),
+                    body,
+                    acc
+                )
+            }
+        }
+        return Expression(Symbol(LetRewriter.LET_KEYWORD), caseVar, scrutinee, acc)
+    }
+
     private fun rewriteAssertionCall(expression: Expression): Expression {
         if (expression.atoms.size != 3) return expression
         return expression.copy(
@@ -761,6 +800,7 @@ class FunctionRewriter(
         // form must reach eval exactly as the user wrote it.
         if (func == PredefinedAtoms.QUOTE) return expression
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
+        if (func is Symbol && func.name == "case" && expression.atoms.size == 3) return rewriteCaseCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {
             when {

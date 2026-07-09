@@ -10,6 +10,7 @@ import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
 import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.logger.Logger
@@ -48,6 +49,7 @@ abstract class GeneratorTestBase {
                 isReducibleName = { context.resolve(it) != null }
             )
         }
+        rewriter.add { LetRewriter() }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
