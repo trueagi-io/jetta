@@ -248,6 +248,32 @@ open class JettaProgram {
         fun `get-atoms`(spaceName: String): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
 
+        /**
+         * `is-var` — True when [atom] is syntactically a variable (an unbound `$x`). Its
+         * argument is unreduced (Atom param), so a variable arrives as a [Variable] rather
+         * than its binding. Returns the boolean symbols hyperon uses.
+         */
+        @JvmStatic
+        fun `is-var`(atom: Atom): Atom =
+            if ((if (atom is BoundAtom) atom.atom else atom) is Variable) Symbol("True") else Symbol("False")
+
+        /**
+         * Truthiness of a reduced condition value used where a boolean is required — a
+         * predicate call or nested `if` in a condition position (`(if (is-var $x) …)`).
+         * hyperon's booleans are the symbols `True`/`False`; a grounded `Boolean` is also
+         * accepted. Anything else is false (so a non-matching / empty condition is falsey).
+         */
+        @JvmStatic
+        fun isTruthy(value: Any?): Boolean {
+            val v = if (value is BoundAtom) value.atom else value
+            return when (v) {
+                is Boolean -> v
+                is Symbol -> v.name == "True"
+                is Grounded<*> -> v.value == true
+                else -> false
+            }
+        }
+
         // --- mutable state (hyperon `new-state`/`get-state`/`change-state!` + `bind!`) ------
         //
         // A state is a mutable [StateCell] wrapped in a Grounded atom. `bind!` names it via a

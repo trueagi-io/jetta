@@ -1423,7 +1423,23 @@ open class FunctionGenerator(
                         }
                     }
 
-                    else -> TODO("Op=$op")
+                    // A non-comparison expression used as a condition — a predicate call
+                    // `(is-var $x)`, a nested `(if …)`, any boolean-returning form. Evaluate
+                    // it to a value and test truthiness at runtime (hyperon booleans are the
+                    // symbols True/False; a grounded Boolean also counts). Leaves the int 0/1
+                    // the caller's branch test expects.
+                    else -> {
+                        generateAtom(mv, expr, null, false)
+                        (expr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+                            ?.let { generateBoxingIfNeeded(it) }
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/JettaProgram",
+                            "isTruthy",
+                            "(Ljava/lang/Object;)Z",
+                            false
+                        )
+                    }
                 }
             }
 

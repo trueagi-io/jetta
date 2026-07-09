@@ -129,6 +129,19 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `is-var` — variable predicate. Argument is ATOM (unreduced) so a variable reaches the
+    // builtin as a Variable, not as its binding.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "is-var",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // Mutable state: new-state creates a cell, bind! names it via a token, get-state reads,
     // change-state! writes. Value/token args are ATOM (stored/looked-up as data, unreduced);
     // bind!'s value arg is ANY so `(bind! s (new-state x))` reduces the new-state first.
