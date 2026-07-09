@@ -55,7 +55,6 @@ double
 
 special
     : pattern
-    | import_
     | package
     | annotation
     | type
@@ -143,16 +142,13 @@ if
     : IF
     ;
 
-import_
-    : IMPORT
-    ;
-
 package
     : PACKAGE
     ;
 
 variable
     : DOLLAR identifier
+    | DOLLAR INTEGER
     ;
 
 identifier
@@ -263,10 +259,6 @@ IF
     : 'if'
     ;
 
-IMPORT
-    : 'import'
-    ;
-
 PACKAGE
     : 'package'
     ;
@@ -301,6 +293,7 @@ DIVIDE
     
 LAMBDA
     : '\\'
+    | '|->'
     ;
 
 LPAREN
@@ -311,6 +304,18 @@ RPAREN
     : ')'
     ;
 
+// Identifier. MeTTa names use a wider character set than typical Lisps:
+//   * trailing '!' / '?' for predicate / effect conventions (`Frog?`, `bind!`)
+//   * leading '.' for namespace-style symbols like PLN's `.tv`
+//   * '%' on either end and inside, so `%Undefined%` is a single token
+//   * a bare ',' is a valid name (e.g. the `match`-conjunction operator)
+//   * leading '::' for cons-style names (`::`, `::foo`) — Lisp/Haskell convention
+//     used in e.g. `c1_grounded_basic.metta` for list construction. ANTLR's
+//     longest-match disambiguates: bare ':' is still the type-annotation COLON
+//     token, but two-or-more colons start an IDENT.
+// The leading '!' for statement-level evaluation (see `run`) is unaffected
+// because '!' is not in the start-character class.
 IDENT
-    : [a-zA-Z_&] [a-zA-Z0-9_\-]*
+    : [a-zA-Z_&.%,] [a-zA-Z0-9_\-%*]* [!?]?
+    | ':' ':' [a-zA-Z0-9_\-%*]* [!?]?
     ;

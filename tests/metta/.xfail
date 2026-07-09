@@ -1,0 +1,21 @@
+# MeTTa compatibility xfail list
+# Format:  <relative-path>  <STATUS>:<CATEGORY>:<id>  [free-form notes]
+# STATUS  ∈ COMPILE_FAIL | RUN_EXCEPTION | ASSERT_FAIL
+# CATEGORY ∈ FEATURE_PENDING | STDLIB_GAP | SEMANTIC_DIVERGENCE | KNOWN_BUG
+#
+# A test is EXPECTED_FAIL when its actual STATUS matches the line.
+# A mismatch (test fails for a different reason) is reported as REGRESSION.
+# A test now passing is reported as UNEXPECTED_PASS — remove its line.
+#
+# The runner skips files imported by other files in the suite (modules).
+# So entries here only need to cover files that run as standalone tests.
+
+# f1_imports transitively imports f1_moduleC, which trips a pre-existing
+# compiler NotImplementedError (likely tied to `Number` type / zero-arg
+# function in its declarations). Once that compiler bug is fixed the
+# whole f1 family should pass.
+f1_imports.metta            COMPILE_FAIL:KNOWN_BUG:moduleC-not-implemented        compiler crashes resolving f1_moduleC's body
+
+# c2_spaces uses (import! &kb ...) which is explicitly rejected until
+# Import-As semantics are implemented.
+c2_spaces.metta             COMPILE_FAIL:FEATURE_PENDING:import-as               needs Import-As (&kb) support

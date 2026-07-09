@@ -275,9 +275,12 @@ class SpaceDirectorySerializerTest {
         val spaceId = UUID.randomUUID()
         SpaceDirectorySerializer.save(space, tempDir, programName = "IDTest", spaceId = spaceId)
 
-        // Load manifest and verify space ID
+        // Manifest v2: programName ends up in `spaceId` (the registry key); the random
+        // UUID we passed in lives under `binaryUuid` (the .jtsf↔manifest pairing token).
         val manifest = ManifestSerializer.load(tempDir.resolve("IDTest.manifest.json"))
-        assertEquals(spaceId, manifest.spaceId)
+        assertEquals(spaceId, manifest.binaryUuid)
+        assertEquals("IDTest", manifest.spaceId)
+        assertEquals("deep-copy", manifest.kind)
     }
 }
 

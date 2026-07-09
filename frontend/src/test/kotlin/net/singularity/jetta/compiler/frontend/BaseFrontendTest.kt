@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
+import net.singularity.jetta.runtime.space.SpaceImpl
 import kotlin.test.assertEquals
 
 abstract class BaseFrontendTest {
@@ -19,7 +20,7 @@ abstract class BaseFrontendTest {
         init: (Context) -> Unit = {}
     ): Pair<ParsedSource, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, internalMap, internalFlatMap)
+        val context = Context(messageCollector, internalMap, internalFlatMap, SpaceImpl())
         init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
@@ -36,7 +37,7 @@ abstract class BaseFrontendTest {
         internalFlatMap: JvmMethod? = null
     ): Pair<List<ParsedSource>, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, internalMap, internalFlatMap)
+        val context = Context(messageCollector, internalMap, internalFlatMap, SpaceImpl())
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }

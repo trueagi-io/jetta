@@ -15,8 +15,12 @@ fun Atom.toJvmType(boxing: Boolean = false): String =
         GroundedType.BOOLEAN -> if (boxing) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (boxing) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (boxing) throw RuntimeException("Should never happen") else "V"
+        GroundedType.STRING -> "Ljava/lang/String;"
+        GroundedType.ANY, GroundedType.NOTHING -> "Ljava/lang/Object;"
+        GroundedType.SPACE -> "Lnet/singularity/jetta/runtime/space/Space;"
         GroundedType.LIST -> "Ljava/util/List;"
         GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+        GroundedType.EXPRESSION -> "Lnet/singularity/jetta/compiler/frontend/ir/Expression;"
         is ArrowType -> this.descriptor()
         is SeqType -> "Ljava/util/List;"
         else -> TODO("Not implemented yet $this")
@@ -24,62 +28,55 @@ fun Atom.toJvmType(boxing: Boolean = false): String =
 
 fun ArrowType.descriptor(): String = "L${getJvmInterfaceName()};"
 
-fun ArrowType.getJvmInterfaceName(): String {
-    val arity = this.types.size - 1
-    return "net/singularity/jetta/runtime/functions/Function$arity"
-}
+fun ArrowType.getJvmInterfaceName(): String =
+    "net/singularity/jetta/runtime/functions/JettaFunction"
 
 
 fun Atom.signature(): String {
     val sb = StringBuilder()
     when (this) {
         is ArrowType -> {
-            sb.append("L${getJvmInterfaceName()}")
-            sb.append('<')
-            types.forEach {
-                sb.append(it.signature())
-            }
-            sb.append(">;")
+            sb.append("L${getJvmInterfaceName()};")
         }
 
         is SeqType -> sb.append("Ljava/util/List<${elementType.signature()}>;")
+        // Generic-signature uses are always boxed.
         GroundedType.INT -> sb.append("Ljava/lang/Integer;")
+        GroundedType.LONG -> sb.append("Ljava/lang/Long;")
+        GroundedType.BOOLEAN -> sb.append("Ljava/lang/Boolean;")
         GroundedType.DOUBLE -> sb.append("Ljava/lang/Double;")
+        GroundedType.UNIT -> sb.append("Ljava/lang/Void;")
+        GroundedType.STRING -> sb.append("Ljava/lang/String;")
+        GroundedType.ANY, GroundedType.NOTHING -> sb.append("Ljava/lang/Object;")
+        GroundedType.SPACE -> sb.append("Lnet/singularity/jetta/runtime/space/Space;")
+        GroundedType.LIST -> sb.append("Ljava/util/List;")
         GroundedType.ATOM -> sb.append("Lnet/singularity/jetta/compiler/frontend/ir/Atom;")
+        GroundedType.EXPRESSION -> sb.append("Lnet/singularity/jetta/compiler/frontend/ir/Expression;")
         else -> TODO("Not implemented yet $this")
     }
     return sb.toString()
 }
 
-fun ArrowType.getApplyJvmDescriptor(boxing: Boolean): String {
-    val sb = StringBuilder()
-    sb.append("(")
-    types.dropLast(1).map {
-        sb.append(it.toJvmType(boxing))
-    }
-    sb.append(")")
-    sb.append(types.last().toJvmType(boxing))
-    return sb.toString()
-}
-
-fun ArrowType.getApplyJvmPlainDescriptor(): String {
-    val sb = StringBuilder()
-    sb.append("(")
-    types.dropLast(1).map {
-        sb.append("Ljava/lang/Object;")
-    }
-    sb.append(")")
-    sb.append("Ljava/lang/Object;")
-    return sb.toString()
-}
+/**
+ * SAM descriptor of [JettaFunction]: `([Ljava/lang/Object;)Ljava/lang/Object;`.
+ * Single shape for all arities — args packed into an `Object[]`, result boxed.
+ */
+fun ArrowType.getApplyJvmPlainDescriptor(): String =
+    "([Ljava/lang/Object;)Ljava/lang/Object;"
 
 fun Atom.toJvmGenericType(box: Boolean = false): String =
     when (this) {
         GroundedType.INT -> if (box) "Ljava/lang/Integer;" else "I"
+        GroundedType.LONG -> if (box) "Ljava/lang/Long;" else "J"
         GroundedType.BOOLEAN -> if (box) "Ljava/lang/Boolean;" else "Z"
         GroundedType.DOUBLE -> if (box) "Ljava/lang/Double;" else "D"
         GroundedType.UNIT -> if (box) "Ljava/lang/Void;" else "V"
+        GroundedType.STRING -> "Ljava/lang/String;"
+        GroundedType.ANY, GroundedType.NOTHING -> "Ljava/lang/Object;"
+        GroundedType.SPACE -> "Lnet/singularity/jetta/runtime/space/Space;"
+        GroundedType.LIST -> "Ljava/util/List;"
         GroundedType.ATOM -> "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+        GroundedType.EXPRESSION -> "Lnet/singularity/jetta/compiler/frontend/ir/Expression;"
         is ArrowType -> this.signature()
         is SeqType -> "Ljava/util/List<${elementType.signature()}>;"
         else -> TODO("Not implemented yet $this")
@@ -147,6 +144,9 @@ fun JvmMethod.arrowType(): ArrowType = ArrowType(
 fun JvmMethod.doesParameterHaveAnyType(index: Int) =
     descriptor.parseDescriptor()[index] == "Ljava/lang/Object;"
 
+fun JvmMethod.isParameterAtomType(index: Int) =
+    descriptor.parseDescriptor()[index] == "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+
 private fun toType(jvmType: String): Atom =
     when (jvmType) {
         "I" -> GroundedType.INT
@@ -166,16 +166,10 @@ private fun toType(jvmType: String): Atom =
     }
 
 private fun String.parseArrowType(): ArrowType? =
-    if (startsWith("Lnet/singularity/jetta/runtime/functions/Function")) {
-        val bra = indexOf('<')
-        val ket = length - 2
-        // FIXME: unused
-        ArrowType(substring(bra + 1, ket).parseDescriptor().map {
-            when (it) {
-                "Ljava/lang/Integer;" -> GroundedType.INT
-                else -> TODO()
-            }
-        })
+    if (startsWith("Lnet/singularity/jetta/runtime/functions/JettaFunction")) {
+        // Single SAM interface carries no per-arity / per-type info in its bytecode name.
+        // Callers fall back to descriptor-level inspection if they need arity.
+        ArrowType(emptyList())
     } else null
 
 

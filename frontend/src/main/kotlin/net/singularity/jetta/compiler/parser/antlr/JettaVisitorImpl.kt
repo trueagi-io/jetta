@@ -52,7 +52,10 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
             return Symbol(it.text, mkPosition(ctx.position))
         }
         ctx.variable()?.let {
-            return Variable(it.identifier().text, position = mkPosition(ctx.position))
+            // A variable is `$` + name; the name is usually an identifier but MeTTa also
+            // allows all-numeric names like `$1`, `$45` (common in generated / pattern code).
+            val name = it.identifier()?.text ?: it.INTEGER()!!.text
+            return Variable(name, position = mkPosition(ctx.position))
         }
         ctx.special()?.let {
             return visitSpecial(it)
@@ -146,9 +149,6 @@ class JettaVisitorImpl(private val filename: String) : JettaBaseVisitor<Any?>() 
         }
         ctx.seq()?.let {
             return Special(Predefined.SEQ, mkPosition(ctx.position))
-        }
-        ctx.import_()?.let {
-            return Special(Predefined.IMPORT,  mkPosition(ctx.position))
         }
         ctx.package_()?.let {
             return Special(Predefined.PACKAGE,  mkPosition(ctx.position))

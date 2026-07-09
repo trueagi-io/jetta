@@ -7,10 +7,32 @@ import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 
 object Assertions {
+    /**
+     * Comparison key for a free [net.singularity.jetta.compiler.frontend.ir.Variable].
+     * `Variable` uses identity equality, but two variables that print the same (e.g.
+     * the `$n` on each side of `(assertEqual (Add $n Z) $n)`) denote the same variable
+     * and must compare equal. Keying by name gives that structural equality without
+     * touching `Variable`'s global identity semantics (which `match`/`Matcher` rely on).
+     */
+    private data class VarKey(val name: String)
+
+    /**
+     * Comparison key for a normalized [Expression]. Distinct from a plain [List] so
+     * [normalizeActualResults] does not mistake a single expression result for a
+     * multivalued bag of results — a bare `List` means "bag", an `ExprKey` means
+     * "one expression whose children have been normalized".
+     */
+    private data class ExprKey(val atoms: List<Any?>)
+
     private fun normalize(value: Any?): Any? =
         when (value) {
             is BoundAtom -> normalize(value.atom)
             is Grounded<*> -> value.value
+            is net.singularity.jetta.compiler.frontend.ir.Variable -> VarKey(value.name)
+            // Recurse so nested variables inside an expression are compared by name too
+            // (e.g. `(S $n)` vs `(S $n)`). Symbols already compare by name; grounded
+            // leaves collapse to their values.
+            is Expression -> ExprKey(value.atoms.map { normalize(it) })
             is List<*> -> value.map { normalize(it) }
             else -> value
         }
@@ -55,18 +77,38 @@ object Assertions {
         return expression.atoms.map { normalize(unquote(it)) }
     }
 
+    /**
+     * Multiset (bag) equality: order-insensitive, multiplicity-sensitive. This matches
+     * Hyperon's `assertEqual`, whose @doc compares "(sets of) results" and whose
+     * `_assert-results-are-equal` is built on `subtraction-atom` (which preserves
+     * multiplicity). The non-deterministic order of results is not guaranteed, so an
+     * ordered comparison would spuriously fail tests like `b4_nondeterm`
+     * (`(match … (color) …)` yields `[green yellow red]` while `(superpose (red yellow
+     * green))` yields `[red yellow green]` — same bag, different order).
+     */
+    private fun bagsEqual(a: List<Any?>, b: List<Any?>): Boolean =
+        a.size == b.size && a.groupingBy { it }.eachCount() == b.groupingBy { it }.eachCount()
+
     @JvmStatic
     fun assertEqual(actual: Any?, expected: Any?) {
-        val normalizedActual = normalize(actual)
-        val normalizedExpected = normalize(expected)
-        if (normalizedActual != normalizedExpected) {
+        // Every value is treated as a bag of results. A literal like `Plato` is the
+        // singleton bag {Plato}; a multivalued call's List result is its full bag.
+        //
+        // Without this lift, `assertEqual [Plato] Plato` (multivalued actual, scalar
+        // expected) would fail spuriously even though both sides denote the same
+        // singleton bag. That mismatch is what surfaced as b2_backchain ASSERT_FAIL —
+        // `(ift (deduce ...) $x)` builds a flat-map yielding `[Plato]`, but the
+        // expected `Plato` is a scalar.
+        val actualBag = normalizeActualResults(actual)
+        val expectedBag = normalizeActualResults(expected)
+        if (!bagsEqual(actualBag, expectedBag)) {
             throw AssertionError(
                 buildString {
                     append("assertEqual failed")
                     append("\nExpected: ")
-                    append(normalizedExpected)
+                    append(normalize(expected))
                     append("\nActual:   ")
-                    append(normalizedActual)
+                    append(normalize(actual))
                 }
             )
         }
@@ -76,7 +118,7 @@ object Assertions {
     fun assertEqualToResult(actual: Any?, expected: Any?) {
         val normalizedActual = normalizeActualResults(actual)
         val normalizedExpected = decodeExpectedResults(expected)
-        if (normalizedActual != normalizedExpected) {
+        if (!bagsEqual(normalizedActual, normalizedExpected)) {
             throw AssertionError(
                 buildString {
                     append("assertEqualToResult failed")

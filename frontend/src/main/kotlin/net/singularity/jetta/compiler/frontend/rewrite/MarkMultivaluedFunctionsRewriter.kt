@@ -11,6 +11,11 @@ import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
 class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, FunctionDefinition>) : Rewriter {
     private val callsLocations = mutableMapOf<String, MutableList<FunctionDefinition>>()
 
+    companion object {
+        // Non-determinism barriers — see CanonicalFormRewriter.BARRIER_FUNCTIONS.
+        private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult", "msort", "once")
+    }
+
     override fun rewrite(source: ParsedSource): ParsedSource {
         source.code.forEach {
             val def = it as FunctionDefinition
@@ -37,6 +42,15 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
     private fun checkAtom(atom: Atom, func: FunctionDefinition): Boolean {
         when (atom) {
             is Expression -> {
+                if (atom.atoms.isEmpty()) return false
+                // `quote` is inert data: a multivalued call inside a quote does not make
+                // the enclosing function multivalued — its result is the single quoted
+                // atom. Mirrors the quote boundary in CanonicalFormRewriter's lift pass.
+                if (atom.atoms[0] == PredefinedAtoms.QUOTE) return false
+                // Non-determinism barriers (assertEqual/assertEqualToResult/collapse)
+                // consume the whole bag of results of their arguments, so a multivalued
+                // call inside them must NOT propagate multivaluedness to the caller.
+                if ((atom.atoms[0] as? Symbol)?.name in BARRIER_FUNCTIONS) return false
                 (atom.atoms[0] as? Symbol)?.let {
                     functions[it.name]?.let { def ->
                         if (def.isMultivalued()) {

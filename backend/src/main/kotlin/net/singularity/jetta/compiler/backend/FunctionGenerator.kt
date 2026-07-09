@@ -2,7 +2,7 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.*
-import net.singularity.jetta.runtime.Matcher
+import org.objectweb.asm.Handle
 import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
@@ -13,24 +13,50 @@ open class FunctionGenerator(
     private val mv: LocalVariablesSorter,
     private val function: FunctionLike,
     private val isStatic: Boolean,
-    private val className: String?
+    private val className: String?,
+    /**
+     * Name of the module being compiled — the same string the entry's `__main` passes
+     * to `JettaProgram.init`. Baked into bytecode at every `&self` reference so each
+     * `match` call carries the name of its owner space, and the runtime registry can
+     * resolve it without a thread-local "current" space.
+     */
+    private val moduleSpaceName: String,
+    /**
+     * Internal name of the class that owns this method and any sibling lambda body
+     * methods. Used at indy lambda creation sites to reference the static lambda body.
+     */
+    private val enclosingClassInternalName: String,
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
-    /**
-     * Check whether the given variable is a captured variable in the current
-     * lambda class (i.e., it was a free variable in the lambda body and is
-     * stored as a field in the generated lambda class).
-     */
-    private fun isLambdaCapturedVariable(variable: Variable): Boolean {
-        if (function !is Lambda) return false
-        val lambda = function
-        return lambda.capturedVariables().any { it.name == variable.name }
-    }
+    // Active only while emitting a scalar-Match branch body (and its nested if-arms). It
+    // tells the `doReturn` path to coerce the value to the function return type before
+    // returning (unwrap a Grounded to a primitive, or box a primitive into a Grounded).
+    // Off elsewhere: other return sites (direct function bodies, typed lambda calls) already
+    // leave a correctly-typed value, and coercing there would double-unwrap.
+    private var scalarReturnCoercion = false
+
+    // Whether this function's body actually touches the thread-local binding stack
+    // (`Matcher`). If it doesn't, the per-call `Matcher.push()`/`pop()` frame is a pure
+    // no-op — `push` adds an empty map and `pop` does `parent.putAll(emptyMap)` — so it
+    // can be elided. This removes the per-call binding-stack overhead from purely
+    // computational functions (e.g. compiled `fib`: primitive params, `if` + arithmetic +
+    // self-recursion, no match/destructuring). See [usesMatcher] for the criterion.
+    private val usesMatcher: Boolean = computeUsesMatcher()
 
     fun generate() {
         emitLineNumber(function)
-        val matcherType = Type.getInternalName(Matcher::class.java)
+
+        if (!usesMatcher) {
+            // No binding-stack interaction: emit the body directly, no push/pop, no
+            // exception-safe finally (there is no frame to unwind). generateReturn also
+            // skips its pop when usesMatcher is false.
+            generateAtom(mv, function.body, null, true)
+            mv.visitMaxs(maxStack, maxLocals)
+            return
+        }
+
+        val matcherType = RuntimeNames.MATCHER
 
         // Matcher.push()
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, matcherType, "push", "()V", false)
@@ -54,6 +80,35 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.ATHROW)
 
         mv.visitMaxs(maxStack, maxLocals)
+    }
+
+    /**
+     * A function needs its `Matcher` frame iff its body reads or writes the binding stack.
+     * Conservative — any doubt returns true (keep the frame). It touches the Matcher when:
+     *  - it is multivalued (composes via `map?`/`flat-map?` → per-branch push/pop + BoundAtom);
+     *  - it has an `Atom`-typed parameter (resolved via `Matcher.resolveBinding` in dispatch);
+     *  - its body contains a `Match` (destructuring dispatch → resolveBinding / non-reduction
+     *    fallback), a `match` space query, a multivalued call, or a lambda.
+     * Lambdas (non-FunctionDefinition) always keep their frame — they run inside `simpleMap`/
+     * `simpleFlatMap`, whose per-branch bindings we must not disturb.
+     */
+    private fun computeUsesMatcher(): Boolean {
+        val fn = function as? FunctionDefinition ?: return true
+        if (fn.isMultivalued()) return true
+        if (fn.params.any { it.type == GroundedType.ATOM }) return true
+        return bodyTouchesMatcher(fn.body)
+    }
+
+    private fun bodyTouchesMatcher(atom: Atom): Boolean = when (atom) {
+        is Match -> true
+        is Lambda -> true
+        is Expression -> {
+            if (atom.atoms.isEmpty()) false
+            else if ((atom.atoms[0] as? Symbol)?.name == "match") true
+            else if (atom.resolved?.isMultiValued == true) true
+            else atom.atoms.any { bodyTouchesMatcher(it) }
+        }
+        else -> false
     }
 
     protected var maxStack = 0
@@ -82,8 +137,16 @@ open class FunctionGenerator(
             }
 
             is Symbol -> {
-                when (atom.name) {
-                    Predefined.SELF -> generateSpaceSingleton(mv)
+                when {
+                    // &self materialises as the owner module's space name. The runtime's
+                    // match/matchEval take this string as their leading argument and
+                    // look up the corresponding Space via SpaceRegistry.
+                    atom.name == Predefined.SELF -> mv.visitLdcInsn(moduleSpaceName)
+                    // Any other &-prefixed symbol is a reference to a sub-space registered
+                    // (or to-be-registered) under that literal name. The runtime registry
+                    // returns an empty space for unknown names, so unresolved sub-space
+                    // references produce empty match results rather than crashing.
+                    atom.name.startsWith("&") -> mv.visitLdcInsn(atom.name)
                     else -> {
                         // Create a Symbol object at runtime for comparison
                         mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Symbol::class.java))
@@ -103,18 +166,17 @@ open class FunctionGenerator(
                 }
             }
 
+            is ArrowType -> {
+                // Same surface-form reification as in `generateQuote` — an arrow
+                // type appearing as a direct value (e.g. RHS of `assertEqual`)
+                // becomes the `(-> …)` Expression at runtime. Use `generateQuote`
+                // (not the local recursive `generateLoad`) because Expressions
+                // must be constructed via the quote machinery.
+                generateQuote(mv, Expression(listOf(Special(Predefined.ARROW)) + atom.types))
+            }
+
             else -> TODO("Not implemented yet $atom")
         }
-    }
-
-    private fun generateSpaceSingleton(mv: LocalVariablesSorter) {
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            "net/singularity/jetta/runtime/JettaProgram",
-            "getSpace",
-            "()Lnet/singularity/jetta/runtime/space/Space;",
-            false
-        )
     }
 
     protected fun emitLineNumber(atom: Atom) {
@@ -135,6 +197,14 @@ open class FunctionGenerator(
         emitLineNumber(atom)
         when (atom) {
             is Expression -> {
+                // The empty tuple `()` is a value, not a call — it has no head to dispatch
+                // on. Emit it as a runtime empty Expression (e.g. the else arm synthesized for
+                // a 2-arg `(if cond then)`, or a bare `()` reached outside a quoted body).
+                if (atom.atoms.isEmpty()) {
+                    generateQuote(mv, atom)
+                    if (doReturn) mv.visitInsn(Opcodes.ARETURN)
+                    return
+                }
                 val func = atom.atoms[0]
                 val arguments = atom.atoms.drop(1)
 
@@ -154,7 +224,21 @@ open class FunctionGenerator(
 
                         Predefined.IF -> generateIf(mv, arguments, exit, doReturn)
                         Predefined.RUN_SEQ -> {
+                            // In __main, each argument is an independent top-level `!` run.
+                            // Clear variable bindings between them so one run's bindings
+                            // don't leak into the next (e.g. b4 (is (air dry)) → (is (air
+                            // wet))). RUN_SEQ is also used for `let` desugaring inside
+                            // ordinary functions — there bindings MUST persist, so only
+                            // __main's top-level RUN_SEQ resets. ("__main" = FunctionRewriter.MAIN.)
+                            val isMain = (function as? FunctionDefinition)?.name == "__main"
                             arguments.forEach {
+                                if (isMain) {
+                                    mv.visitMethodInsn(
+                                        Opcodes.INVOKESTATIC,
+                                        RuntimeNames.MATCHER,
+                                        "clearAll", "()V", false
+                                    )
+                                }
                                 generateAtom(mv, it, null, false)
                             }
                         }
@@ -163,6 +247,16 @@ open class FunctionGenerator(
                         Predefined.MAP_ -> generateCall(mv, Predefined.MAP_, arguments, atom.resolved)
                         Predefined.FLAT_MAP_ -> generateCall(mv, Predefined.FLAT_MAP_, arguments, atom.resolved)
                         Predefined.QUOTE -> generateQuote(mv, arguments[0])
+                        Predefined.ANNOTATION,
+                        Predefined.PATTERN,
+                        Predefined.TYPE,
+                        Predefined.ARROW -> {
+                            // Data forms with a Special head reach codegen as inert
+                            // values (see resolver counterpart). Emit as a quoted
+                            // expression so the whole `(@ doc …)` / `(= … …)` /
+                            // `(: … …)` / `(-> …)` lives as a runtime Expression atom.
+                            generateQuote(mv, atom)
+                        }
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
                                 mv,
@@ -177,15 +271,46 @@ open class FunctionGenerator(
                         if (atom.resolved != null) {
                             generateCall(mv, func.name, arguments, atom.resolved)
                         } else {
-                            // Unresolved symbol in function position — quote the whole expression
-                            // This handles MeTTa constructors like (And $a $b), (Pair $x $y), etc.
-                            generateQuote(mv, atom)
+                            // Unresolved symbol in function position — a data constructor like
+                            // (Cons …), (Pair $x $y). Quote it, but in this applicative
+                            // position evaluate any reducible call nested in its arguments
+                            // (`(Cons (Bind $x (ev $e $env)) …)` stores the VALUE of
+                            // `(ev …)`, not a thunk) — canonical MeTTa: a data constructor
+                            // does not suppress reduction of its arguments.
+                            generateQuote(mv, atom, evalCalls = true)
                         }
                     }
 
-                    is Variable -> generateLambdaCall(mv, func, arguments)
+                    is Variable -> {
+                        if (func.type is ArrowType) {
+                            generateLambdaCall(mv, func, arguments)
+                        } else {
+                            // Variable head without a static ArrowType — could be a
+                            // compiled lambda, could be a non-callable data atom, could
+                            // be anything. Defer the decision to runtime via the
+                            // JettaCallSite dispatcher.
+                            generateDispatchCall(mv, func, arguments)
+                        }
+                    }
 
-                    else -> TODO("Not implemented yet $func")
+                    is Lambda -> generateInlineLambdaCall(mv, func, arguments)
+
+                    else -> {
+                        // Expression with a non-callable head — a tuple of tuples such
+                        // as `((stop ventilation) (start kettle))` (e.g. the argument of
+                        // `superpose`), or a `(Grounded …)`/`(-> …)`-headed data form.
+                        // The resolver already stamps these as inert ATOM data; quote
+                        // the whole expression so it lives as a runtime Expression atom
+                        // (runtime dispatch may still reduce it via space rules).
+                        // Applicative order (symmetric with the unresolved-Symbol-head
+                        // case above): in this value position, a reducible SCALAR call
+                        // among the tuple elements is evaluated for its value/side effect
+                        // — e.g. `(hide ((add-atom …) (remove-atom …)))` must run its
+                        // element calls. Genuinely inert data (elements with
+                        // resolved == null, like `(stop ventilation)`) stays quoted, so
+                        // `superpose`'s data tuples are unaffected.
+                        generateQuote(mv, atom, evalCalls = true)
+                    }
                 }
             }
 
@@ -193,23 +318,26 @@ open class FunctionGenerator(
                 val slot = destructuredLocals[atom.name]
                 if (slot != null) {
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
+                    // A destructured pattern variable is an Atom (Grounded) at runtime.
+                    // When it is used as a primitive value (its inferred type is a
+                    // grounded value type), unwrap the Grounded and unbox so arithmetic
+                    // and primitive boxing see the raw primitive, not the Atom.
+                    val t = atom.type
+                    if (t is GroundedType && t.isGroundedValue()) {
+                        unwrapGroundedToPrimitive(mv, t)
+                    }
                 } else {
                     val paramIndex = function.getParameterIndex(atom)
                     if (paramIndex >= 0) {
                         generateLoadVar(mv, atom, function.params, isStatic, className)
-                    } else if (isLambdaCapturedVariable(atom)) {
-                        // Captured variable from enclosing scope — load via GETFIELD
-                        generateLoadVar(mv, atom, function.params, isStatic, className)
                     } else {
-                        // True free variable — create a raw Variable for match unification
+                        // True free variable — create a raw Variable for match unification.
                         generateNewVariable(mv, atom.name)
                     }
                 }
             }
 
             is Lambda -> {
-                mv.visitTypeInsn(Opcodes.NEW, atom.resolvedClassName!!)
-                mv.visitInsn(Opcodes.DUP)
                 val capturedVariables = atom.capturedVariables()
                 capturedVariables.forEach {
                     // Captured variables may come from destructured pattern bindings
@@ -227,14 +355,30 @@ open class FunctionGenerator(
                         generateLoadVar(mv, it, function.params, isStatic, className)
                     }
                 }
-                mv.visitMethodInsn(
-                    Opcodes.INVOKESPECIAL,
-                    atom.resolvedClassName,
-                    "<init>",
-                    mkLambdaInitDescriptor(capturedVariables),
-                    false
+                val invokedTypeDesc = buildString {
+                    append('(')
+                    capturedVariables.forEach { append(it.type!!.toJvmType()) }
+                    append(")L").append(JETTA_FUNCTION_INTERNAL_NAME).append(';')
+                }
+                val implDesc = buildString {
+                    append('(')
+                    capturedVariables.forEach { append(it.type!!.toJvmType()) }
+                    atom.params.forEach { append(it.type!!.toJvmType()) }
+                    append(')')
+                    append(atom.returnType!!.toJvmType())
+                }
+                mv.visitInvokeDynamicInsn(
+                    "apply",
+                    invokedTypeDesc,
+                    LAMBDA_BOOTSTRAP_HANDLE,
+                    Handle(
+                        Opcodes.H_INVOKESTATIC,
+                        enclosingClassInternalName,
+                        atom.resolvedMethodName!!,
+                        implDesc,
+                        false,
+                    ),
                 )
-                mv.visitTypeInsn(Opcodes.CHECKCAST, atom.arrowType!!.getJvmInterfaceName())
             }
 
             is Match -> generateMatch(mv, atom)
@@ -243,8 +387,15 @@ open class FunctionGenerator(
                 generateLoad(mv, atom)
             }
         }
-        if (needBoxing) generateBoxingIfNeeded(atom.type!!)
+        // A multivalued call already yields a `List` (a reference) on the stack at runtime,
+        // regardless of its scalar element `type` (e.g. a barrier argument like
+        // `(assertEqual (pick) 2)` where `pick` is `@multivalued -> Int` but its descriptor
+        // returns List). Boxing it as that primitive would emit `Integer.valueOf(I)` over a
+        // reference → VerifyError. Skip boxing for such calls — the List is already an Object.
+        val isMultivaluedCall = (atom as? Expression)?.resolved?.isMultiValued == true
+        if (needBoxing && !isMultivaluedCall) generateBoxingIfNeeded(atom.type!!)
         if (doReturn) {
+            coerceForReturn(atom)
             generateReturn(mv)
         } else {
             if (exit != null) {
@@ -253,7 +404,7 @@ open class FunctionGenerator(
         }
     }
 
-    private fun generateQuote(mv: LocalVariablesSorter, atom: Atom) {
+    private fun generateQuote(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
         when (atom) {
             is Expression -> {
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
@@ -263,10 +414,25 @@ open class FunctionGenerator(
                 val arr = mv.newLocal(Type.getObjectType("[$atomType"))
                 mv.visitTypeInsn(Opcodes.ANEWARRAY, atomType)
                 mv.visitVarInsn(Opcodes.ASTORE, arr)
-                atom.atoms.forEachIndexed { index, atom ->
+                atom.atoms.forEachIndexed { index, sub ->
                     mv.visitVarInsn(Opcodes.ALOAD, arr)
                     generateLoadInt(index)
-                    generateQuote(mv, atom)
+                    // Applicative order: in a value position (evalCalls), a reducible
+                    // SCALAR call nested in the constructor is evaluated and its value
+                    // stored — not quoted as a thunk. A multivalued call is left to the
+                    // CanonicalForm lifting; genuinely inert data (and `quote`d content,
+                    // evalCalls=false) is quoted as before.
+                    val subType = sub.type
+                    if (evalCalls && sub is Expression && sub.resolved != null &&
+                        sub.resolved?.isMultiValued != true
+                    ) {
+                        generateAtom(mv, sub, null, false)
+                        if (subType is GroundedType && subType.isGroundedValue()) {
+                            wrapValueOnStackInGrounded(subType)
+                        }
+                    } else {
+                        generateQuote(mv, sub, evalCalls)
+                    }
                     mv.visitInsn(Opcodes.AASTORE)
                 }
                 mv.visitVarInsn(Opcodes.ALOAD, arr)
@@ -381,8 +547,31 @@ open class FunctionGenerator(
 
             is Variable -> {
                 val slot = destructuredLocals[atom.name]
+                val param = function.params.find { it.name == atom.name }
+                val paramType = param?.type
                 if (slot != null) {
                     mv.visitVarInsn(Opcodes.ALOAD, slot)
+                } else if (param != null && paramType is GroundedType && paramType.isGroundedValue()) {
+                    // Capturing a primitive-valued parameter INTO quoted data: the
+                    // quoted Expression is made of Atoms, but the param is compiled as a
+                    // raw primitive (e.g. `int`). Load it by its REAL type (via the param
+                    // node, whose type is correct — the in-quote occurrence is resolved
+                    // only to Atom), box it, and wrap it in a Grounded so it is a valid
+                    // Atom. This is what makes `(eval '(+ $x 1))` capture `$x`'s value.
+                    mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Grounded::class.java))
+                    mv.visitInsn(Opcodes.DUP)
+                    generateLoadVar(mv, param, function.params, isStatic, className)
+                    boxIfNeeded(mv, paramType)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    generateLoadInt(2)
+                    mv.visitInsn(Opcodes.ACONST_NULL)
+                    mv.visitMethodInsn(
+                        Opcodes.INVOKESPECIAL,
+                        Type.getInternalName(Grounded::class.java),
+                        "<init>",
+                        "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                        false
+                    )
                 } else {
                     // Use generateLoadVar which handles function params, captured
                     // lambda fields, AND falls back to generateNewVariable for
@@ -391,11 +580,42 @@ open class FunctionGenerator(
                 }
             }
 
+            is Lambda -> {
+                // A Lambda atom inside a quoted expression — typically reached
+                // when an outer call's head is unresolved and the whole
+                // expression gets quoted as data (e.g. e2's unresolved
+                // `get-state`). At runtime the lambda creation yields a
+                // `JettaFunction` value; embedding that into the quoted
+                // expression keeps the call shape intact so the matcher / a
+                // downstream reduction can still see it.
+                generateAtom(mv, atom, null, false)
+            }
+
+            is ArrowType -> {
+                // Reify an arrow-type atom as the equivalent surface Expression
+                // `(-> t1 t2 … return)`. The rewriter folds `(-> …)` literals
+                // into [ArrowType] IR nodes (FunctionRewriter:339); reversing the
+                // fold here keeps quoted/data positions structurally comparable
+                // to whatever `(get-type …)` produces at runtime, without
+                // needing a separate runtime ArrowType-construction path.
+                generateQuote(mv, Expression(listOf(Special(Predefined.ARROW)) + atom.types))
+            }
+
             else -> TODO("Not implemented yet $atom")
         }
     }
 
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
+        // A Match whose clauses are provably mutually exclusive (FunctionRewriter did not
+        // mark the function multivalued) has at most one matching branch, so it compiles to
+        // a scalar dispatch — an if-else chain returning each branch value directly, with no
+        // ArrayList and no map?/flat-map? composition. Deterministic destructuring functions
+        // (ev/d/lookup) take this path and thus participate in plain arithmetic / deep
+        // composition instead of dragging the List machinery.
+        if ((function as? FunctionDefinition)?.isMultivalued() == false) {
+            generateScalarMatch(mv, match)
+            return
+        }
         emitLineNumber(match)
         val returnType = match.returnType
             ?: match.branches.firstNotNullOfOrNull { it.body.type }
@@ -407,40 +627,205 @@ open class FunctionGenerator(
         mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/util/ArrayList", "<init>", "()V", false)
         mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/List")
         mv.visitVarInsn(Opcodes.ASTORE, resultVar)
-        match.branches.forEach { branch -> generateMatchBranch(mv, branch, returnType, resultVar) }
+
+        // Non-reduction fallback bookkeeping. MeTTa semantics: reducing `(f a…)` is
+        // the query `(= (f a…) $r)`; if NO clause head unifies, the expression does
+        // not reduce and stays itself (its own normal form) — which is distinct from
+        // "reduced to the empty result". We track a `matched` flag (OR over branches:
+        // set when any guard passes, and always for an unconditional branch) and,
+        // only if no branch matched, append the inert `(f a…)`. The flag — NOT
+        // result.isEmpty() — is the correct trigger: an unconditional branch whose
+        // body legitimately yields empty must not fall back. Emitted only when (a)
+        // this is a named function and (b) some branch is guarded; an all-unconditional
+        // Match always matches, so the flag and fallback would be dead code.
+        val funcName = (function as? FunctionDefinition)?.name
+        val matchedVar = if (funcName != null && match.branches.any { it.cond != null }) {
+            val v = mv.newLocal(Type.BOOLEAN_TYPE)
+            mv.visitInsn(Opcodes.ICONST_0)
+            mv.visitVarInsn(Opcodes.ISTORE, v)
+            v
+        } else -1
+
+        match.branches.forEach { branch -> generateMatchBranch(mv, branch, returnType, resultVar, matchedVar) }
+
+        if (matchedVar >= 0) {
+            val skip = Label()
+            mv.visitVarInsn(Opcodes.ILOAD, matchedVar)
+            mv.visitJumpInsn(Opcodes.IFNE, skip)
+            generateNonReductionFallback(mv, funcName!!, resultVar)
+            mv.visitLabel(skip)
+        }
+
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
         generatePop(mv)
         mv.visitInsn(Opcodes.ARETURN)
     }
 
-    private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int) {
-        val elseLabel = Label()
-        if (branch.cond != null) {
-            emitLineNumber(branch.cond!!)
-            // Resolve bindings on parameters before evaluating conditions.
-            // This ensures that shared Variables passed from callers have
-            // their bindings applied before pattern matching.
-            for (i in function.params.indices) {
-                if (function.params[i].type != GroundedType.ATOM) continue
-                val paramOffset = if (isStatic) 0 else 1
-                mv.visitVarInsn(Opcodes.ALOAD, i + paramOffset)
-                mv.visitMethodInsn(
-                    Opcodes.INVOKESTATIC,
-                    Type.getInternalName(Matcher::class.java),
-                    "resolveBinding",
-                    "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
-                    false
-                )
-                mv.visitVarInsn(Opcodes.ASTORE, i + paramOffset)
-            }
-            val label = Label()
-            generateBooleanExpr(mv, branch.cond!!, label)
-            mv.visitLabel(label)
-            mv.visitInsn(Opcodes.ICONST_1)
-            mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
-        }
+    /**
+     * Scalar (single-valued) Match: an if-else chain over the branches, each returning its
+     * body directly via the `doReturn` path (which coerces to the function return type and,
+     * for an `if` body, fans out into a nested return-chain — no join, no List). The
+     * counterpart to the multivalued [generateMatch] for functions FunctionRewriter proved
+     * deterministic.
+     */
+    private fun generateScalarMatch(mv: LocalVariablesSorter, match: Match) {
+        emitLineNumber(match)
+        match.branches.forEach { branch -> generateScalarMatchBranch(mv, branch) }
+        generateScalarNoMatchFallback(mv)
+    }
 
-        // Extract destructured bindings into local variable slots
+    private fun generateScalarMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch) {
+        val elseLabel = Label()
+        emitBranchGuard(mv, branch, elseLabel)
+        val savedLocals = enterDestructuring(mv, branch)
+        // doReturn=true: generateAtom coerces the value to the return type and emits the
+        // return; an `if` body recurses per-arm (each arm coerces + returns), so a value-if
+        // with heterogeneous arms never needs a join.
+        val prev = scalarReturnCoercion
+        scalarReturnCoercion = true
+        generateAtom(mv, branch.body, null, doReturn = true)
+        scalarReturnCoercion = prev
+        restoreDestructuring(savedLocals)
+        if (branch.cond != null) mv.visitLabel(elseLabel)
+    }
+
+    /**
+     * No branch of a scalar Match matched. For a reference (Atom) return this is MeTTa's
+     * non-reduction: the expression is its own normal form, so return the inert
+     * `(funcName args…)` (an Expression IS an Atom). A primitive-typed function cannot
+     * represent that inert form, so a non-matching input is a type error there — throw.
+     */
+    private fun generateScalarNoMatchFallback(mv: LocalVariablesSorter) {
+        val returnType = function.returnType
+        val funcName = (function as? FunctionDefinition)?.name
+        if (funcName != null && !(returnType is GroundedType && returnType.isGroundedValue())) {
+            mv.visitLdcInsn(funcName)
+            emitParamArgsArray(mv)
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                "net/singularity/jetta/runtime/functions/JettaCallSite",
+                "nonReduced",
+                "(Ljava/lang/String;[Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+                false
+            )
+            generateReturn(mv)
+        } else {
+            mv.visitTypeInsn(Opcodes.NEW, "java/lang/RuntimeException")
+            mv.visitInsn(Opcodes.DUP)
+            mv.visitLdcInsn("no matching clause for ${funcName ?: "<anonymous>"}")
+            mv.visitMethodInsn(
+                Opcodes.INVOKESPECIAL,
+                "java/lang/RuntimeException",
+                "<init>",
+                "(Ljava/lang/String;)V",
+                false
+            )
+            mv.visitInsn(Opcodes.ATHROW)
+        }
+    }
+
+    /**
+     * Build an `Object[]` of the current call's argument values from the parameter slots:
+     * primitives loaded by their typed opcode and boxed, Atom params run through
+     * `Matcher.resolveBinding` (so caller free variables appear as their bound values),
+     * other references loaded raw. Shared by the non-reduction fallbacks.
+     */
+    private fun emitParamArgsArray(mv: LocalVariablesSorter) {
+        val paramOffset = if (isStatic) 0 else 1
+        generateLoadInt(function.params.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        function.params.forEachIndexed { i, param ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            val slot = i + paramOffset
+            when (val t = param.type) {
+                GroundedType.INT, GroundedType.BOOLEAN -> {
+                    mv.visitVarInsn(Opcodes.ILOAD, slot); generateBoxingIfNeeded(t)
+                }
+                GroundedType.LONG -> { mv.visitVarInsn(Opcodes.LLOAD, slot); generateBoxingIfNeeded(t) }
+                GroundedType.DOUBLE -> { mv.visitVarInsn(Opcodes.DLOAD, slot); generateBoxingIfNeeded(t) }
+                GroundedType.ATOM -> {
+                    mv.visitVarInsn(Opcodes.ALOAD, slot)
+                    mv.visitMethodInsn(
+                        Opcodes.INVOKESTATIC,
+                        RuntimeNames.MATCHER,
+                        "resolveBinding",
+                        "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                        false
+                    )
+                }
+                else -> mv.visitVarInsn(Opcodes.ALOAD, slot)
+            }
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+    }
+
+    /**
+     * Non-reduction fallback for equality dispatch when no compiled clause head
+     * matched (see [generateMatch]). Reconstructs `(funcName param0 param1 …)` from
+     * the local slots — Atom params run through [Matcher.resolveBinding] so caller
+     * free variables appear as their bound values; primitive params loaded with
+     * their typed opcode and boxed — then hands it to
+     * [net.singularity.jetta.runtime.functions.JettaCallSite.reduceOrInert]. That
+     * tier-0 dynamic step tries a space `(= (funcName args…) $r)` unification first
+     * (binding free-variable args the compiled `==`-path can't, e.g.
+     * `(prevents (making $y) …)`), returning the FULL match bag, and falls back to
+     * the inert `(funcName args…)` only when no rule unifies. The bag is `addAll`-ed
+     * into the result list — each element a `BoundAtom` the enclosing
+     * `flat-map?`/`map?` foliates per branch.
+     */
+    private fun generateNonReductionFallback(mv: LocalVariablesSorter, funcName: String, resultVar: Int) {
+        mv.visitVarInsn(Opcodes.ALOAD, resultVar)
+        mv.visitLdcInsn(moduleSpaceName)
+        mv.visitLdcInsn(funcName)
+        emitParamArgsArray(mv)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/functions/JettaCallSite",
+            "reduceOrInert",
+            "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/List;",
+            false
+        )
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "addAll", "(Ljava/util/Collection;)Z", true)
+        mv.visitInsn(Opcodes.POP)
+    }
+
+    /**
+     * Emit a branch guard: resolve caller bindings on Atom params, evaluate the branch
+     * condition, and jump to [elseLabel] if it fails. No-op for an unconditional branch.
+     * Shared by the multivalued (List) and scalar Match code paths.
+     */
+    private fun emitBranchGuard(mv: LocalVariablesSorter, branch: MatchBranch, elseLabel: Label) {
+        val cond = branch.cond ?: return
+        emitLineNumber(cond)
+        // Resolve bindings on parameters before evaluating conditions, so shared
+        // Variables passed from callers have their bindings applied before matching.
+        for (i in function.params.indices) {
+            if (function.params[i].type != GroundedType.ATOM) continue
+            val paramOffset = if (isStatic) 0 else 1
+            mv.visitVarInsn(Opcodes.ALOAD, i + paramOffset)
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                RuntimeNames.MATCHER,
+                "resolveBinding",
+                "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                false
+            )
+            mv.visitVarInsn(Opcodes.ASTORE, i + paramOffset)
+        }
+        val label = Label()
+        generateBooleanExpr(mv, cond, label)
+        mv.visitLabel(label)
+        mv.visitInsn(Opcodes.ICONST_1)
+        mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
+    }
+
+    /**
+     * Extract this branch's destructured pattern bindings into fresh local slots and
+     * register them in [destructuredLocals]. Returns the previous map so the caller can
+     * restore it after the branch (via [restoreDestructuring]). Shared by both paths.
+     */
+    private fun enterDestructuring(mv: LocalVariablesSorter, branch: MatchBranch): Map<String, Int> {
         val savedLocals = destructuredLocals.toMap()
         for (binding in branch.destructuredBindings) {
             val localSlot = mv.newLocal(Type.getObjectType("net/singularity/jetta/compiler/frontend/ir/Atom"))
@@ -462,6 +847,18 @@ open class FunctionGenerator(
             mv.visitVarInsn(Opcodes.ASTORE, localSlot)
             destructuredLocals[binding.syntheticName] = localSlot
         }
+        return savedLocals
+    }
+
+    private fun restoreDestructuring(savedLocals: Map<String, Int>) {
+        destructuredLocals.clear()
+        destructuredLocals.putAll(savedLocals)
+    }
+
+    private fun generateMatchBranch(mv: LocalVariablesSorter, branch: MatchBranch, resultType: Atom, resultVar: Int, matchedVar: Int) {
+        val elseLabel = Label()
+        emitBranchGuard(mv, branch, elseLabel)
+        val savedLocals = enterDestructuring(mv, branch)
 
         mv.visitVarInsn(Opcodes.ALOAD, resultVar)
         generateAtom(mv, branch.body, null, false)
@@ -472,13 +869,40 @@ open class FunctionGenerator(
         if (branch.body.type is SeqType) {
             mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "addAll", "(Ljava/util/Collection;)Z", true)
         } else {
-            generateBoxingIfNeeded(resultType)
+            val bodyType = branch.body.type
+            if (resultType is GroundedType && resultType.isGroundedValue() &&
+                !(bodyType is GroundedType && bodyType.isGroundedValue())
+            ) {
+                // The branch produced an Atom at runtime (e.g. the body is a destructured
+                // pattern variable like `$n` in `(= (ev (Lit $n)) $n)`) but the result
+                // bag holds a primitive value type. Unwrap the Grounded to its boxed
+                // value rather than boxing the Atom reference as if it were a primitive.
+                mv.visitTypeInsn(Opcodes.CHECKCAST, Type.getInternalName(Grounded::class.java))
+                mv.visitMethodInsn(
+                    Opcodes.INVOKEVIRTUAL,
+                    Type.getInternalName(Grounded::class.java),
+                    "getValue",
+                    "()Ljava/lang/Object;",
+                    false
+                )
+            } else {
+                generateBoxingIfNeeded(resultType)
+            }
             mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
         }
         mv.visitInsn(Opcodes.POP)
 
-        destructuredLocals.clear()
-        destructuredLocals.putAll(savedLocals)
+        if (matchedVar >= 0) {
+            // Reached only when this branch's guard passed (guarded branch) or
+            // unconditionally (no guard) — record that a clause head matched so the
+            // non-reduction fallback in generateMatch is suppressed. Set regardless
+            // of how many results the body produced (the flag tracks guard passage,
+            // not result count).
+            mv.visitInsn(Opcodes.ICONST_1)
+            mv.visitVarInsn(Opcodes.ISTORE, matchedVar)
+        }
+
+        restoreDestructuring(savedLocals)
 
         if (branch.cond != null) {
             mv.visitLabel(elseLabel)
@@ -495,8 +919,28 @@ open class FunctionGenerator(
         mv.visitVarInsn(Opcodes.ALOAD, arr)
         arguments.forEachIndexed { index, arg ->
             generateLoadInt(index)
-            generateLoad(mv, arg)
-            generateBoxingIfNeeded(arg.type!!)
+            val argType = arg.type
+            if (elementType is GroundedType && elementType.isGroundedValue() &&
+                !(argType is GroundedType && argType.isGroundedValue())
+            ) {
+                // The list holds a primitive (grounded value) element type, but this arg is
+                // an Atom at runtime — e.g. a destructured `$v` in a seq-wrapped scalar `if`
+                // arm, whose type is Atom while the seq's element type comes from the other
+                // (List) arm. Unwrap the Grounded to its raw value and re-box to the element
+                // type so the singleton list is element-compatible with the other arm's List
+                // (mirrors generateMatchBranch's scalar-result coercion). Without this the
+                // consuming map?/flat-map? lambda unboxes the element and hits a
+                // Grounded→Number ClassCastException.
+                generateAtom(mv, arg, null, false)
+                unwrapGroundedToPrimitive(mv, elementType)
+                generateBoxingIfNeeded(elementType)
+            } else {
+                // Route the element load through generateAtom (not the raw generateLoad) so a
+                // destructured-pattern local loads from its slot rather than being looked up
+                // as a function parameter. Literals still take the `else -> generateLoad`
+                // path; needBoxing boxes primitives / leaves Atom references untouched.
+                generateAtom(mv, arg, null, false, needBoxing = true)
+            }
             mv.visitInsn(Opcodes.AASTORE)
             mv.visitVarInsn(Opcodes.ALOAD, arr)
         }
@@ -509,11 +953,91 @@ open class FunctionGenerator(
         )
     }
 
+    /**
+     * Emit a grounded VALUE arg wrapped in a `Grounded` Atom: `new Grounded(box(value))`.
+     * Used when a primitive/String arg reaches an Atom-typed parameter (see [generateCall]) —
+     * mirrors the capture-into-quote path so both produce the same runtime Atom shape.
+     */
+    private fun generateGroundedValueArg(mv: LocalVariablesSorter, arg: Atom, type: GroundedType) {
+        mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Grounded::class.java))
+        mv.visitInsn(Opcodes.DUP)
+        generateAtom(mv, arg, null, false)
+        generateBoxingIfNeeded(type)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        generateLoadInt(mv, 2)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESPECIAL,
+            Type.getInternalName(Grounded::class.java),
+            "<init>",
+            "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+            false
+        )
+    }
+
+    /**
+     * Coerce the value on the stack (a body / if-arm about to be returned) from its own
+     * type to this function's declared/inferred return type — the partial-eval bridge
+     * between the primitive and Grounded worlds. Only for scalar (non-multivalued)
+     * functions; the multivalued path returns a List and handles its own element coercion.
+     *
+     *  - return primitive, body already that primitive → nothing (fast path).
+     *  - return primitive, body Int / Double mismatch → numeric widen (Int→Double).
+     *  - return primitive, body an Atom (a destructured `Grounded`) → unwrap to the raw
+     *    primitive. Justified by the declared/inferred primitive return; the Grounded
+     *    fallback below covers the cases where the return type stays Atom.
+     *  - return reference (Atom), body a grounded VALUE → box + wrap in a Grounded (an Atom).
+     *  - both references → nothing.
+     */
+    private fun coerceForReturn(atom: Atom) {
+        (function as? FunctionDefinition)?.let { if (it.isMultivalued()) return } // List path
+        val rt = function.returnType ?: return
+        val bt = atom.type ?: return
+        val rtIsValue = rt is GroundedType && rt.isGroundedValue()
+        val btIsValue = bt is GroundedType && bt.isGroundedValue()
+        when {
+            // BOX: a grounded VALUE on the stack where a reference (Atom) is returned — wrap
+            // it in a Grounded. Safe generally (`bt` being a value implies a primitive is on
+            // the stack): a scalar call's `int` result flowing into an Atom-returning map?/
+            // flat-map? lambda, e.g. `(\dv. (ev dv))` over a multivalued `(d …)`.
+            !rtIsValue && btIsValue -> wrapValueOnStackInGrounded(bt as GroundedType)
+            // UNWRAP / numeric-widen — only inside a scalar-Match body, where the branch
+            // bodies are known and the stack matches `bt`. Doing it elsewhere would
+            // double-unwrap an already-primitive result (e.g. a typed lambda call whose node
+            // type is Atom but which leaves a raw int).
+            scalarReturnCoercion && rtIsValue && !btIsValue -> unwrapGroundedToPrimitive(mv, rt as GroundedType)
+            scalarReturnCoercion && rtIsValue && btIsValue ->
+                if (bt == GroundedType.INT && rt == GroundedType.DOUBLE) mv.visitInsn(Opcodes.I2D)
+            else -> { /* representations already match — return as-is */ }
+        }
+    }
+
+    /** Box the primitive on top of the stack and wrap it in a `Grounded` (a valid Atom). */
+    private fun wrapValueOnStackInGrounded(type: GroundedType) {
+        generateBoxingIfNeeded(type)
+        val tmp = mv.newLocal(Type.getObjectType("java/lang/Object"))
+        mv.visitVarInsn(Opcodes.ASTORE, tmp)
+        mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Grounded::class.java))
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitVarInsn(Opcodes.ALOAD, tmp)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        generateLoadInt(mv, 2)
+        mv.visitInsn(Opcodes.ACONST_NULL)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESPECIAL,
+            Type.getInternalName(Grounded::class.java),
+            "<init>",
+            "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+            false
+        )
+    }
+
     private fun generateBoxingIfNeeded(type: Atom) {
         val (owner, name, desc) = when (type) {
             GroundedType.INT -> Triple("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-            GroundedType.BOOLEAN -> TODO()
+            GroundedType.BOOLEAN -> Triple("java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;")
             GroundedType.DOUBLE -> Triple("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
+            GroundedType.LONG -> Triple("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")
             else -> return
         }
         mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, desc, false)
@@ -526,11 +1050,18 @@ open class FunctionGenerator(
         resolved: ResolvedSymbol?
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
-        val filteredArgs = arguments.filter {
-            !(it is Symbol && it.name == Predefined.SELF)
-        }
-        filteredArgs.forEachIndexed { index, arg ->
-            generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
+        arguments.forEachIndexed { index, arg ->
+            val argType = arg.type
+            if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
+                // A grounded VALUE (Int/Double/String/…) passed to an Atom-typed parameter
+                // must be wrapped in a Grounded: a bare box (Integer) is not an Atom subtype,
+                // so the verifier rejects `Integer` where `Atom` is expected. Routine in
+                // higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load the
+                // raw value, box it, wrap in Grounded (which IS an Atom).
+                generateGroundedValueArg(mv, arg, argType)
+            } else {
+                generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
+            }
         }
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
@@ -547,15 +1078,85 @@ open class FunctionGenerator(
         }
     }
 
+    /**
+     * Inline lambda application: `((\\ params body) args)`. After [LetRewriter] +
+     * [net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter], every `let`
+     * desugars into this shape, so it shows up routinely. The Lambda head is itself
+     * an atom — emitting it creates a `JettaFunction` instance at runtime (via the
+     * indy lambda metafactory); the args are packed into an `Object[]`; then
+     * `INVOKEINTERFACE JettaFunction.apply` invokes the body.
+     */
+    private fun generateInlineLambdaCall(mv: LocalVariablesSorter, lambda: Lambda, arguments: List<Atom>) {
+        generateAtom(mv, lambda, null, false)
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitMethodInsn(
+            Opcodes.INVOKEINTERFACE,
+            JETTA_FUNCTION_INTERNAL_NAME,
+            "apply",
+            "([Ljava/lang/Object;)Ljava/lang/Object;",
+            true,
+        )
+        val returnType = lambda.returnType as? GroundedType
+        if (returnType != null) {
+            unboxIfNeeded(mv, returnType)
+        }
+    }
+
+    /**
+     * Variable-headed application where the head has no static ArrowType.
+     * Loads head + boxed-arg-array and dispatches through the JIT-eval bootstrap
+     * (see [net.singularity.jetta.runtime.functions.JettaCallSite]). At runtime
+     * the dispatcher invokes `JettaFunction.apply` if the head is a compiled
+     * lambda; otherwise it builds an inert `(head args…)` Expression.
+     */
+    private fun generateDispatchCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
+        val slot = destructuredLocals[variable.name]
+        if (slot != null) {
+            mv.visitVarInsn(Opcodes.ALOAD, slot)
+        } else {
+            generateLoadVar(mv, variable, function.params, isStatic, className)
+        }
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitInvokeDynamicInsn(
+            "apply",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            CALL_SITE_BOOTSTRAP_HANDLE,
+            // Static bootstrap arg: the space name to query for `(= …)` rules.
+            moduleSpaceName,
+        )
+    }
+
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
         if (index < 0) throw IllegalArgumentException(variable.toString())
-        mv.visitVarInsn(Opcodes.ALOAD, index)
-        arguments.forEach {
-            generateAtom(mv, it, null, false)
-            boxIfNeeded(mv, it.type as? GroundedType)
-        }
         val arrowType = variable.type as ArrowType
+        mv.visitVarInsn(Opcodes.ALOAD, index)
+        // Pack arguments into Object[] for the JettaFunction SAM.
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
         mv.visitMethodInsn(
             Opcodes.INVOKEINTERFACE,
             arrowType.getJvmInterfaceName(),
@@ -563,28 +1164,44 @@ open class FunctionGenerator(
             arrowType.getApplyJvmPlainDescriptor(),
             true
         )
-        unboxIfNeeded(mv, arrowType.types.last() as? GroundedType)
+        val returnType = arrowType.types.last() as? GroundedType
+        if (returnType != null) {
+            unboxIfNeeded(mv, returnType)
+        }
     }
 
     private fun generateReturn(mv: MethodVisitor) {
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            Type.getInternalName(Matcher::class.java),
-            "pop",
-            "()V",
-            false
-        )
+        // Only balance the entry push when this function actually established a frame.
+        if (usesMatcher) {
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                RuntimeNames.MATCHER,
+                "pop",
+                "()V",
+                false
+            )
+        }
         if (function is FunctionDefinition && function.isMultivalued()) {
             mv.visitInsn(Opcodes.ARETURN)
             return
         }
         when (function.returnType) {
             GroundedType.INT, GroundedType.BOOLEAN -> mv.visitInsn(Opcodes.IRETURN)
+            GroundedType.LONG -> mv.visitInsn(Opcodes.LRETURN)
             GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DRETURN)
             GroundedType.UNIT -> mv.visitInsn(Opcodes.RETURN)
-            GroundedType.ATOM -> mv.visitInsn(Opcodes.ARETURN)
-            GroundedType.LIST -> mv.visitInsn(Opcodes.ARETURN)
-            is SeqType -> mv.visitInsn(Opcodes.ARETURN)
+            // All reference-typed returns share ARETURN. Lambdas returning
+            // lambdas (ArrowType return — common in higher-order code like
+            // d2_higherfunc's `curry`) end up here.
+            GroundedType.ATOM,
+            GroundedType.LIST,
+            GroundedType.STRING,
+            GroundedType.EXPRESSION,
+            GroundedType.SPACE,
+            GroundedType.ANY,
+            GroundedType.NOTHING,
+            is SeqType,
+            is ArrowType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")
         }
     }
@@ -595,15 +1212,38 @@ open class FunctionGenerator(
         else -> false
     }
 
+    /**
+     * The primitive type a comparison should operate on, or null for a reference
+     * (symbol/structural) comparison. If either operand is statically a primitive
+     * (Int/Double/Boolean) the comparison is numeric/primitive, and the OTHER operand —
+     * an `Atom` at runtime, e.g. a destructured `Grounded` number — is unwrapped to that
+     * primitive (see [coerceComparisonOperand]). Matches hyperon: `(== $k 0)` compares
+     * grounded values, not object identity.
+     */
+    private fun numericCompareType(left: Atom, right: Atom): GroundedType? = when {
+        left.type == GroundedType.DOUBLE || right.type == GroundedType.DOUBLE -> GroundedType.DOUBLE
+        left.type == GroundedType.INT || right.type == GroundedType.INT -> GroundedType.INT
+        left.type == GroundedType.BOOLEAN || right.type == GroundedType.BOOLEAN -> GroundedType.BOOLEAN
+        else -> null
+    }
+
+    /** If [actual] is a reference (Atom/Any) but a primitive [target] is required for the
+     *  comparison, unwrap the Grounded and unbox. */
+    private fun coerceComparisonOperand(mv: MethodVisitor, actual: Atom?, target: GroundedType) {
+        if (actual == GroundedType.ATOM || actual == GroundedType.ANY) unwrapGroundedToPrimitive(mv, target)
+    }
+
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
         emitLineNumber(expr)
-        fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int) {
+        fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int, elemType: GroundedType = GroundedType.INT) {
             val label1 = Label()
             generateAtom(mv, left, label1, false)
             mv.visitLabel(label1)
+            coerceComparisonOperand(mv, left.type, elemType)
             val label2 = Label()
             generateAtom(mv, right, label2, false)
             mv.visitLabel(label2)
+            coerceComparisonOperand(mv, right.type, elemType)
             val jumpIfFalse = Label()
             mv.visitJumpInsn(inverseOp, jumpIfFalse)
             mv.visitInsn(Opcodes.ICONST_1)
@@ -618,7 +1258,9 @@ open class FunctionGenerator(
 
             // Push operands: left, then right
             generateAtom(mv, left, null, false)
+            coerceComparisonOperand(mv, left.type, GroundedType.DOUBLE)
             generateAtom(mv, right, null, false)
+            coerceComparisonOperand(mv, right.type, GroundedType.DOUBLE)
 
             // Compare the two doubles (result is int)
             mv.visitInsn(Opcodes.DCMPG)
@@ -689,10 +1331,11 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_EQ -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFEQ)
-                        } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPNE)
+                        val cmp = numericCompareType(left, right!!)
+                        if (cmp == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFEQ)
+                        } else if (cmp == GroundedType.INT || cmp == GroundedType.BOOLEAN) {
+                            generateIntComparison(left, right, Opcodes.IF_ICMPNE, cmp)
                         } else {
                             // Reference types (Atom, Symbol, etc.)
                             // If the right side is an Expression containing Variables,
@@ -704,7 +1347,7 @@ open class FunctionGenerator(
                                 generateQuote(mv, right)
                                 mv.visitMethodInsn(
                                     Opcodes.INVOKESTATIC,
-                                    Type.getInternalName(Matcher::class.java),
+                                    RuntimeNames.MATCHER,
                                     "structuralMatch",
                                     "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Z",
                                     false
@@ -725,10 +1368,11 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_NEQ -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFNE)
-                        } else if (left.type == GroundedType.INT || left.type == GroundedType.BOOLEAN) {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPEQ)
+                        val cmp = numericCompareType(left, right!!)
+                        if (cmp == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFNE)
+                        } else if (cmp == GroundedType.INT || cmp == GroundedType.BOOLEAN) {
+                            generateIntComparison(left, right, Opcodes.IF_ICMPEQ, cmp)
                         } else {
                             // Reference types — use !Object.equals()
                             generateAtom(mv, left, null, false)
@@ -748,39 +1392,72 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_GT -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFGT)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFGT)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPLE)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPLE)
                         }
                     }
 
                     Predefined.COND_LT -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFLT)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFLT)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPGE)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPGE)
                         }
                     }
 
                     Predefined.COND_GE -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFGE)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFGE)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPLT)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPLT)
                         }
                     }
 
                     Predefined.COND_LE -> {
-                        if (left.type == GroundedType.DOUBLE) {
-                            generateDoubleGt(left, right!!, Opcodes.IFLE)
+                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                            generateDoubleGt(left, right, Opcodes.IFLE)
                         } else {
-                            generateIntComparison(left, right!!, Opcodes.IF_ICMPGT)
+                            generateIntComparison(left, right, Opcodes.IF_ICMPGT)
                         }
                     }
 
-                    else -> TODO("Op=$op")
+                    // A non-comparison expression used as a condition — a predicate call
+                    // `(is-var $x)`, a nested `(if …)`, any boolean-returning form. Evaluate
+                    // it to a value and test truthiness at runtime (hyperon booleans are the
+                    // symbols True/False; a grounded Boolean also counts). Leaves the int 0/1
+                    // the caller's branch test expects.
+                    else -> {
+                        generateAtom(mv, expr, null, false)
+                        (expr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+                            ?.let { generateBoxingIfNeeded(it) }
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/JettaProgram",
+                            "isTruthy",
+                            "(Ljava/lang/Object;)Z",
+                            false
+                        )
+                    }
                 }
+            }
+
+            // A bare boolean literal used directly as a condition — `(if True …)` — must
+            // leave the int 0/1 the caller's IF_ICMPNE expects, not the Symbol/Grounded
+            // object that generateAtom would push (which the verifier rejects against int).
+            // Ordinary conditions are comparison Expressions handled above; this covers the
+            // constant-condition and boolean-valued-Grounded cases.
+            is Symbol -> when (expr.name) {
+                "True" -> mv.visitInsn(Opcodes.ICONST_1)
+                "False" -> mv.visitInsn(Opcodes.ICONST_0)
+                else -> generateAtom(mv, expr, exit, false)
+            }
+
+            is Grounded<*> -> if (expr.value is Boolean) {
+                generateLoadBoolean(expr.value as Boolean)
+            } else {
+                generateAtom(mv, expr, exit, false)
             }
 
             else -> generateAtom(mv, expr, exit, false)
@@ -795,9 +1472,28 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.ICONST_1)
         val elseLabel = Label()
         mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
+        // Value-producing if (the body of a Match branch / an argument): neither branch
+        // returns nor jumps to an outer exit, so the then-branch must jump PAST the else
+        // to a join — otherwise it falls through and both branches' values pile on the
+        // stack (ASM Frame.merge fails). For the doReturn / exit cases each branch already
+        // leaves via areturn / GOTO exit, so no join is needed.
+        val joinLabel = if (!doReturn && exit == null) Label() else null
+        // When the two arms leave DIFFERENT JVM stack types — a grounded primitive vs an
+        // object Atom, as in a 2-arg `(if cond then)` whose synthesized `()` else is an
+        // Expression — the join (or the method return) merges `int` with a reference and the
+        // verifier rejects it. Homogenize to Atom: wrap the primitive arm in Grounded (which
+        // IS an Atom). Only in the value-producing path, where each arm leaves its value on
+        // the stack right before the join so we can wrap in place.
+        val thenPrim = (thenExpr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+        val elsePrim = (elseExpr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+        val homogenize = joinLabel != null && (thenPrim == null) != (elsePrim == null)
         generateAtom(mv, thenExpr, exit, doReturn)
+        if (homogenize && thenPrim != null) wrapValueOnStackInGrounded(thenPrim)
+        if (joinLabel != null) mv.visitJumpInsn(Opcodes.GOTO, joinLabel)
         mv.visitLabel(elseLabel)
         generateAtom(mv, elseExpr, exit, doReturn)
+        if (homogenize && elsePrim != null) wrapValueOnStackInGrounded(elsePrim)
+        if (joinLabel != null) mv.visitLabel(joinLabel)
     }
 
     // FIXME: controversial, consider other options e.g. Atom <- Typed
@@ -816,7 +1512,18 @@ open class FunctionGenerator(
             mv.visitInsn(Opcodes.I2D)
             return
         }
-        TODO()
+        // Arithmetic over a value that is an Atom at runtime (an untyped function result
+        // or a free/Atom-typed variable that is a Grounded number) — `(+ (foo) (bar))`.
+        // Matches hyperon's grounded-op semantics: reduce the operand to its number.
+        // Unwrap the Grounded and unbox to the required primitive (Number.doubleValue
+        // copes when the Grounded holds an Int but a Double is required).
+        if ((type == GroundedType.ATOM || type == GroundedType.ANY) &&
+            requiredType is GroundedType && requiredType.isGroundedValue()
+        ) {
+            unwrapGroundedToPrimitive(mv, requiredType)
+            return
+        }
+        TODO("castIfNeeded $type -> $requiredType")
     }
 
     private fun generateDivide(
@@ -893,7 +1600,7 @@ open class FunctionGenerator(
 private fun generatePop(mv: LocalVariablesSorter) {
     mv.visitMethodInsn(
         Opcodes.INVOKESTATIC,
-        Type.getInternalName(Matcher::class.java),
+        RuntimeNames.MATCHER,
         "pop",
         "()V",
         false

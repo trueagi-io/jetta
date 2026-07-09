@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.frontend
 
 import net.singularity.jetta.compiler.frontend.ir.Run
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.parser.messages.ParseErrorMessage
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -246,5 +247,134 @@ class ParserTest : BaseFrontendTest() {
 
         assertEquals(1, program.code.size)
         assertTrue(program.code[0] is Run)
+    }
+
+    @Test
+    fun `parse identifier with trailing bang`() {
+        val program = justParse("(bind! foo bar)")
+        assertEquals(1, program.code.size)
+        val expr = program.code[0] as Expression
+        assertEquals(3, expr.atoms.size)
+        val head = expr.atoms[0] as Symbol
+        assertEquals("bind!", head.name)
+    }
+
+    @Test
+    fun `parse import bang as plain symbol`() {
+        val program = justParse("!(import! &self utils)")
+        assertEquals(1, program.code.size)
+        assertTrue(program.code[0] is Run)
+        val run = program.code[0] as Run
+        val expr = run.expression
+        assertEquals(3, expr.atoms.size)
+        assertEquals("import!", (expr.atoms[0] as Symbol).name)
+        assertEquals("&self", (expr.atoms[1] as Symbol).name)
+        assertEquals("utils", (expr.atoms[2] as Symbol).name)
+    }
+
+    @Test
+    fun `parse change-state bang`() {
+        val program = justParse("(change-state! foo 1)")
+        val expr = program.code[0] as Expression
+        assertEquals("change-state!", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse assertEqual without trailing bang`() {
+        val program = justParse("(assertEqual a b)")
+        val expr = program.code[0] as Expression
+        assertEquals("assertEqual", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `bare bang inside expression is a parse error`() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        parser.parse(
+            Source("BareBang.metta", "(foo !)"),
+            messageCollector
+        )
+        assertTrue(messageCollector.list().any { it is ParseErrorMessage })
+    }
+
+    @Test
+    fun `not-equals is a single token after grammar relax`() {
+        // Verifies that '!=' still lexes as NEQ rather than IDENT/BANG/EQUAL.
+        val program = justParse("(foo != bar)")
+        val expr = program.code[0] as Expression
+        assertEquals(3, expr.atoms.size)
+        // The middle atom is a Special(NEQ), not a symbol or two tokens.
+        // Surface check: stringification stays stable.
+        assertEquals("(foo != bar)", expr.toString())
+    }
+
+    @Test
+    fun `parse identifier with trailing question`() {
+        val program = justParse("(Frog? Sam)")
+        val expr = program.code[0] as Expression
+        assertEquals("Frog?", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse leading-dot identifier`() {
+        val program = justParse("(.tv x stv)")
+        val expr = program.code[0] as Expression
+        assertEquals(".tv", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse percent-bracketed meta-type`() {
+        val program = justParse("(: Left (-> %Undefined% Either))")
+        val expr = program.code[0] as Expression
+        val arrow = expr.atoms[2] as Expression
+        assertEquals("%Undefined%", (arrow.atoms[1] as Symbol).name)
+        assertEquals("Either", (arrow.atoms[2] as Symbol).name)
+    }
+
+    @Test
+    fun `parse standalone percent operator`() {
+        val program = justParse("(% 21 17)")
+        val expr = program.code[0] as Expression
+        assertEquals("%", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse comma as conjunction operator`() {
+        val program = justParse("(match _self (, (Frog _x) (implies (Frog _x) _y)) _y)")
+        val expr = program.code[0] as Expression
+        val conj = expr.atoms[2] as Expression
+        assertEquals(",", (conj.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse double-colon as cons-style symbol`() {
+        // `::` is a Lisp/Haskell convention for list cons used in MeTTa samples.
+        // It must parse as a single Symbol, not as two `:` (COLON) tokens.
+        val program = justParse("(:: 3 (:: 7 nil))")
+        val expr = program.code[0] as Expression
+        assertEquals("::", (expr.atoms[0] as Symbol).name)
+        val inner = expr.atoms[2] as Expression
+        assertEquals("::", (inner.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `parse double-colon with suffix`() {
+        // `::foo` is also a valid identifier — same start, plus body characters.
+        val program = justParse("(::foo bar)")
+        val expr = program.code[0] as Expression
+        assertEquals("::foo", (expr.atoms[0] as Symbol).name)
+    }
+
+    @Test
+    fun `single colon stays a type annotation`() {
+        // Critical: extending IDENT to accept `::` must not break the bare `:`
+        // type-annotation form. ANTLR's longest-match keeps a lone `:` as the
+        // COLON token, so `(: foo Int)` still parses as a type form.
+        val program = justParse("(: foo Int)")
+        val expr = program.code[0] as Expression
+        // Head is a Special(":"), not a Symbol — the rewriter / resolver path
+        // for type annotations is unaffected.
+        val head = expr.atoms[0]
+        assertEquals("class net.singularity.jetta.compiler.frontend.ir.Special", head.javaClass.toString())
     }
 }

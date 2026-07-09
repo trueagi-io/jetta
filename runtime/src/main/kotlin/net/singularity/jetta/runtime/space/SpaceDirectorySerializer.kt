@@ -12,7 +12,11 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 
 /**
- * Serializes and deserializes Space to/from a directory structure.
+ * Serializes and deserializes a [SpaceImpl] to/from the v2 directory layout
+ * (`<name>.jtsf` + `<name>.indices/` + `<name>.manifest.json`).
+ *
+ * The manifest is always v2 since Track 2E. Strategy-specific extension data
+ * (DeepCopy's loadModules, future Alias's aliases) is supplied by the caller.
  */
 object SpaceDirectorySerializer {
 
@@ -20,25 +24,20 @@ object SpaceDirectorySerializer {
     private const val VERSION: Byte = 1
 
     /**
-     * Save a Space to a directory with custom program name.
-     *
-     * Creates:
-     * - {directory}/{programName}.jtsf - main space store
-     * - {directory}/{programName}.manifest.json - manifest
-     * - {directory}/{programName}.indices/ - directory with index files
-     *
-     * @param space Space to serialize
-     * @param directory Target directory
-     * @param programName Custom program name (e.g., "MyProgram")
-     * @param spaceId UUID for this space (generated if not provided)
+     * Save [space] under [programName], wrapping a v2 manifest with the supplied
+     * [manifestExtension] and [strategyKind]. Default values match the legacy single-
+     * module test harness: a deep-copy artefact with no transitively-loaded modules.
      */
     fun save(
         space: SpaceImpl,
         directory: Path,
         programName: String = "space",
-        spaceId: UUID = UUID.randomUUID()
+        spaceId: UUID = UUID.randomUUID(),
+        manifestExtension: ManifestExtension = ManifestExtension.DeepCopy(emptyList()),
+        strategyKind: String = "deep-copy",
+        atomCount: Int = 0,
+        contentHash: String = "",
     ) {
-        // Create directory structure
         if (!directory.exists()) {
             directory.createDirectories()
         }
@@ -48,44 +47,47 @@ object SpaceDirectorySerializer {
         val indicesDir = directory.resolve("$programName.indices")
         indicesDir.createDirectories()
 
-        // Save main space store
         saveSpaceStore(space, spaceFile, spaceId)
-
-        // Save indices
         val indexMetadataList = saveIndices(space, indicesDir, spaceId, programName)
 
-        // Save manifest
-        val manifest = SpaceManifest(
-            version = "1.0",
-            spaceId = spaceId,
+        val manifest = ManifestV2(
+            version = 2,
+            kind = strategyKind,
+            spaceId = programName,
+            binaryUuid = spaceId,
             created = Instant.now(),
-            indices = indexMetadataList
+            indices = indexMetadataList,
+            extension = manifestExtension,
+            atomCount = atomCount,
+            contentHash = contentHash,
         )
         ManifestSerializer.save(manifest, manifestFile)
     }
 
     /**
-     * Load a Space from a directory using custom program name.
-     *
-     * @param directory Source directory
-     * @param programName Program name used during save
+     * Load the space stored under [programName] in [directory], returning just the
+     * [SpaceImpl] for callers (tests, the REPL) that don't need manifest metadata.
+     * Use [loadWithManifest] for the runtime init path which also needs the
+     * loadModules / aliases extension fields.
      */
-    fun load(directory: Path, programName: String = "space"): SpaceImpl {
+    fun load(directory: Path, programName: String = "space"): SpaceImpl =
+        loadWithManifest(directory, programName).first
+
+    /**
+     * Load the space + its manifest. The runtime ([JettaProgram.init]) uses this to
+     * see which sibling modules need loading alongside the entry program.
+     */
+    fun loadWithManifest(directory: Path, programName: String = "space"): Pair<SpaceImpl, ManifestV2> {
         val manifestFile = directory.resolve("$programName.manifest.json")
         val spaceFile = directory.resolve("$programName.jtsf")
 
-        // Load manifest
         val manifest = ManifestSerializer.load(manifestFile)
+        val space = loadSpaceStore(spaceFile, manifest.binaryUuid)
 
-        // Load space store
-        val space = loadSpaceStore(spaceFile, manifest.spaceId)
-
-        // Load indices
         manifest.indices.forEach { indexMeta ->
             val indexPath = directory.resolve(indexMeta.file)
-            val indexer = IndexSerializer.deserialize(indexPath, manifest.spaceId)
+            val indexer = IndexSerializer.deserialize(indexPath, manifest.binaryUuid)
 
-            // Restore indexer to space and set cached space reference
             val cachedSpaceField = IndexerImpl::class.java.getDeclaredField("cachedSpace")
             cachedSpaceField.isAccessible = true
             cachedSpaceField.set(indexer, space)
@@ -97,16 +99,13 @@ object SpaceDirectorySerializer {
             indexers[indexer.pattern] = indexer
         }
 
-        return space
+        return space to manifest
     }
 
     /**
-     * Save an additional index to an existing space directory.
-     *
-     * @param indexer Indexer to save
-     * @param directory Target directory
-     * @param programName Program name
-     * @param indexId Custom index ID (generated if not provided)
+     * Append a single index file to an existing space directory. Re-reads the
+     * manifest, adds the new index entry, and writes it back preserving every
+     * other field (kind, extension, binaryUuid).
      */
     fun saveIndex(
         indexer: IndexerImpl,
@@ -122,13 +121,10 @@ object SpaceDirectorySerializer {
         val indexFileName = "$indexId.jtsi"
         val indexPath = indicesDir.resolve(indexFileName)
 
-        // Save index file
-        IndexSerializer.serialize(indexer, manifest.spaceId, indexId, indexPath)
+        IndexSerializer.serialize(indexer, manifest.binaryUuid, indexId, indexPath)
 
-        // Get bindings count from packed index
         val packedIndex = indexer.getPackedIndex()
 
-        // Update manifest
         val newIndexMeta = IndexMetadata(
             id = indexId,
             file = "$programName.indices/$indexFileName",
@@ -137,31 +133,24 @@ object SpaceDirectorySerializer {
             bindingsCount = packedIndex.size()
         )
 
-        val updatedManifest = manifest.copy(
-            indices = manifest.indices + newIndexMeta
-        )
-
+        val updatedManifest = manifest.copy(indices = manifest.indices + newIndexMeta)
         ManifestSerializer.save(updatedManifest, manifestFile)
     }
 
     private fun saveSpaceStore(space: SpaceImpl, path: Path, spaceId: UUID) {
         val writer = BinaryWriter()
 
-        // Write header
         MAGIC.forEach { writer.writeByte(it) }
         writer.writeByte(VERSION)
 
-        // Write space ID
         writer.writeLong(spaceId.mostSignificantBits)
         writer.writeLong(spaceId.leastSignificantBits)
 
-        // Access store via reflection
         val storeField = SpaceImpl::class.java.getDeclaredField("store")
         storeField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         val store = storeField.get(space) as List<Expression>
 
-        // Write store
         writer.writeInt(store.size)
         store.forEach { expr ->
             val sExpr = expr.toSAtom() as SExpression
@@ -175,19 +164,16 @@ object SpaceDirectorySerializer {
         val bytes = Files.readAllBytes(path)
         val reader = BinaryReader(bytes)
 
-        // Verify magic number
         val magic = ByteArray(4) { reader.readByte() }
         if (!magic.contentEquals(MAGIC)) {
             throw IllegalArgumentException("Invalid magic number. Not a Jetta Space file.")
         }
 
-        // Verify version
         val version = reader.readByte()
         if (version != VERSION) {
             throw IllegalArgumentException("Unsupported version: $version. Expected: $VERSION")
         }
 
-        // Read and verify space ID
         val mostSigBits = reader.readLong()
         val leastSigBits = reader.readLong()
         val spaceId = UUID(mostSigBits, leastSigBits)
@@ -198,7 +184,6 @@ object SpaceDirectorySerializer {
 
         val space = SpaceImpl()
 
-        // Read store
         val storeSize = reader.readInt()
         repeat(storeSize) {
             val sExpr = SAtomSerializer.read(reader) as SExpression
@@ -215,7 +200,6 @@ object SpaceDirectorySerializer {
         spaceId: UUID,
         programName: String
     ): List<IndexMetadata> {
-        // Access indexers via reflection
         val indexersField = SpaceImpl::class.java.getDeclaredField("indexers")
         indexersField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
@@ -228,7 +212,6 @@ object SpaceDirectorySerializer {
 
             IndexSerializer.serialize(indexer, spaceId, indexId, indexPath)
 
-            // Get bindings count from packed index
             val packedIndex = indexer.getPackedIndex()
 
             IndexMetadata(

@@ -12,13 +12,13 @@ repositories {
 dependencies {
     implementation(project(":frontend-api"))
     implementation(project(":frontend"))
-    implementation(project(":runtime"))
     implementation(project(":logger"))
 
     implementation("org.ow2.asm:asm:9.4")
     implementation("org.ow2.asm:asm-commons:9.4")
     implementation("org.ow2.asm:asm-util:9.4")
 
+    testImplementation(project(":runtime"))
     testImplementation("org.jetbrains.kotlin:kotlin-test")
 }
 

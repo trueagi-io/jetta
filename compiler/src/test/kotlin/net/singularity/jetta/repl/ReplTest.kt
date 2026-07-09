@@ -249,5 +249,78 @@ class ReplTest {
         }
     }
 
+    @Test
+    fun `jit-eval of a quoted arithmetic expression`() {
+        val repl = createRepl()
+        // `'(+ 1 2)` is inert data (the tick reader macro); `eval` JIT-compiles and runs
+        // it at call time via JettaJit. Result is the multivalued bag [3].
+        repl.eval("""!(eval '(+ 1 2))""").let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[3]", it.result.toString())
+        }
+    }
+
+    @Test
+    fun `jit-eval of a quoted multivalued superpose`() {
+        val repl = createRepl()
+        repl.eval("""!(eval '(superpose (red yellow green)))""").let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[red, yellow, green]", it.result.toString())
+        }
+    }
+
+    @Test
+    fun `jit-eval links against a compiled user function`() {
+        val repl = createRepl()
+        // Define a multivalued user function, compiled to a real static method.
+        repl.eval("""
+            (@ color multivalued)
+            (: color (-> Atom))
+            (= (color) (superpose (red yellow green)))
+        """.trimIndent()).let { assertTrue(it.isSuccess) }
+        // `(eval '(color))` forks the live AOT Context, resolves `color` to its compiled
+        // class, and emits INVOKESTATIC against it (links, not recompiles) — the bag
+        // comes back from the already-compiled function.
+        repl.eval("""!(eval '(color))""").let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[red, yellow, green]", it.result.toString())
+        }
+    }
+
+    @Test
+    fun `runtime match self finds a rule in the live space`() {
+        val repl = createRepl()
+        // Same-JVM: the rule lives in the live compile-time space, which init now
+        // registers into the runtime registry — so `match &self` finds it (previously
+        // the runtime space was a fresh empty one and this returned nothing).
+        repl.eval("""
+            (= (foo) 0)
+        """.trimIndent()).let { assertTrue(it.isSuccess) }
+        repl.eval("""!(match &self (= (foo) _x) _x)""".replace('_', '$')).let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[0]", it.result.toString())
+        }
+    }
+
+    @Test
+    fun `jit-eval of match self routes to the live space`() {
+        val repl = createRepl()
+        repl.eval("""
+            (= (foo) 0)
+        """.trimIndent()).let { assertTrue(it.isSuccess) }
+        // The eval'd `match &self` bakes the CALLER's space name (via the Generator
+        // override), so it routes to the running program's live space — not an empty
+        // space named after the throwaway synthetic eval class.
+        repl.eval("""!(eval '(match &self (= (foo) _x) _x))""".replace('_', '$')).let {
+            it.messages.forEach(::println)
+            assertTrue(it.isSuccess)
+            assertEquals("[0]", it.result.toString())
+        }
+    }
+
     private fun createRepl(): Repl = ReplImpl()
 }

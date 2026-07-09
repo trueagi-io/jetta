@@ -9,11 +9,15 @@ import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.RewriteException
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
 import net.singularity.jetta.compiler.logger.LogConfig
+import net.singularity.jetta.runtime.functions.JitEnv
+import net.singularity.jetta.runtime.functions.JitEnvRegistry
+import net.singularity.jetta.runtime.space.SpaceImpl
 import java.io.File
 
 class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = LogLevel.DEBUG) : Repl {
@@ -22,7 +26,7 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
 
     private val messageCollector = MessageCollector()
 
-    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl)
+    private val context = Context(messageCollector, runtime.mapImpl, runtime.flatMapImpl, SpaceImpl())
 
     init {
         LogConfig.level = logLevel
@@ -46,10 +50,18 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
         result.forEach(classLoader::add)
         val main = result.find { it.className == filename }!!
         val clazz = classLoader.loadClass(main.className)
+        // Expose the live resolved environment to JIT-eval for the duration of this run:
+        // `(eval '(expr))` executed inside __main forks `context` to resolve user
+        // functions and links against their compiled classes in `classLoader`. Cleared
+        // afterwards so it can't leak into a later, unrelated run.
+        JitEnvRegistry.install(JitEnv(context, classLoader, context.getSpace()))
         try {
             val method = clazz.getMethod(FunctionRewriter.MAIN)
             return EvalResult(method.invoke(null), messages, true)
-        } catch (_: NoSuchMethodException) { }
+        } catch (_: NoSuchMethodException) {
+        } finally {
+            JitEnvRegistry.clear()
+        }
         return EvalResult(null, messages, true)
     }
 
@@ -61,7 +73,13 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
     private fun compile(filename: String, code: String): List<CompilationResult> {
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
+        rewriter.add {
+            FunctionRewriter(
+                messageCollector, context.getSpace(),
+                isReducibleName = { context.resolve(it) != null }
+            )
+        }
+        rewriter.add { LetRewriter() }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = try {

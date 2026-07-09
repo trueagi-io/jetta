@@ -184,4 +184,122 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             )
         }
     }
+
+    @Test
+    fun `free-variable argument reduces via space unification`() {
+        compile(
+            "FreeVarArgReduce.metta",
+            $$"""
+                ; A compiled equality-dispatch function called with a FREE-variable
+                ; argument cannot bind it through the boolean ==-path, so dispatch
+                ; falls to the non-reduction fallback. That fallback first tries a
+                ; space `(= (f args) $r)` unification, which DOES bind the free var
+                ; ($y = (air dry)) and reduces to T — only the first fact unifies.
+                ; This is the b4_nondeterm deduction primitive
+                ; `(prevents (making $y) (making (air wet)))`.
+                (= (prevents (making (air dry)) (making (air wet))) T)
+                (= (prevents (making (air wet)) (making (air dry))) T)
+
+                !(prevents (making $y) (making (air wet)))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("FreeVarArgReduce")
+            val value = classes["FreeVarArgReduce"]!!.getMethod("__main").invoke(null) as List<*>
+            assertEquals(1, value.size)
+            assertEquals("T", value[0].toString())
+        }
+    }
+
+    @Test
+    fun `cross-conjunct binding constrains the unification lookup`() {
+        compile(
+            "CrossBindConstrain.metta",
+            $$"""
+                ; The cross-conjunct binding case: $y is produced by the outer
+                ; `(makes $z $y)` (→ (air wet)) and CONSUMED by the inner
+                ; `(prevents (making $y) …)`. Deep variable resolution must apply
+                ; the branch's $y to the inner lookup, so the lookup sees
+                ; `(prevents (making (air wet)) (making (air wet)))` — which has NO
+                ; rule — leaving the And inert. Without deep resolution the lookup
+                ; would see $y free, wrongly re-bind it to (air dry) via the fact,
+                ; and reduce to T. Mirrors b4_nondeterm's deduction conjunction.
+                (= (And T T) T)
+                (= (prevents (making (air dry)) (making (air wet))) T)
+                (= (makes kettle (air wet)) T)
+                (= (deduce $x)
+                   (And (prevents (making $y) (making $x)) (makes $z $y)))
+
+                !(deduce (air wet))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("CrossBindConstrain")
+            val value = classes["CrossBindConstrain"]!!.getMethod("__main").invoke(null) as List<*>
+            // The single (air wet)-binding branch fails `prevents`, so the And stays
+            // inert — crucially NOT reduced to T (which is what a free, un-resolved
+            // $y would have produced).
+            assertEquals(1, value.size)
+            assertTrue(
+                value.none { it.toString() == "T" },
+                "deep-resolve must keep the inconsistent branch inert, got: $value"
+            )
+            assertTrue(value[0].toString().contains("And"), "expected inert And, got: $value")
+        }
+    }
+
+    @Test
+    fun `deep deduction over And with cross-conjunct binding (b4 11 12)`() {
+        compile(
+            "DeepDeduction.metta",
+            $$"""
+                ; b4_nondeterm's deep deduction. `make` rule B's condition is an `And`
+                ; over two multivalued conjuncts sharing $y: $y is produced by the left
+                ; `prevents` (outer, left-to-right) and consumed by the right `makes`;
+                ; $z then flows from `makes` to the result `(stop $z)`. The outer `ift`
+                ; must apply per And-result with $z LIVE (compiled ift-innermost), not
+                ; over a collapsed bag. The two `!` runs are independent — bindings from
+                ; the first must not leak into the second.
+                (= (ift T $then) $then)
+                (= (And T T) T)
+                (= (make $x) (ift (makes $y $x) (start $y)))
+                (= (make $x) (ift (And (prevents (making $y) (making $x))
+                                       (makes $z $y)) (stop $z)))
+                (= (prevents (making (air dry)) (making (air wet))) T)
+                (= (prevents (making (air wet)) (making (air dry))) T)
+                (= (makes humidifier (air wet)) T)
+                (= (makes kettle (air wet)) T)
+                (= (makes ventilation (air dry)) T)
+                (= (is (air dry)) (make (air wet)))
+                (= (is (air wet)) (make (air dry)))
+
+                !(assertEqual (is (air dry))
+                  (superpose ((stop ventilation) (start kettle) (start humidifier))))
+                !(assertEqual (is (air wet))
+                  (superpose ((stop kettle) (stop humidifier) (start ventilation))))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("DeepDeduction")
+            // __main runs both asserts in sequence (clearAll between them); a failed
+            // assert throws, so reaching the end means both deductions reduced to the
+            // expected bag.
+            classes["DeepDeduction"]!!.getMethod("__main").invoke(null)
+        }
+    }
 }

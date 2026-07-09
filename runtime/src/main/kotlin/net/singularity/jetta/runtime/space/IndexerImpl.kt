@@ -2,6 +2,7 @@ package net.singularity.jetta.runtime.space
 
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
+import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.space.atoms.SAtom
@@ -126,6 +127,22 @@ class IndexerImpl(val pattern: Expression) : Indexer {
         }
     }
 
+    /**
+     * Incrementally fold a single newly-added store atom into this already-built index,
+     * without re-scanning the store. Called by [SpaceImpl.add] for every cached indexer so
+     * that a `match` immediately following an `add-atom` sees the new fact — the packed
+     * index stays live under runtime mutation instead of going stale. [storeIndex] must be
+     * the atom's real position in the space store (the [PackedBinding]s baked here resolve
+     * back through `store[storeIndex]`). No-op when the atom does not match this pattern.
+     */
+    fun indexOne(space: SpaceImpl, expr: Expression, storeIndex: Int) {
+        cachedSpace = space
+        tryMatch(expr, storeIndex, space)?.let { (match, subs) ->
+            packedMatches.add(match)
+            spaceVarSubstitutions.add(subs)
+        }
+    }
+
     private fun tryMatch(expr: Expression, storeIndex: Int, space: SpaceImpl): Pair<PackedMatch, Map<String, SAtom>>? {
         val bindings = Array<PackedBinding?>(schema.size()) { null }
         val spaceVarBindings = mutableMapOf<String, SAtom>()
@@ -211,6 +228,25 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                             return false
                         }
                     } else if (exprAtom !is Grounded<*> || exprAtom.value != patternAtom.value) {
+                        return false
+                    }
+                }
+
+                is Special -> {
+                    // Special atoms (`:`, `=`, `@`, `->`) appear as plain data in
+                    // space facts after the rewriter fallback (21bbee2) — e.g.
+                    // `(:= (Green Sam) T)` parses to `(: = (Green Sam) T)`, a
+                    // four-atom expression with two leading Specials. They must
+                    // unify just like Symbols do.
+                    if (exprAtom is Variable) {
+                        val patternSAtom = patternAtom.toSAtom()
+                        val existing = spaceVarBindings[exprAtom.name]
+                        if (existing == null) {
+                            spaceVarBindings[exprAtom.name] = patternSAtom
+                        } else if (existing != patternSAtom) {
+                            return false
+                        }
+                    } else if (exprAtom !is Special || exprAtom.value != patternAtom.value) {
                         return false
                     }
                 }

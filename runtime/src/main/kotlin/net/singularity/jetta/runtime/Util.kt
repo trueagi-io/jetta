@@ -1,34 +1,42 @@
 package net.singularity.jetta.runtime
 
+import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
+import net.singularity.jetta.runtime.functions.JettaFunction
+
+// Materialise a branch result against the bindings its branch installed: a plain
+// Atom carrying bound variables (e.g. ift returning `(stop $z)` with $z bound to
+// ventilation) is deep-resolved to `(stop ventilation)`. BoundAtoms are left intact
+// so their per-branch bindings keep foliating downstream map?/flat-map? stages.
+private fun materialize(value: Any?): Any? =
+    if (value is Atom && value !is BoundAtom) Matcher.resolveDeep(value) else value
 
 @Suppress("unused")
-fun <T, R> simpleMap(f: java.util.function.Function<T, R>, list: List<T>): List<R> {
-    val result = ArrayList<R>(list.size)
+fun simpleMap(f: JettaFunction, list: List<Any?>): List<Any?> {
+    val result = ArrayList<Any?>(list.size)
     for (element in list) {
         Matcher.push()
         val unwrapped = if (element is BoundAtom) {
             Matcher.getBindings().putAll(element.bindings)
-            @Suppress("UNCHECKED_CAST")
-            element.atom as T
+            element.atom
         } else element
-        result.add(f.apply(unwrapped))
+        result.add(materialize(f.apply(arrayOf(unwrapped))))
         Matcher.pop()
     }
     return result
 }
 
 @Suppress("unused")
-fun <T, R> simpleFlatMap(f: java.util.function.Function<T, java.util.List<R>>, list: List<T>): List<R> {
-    val result = ArrayList<R>(list.size)
+fun simpleFlatMap(f: JettaFunction, list: List<Any?>): List<Any?> {
+    val result = ArrayList<Any?>(list.size)
     for (element in list) {
         Matcher.push()
         val unwrapped = if (element is BoundAtom) {
             Matcher.getBindings().putAll(element.bindings)
-            @Suppress("UNCHECKED_CAST")
-            element.atom as T
+            element.atom
         } else element
-        result.addAll(f.apply(unwrapped))
+        @Suppress("UNCHECKED_CAST")
+        (f.apply(arrayOf(unwrapped)) as List<Any?>).forEach { result.add(materialize(it)) }
         Matcher.pop()
     }
     return result

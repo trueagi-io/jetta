@@ -1,110 +1,107 @@
 package net.singularity.jetta.compiler.backend
 
-import net.singularity.jetta.compiler.frontend.ir.*
-import net.singularity.jetta.compiler.frontend.resolve.*
+import net.singularity.jetta.compiler.frontend.ir.Lambda
+import net.singularity.jetta.compiler.frontend.resolve.toJvmType
 import org.objectweb.asm.ClassWriter
-import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Handle
 import org.objectweb.asm.Opcodes
-import org.objectweb.asm.Type
 import org.objectweb.asm.commons.LocalVariablesSorter
 
-class LambdaGenerator(private val className: String, private val lambda: Lambda) {
-    private val capturedVariables = lambda.capturedVariables()
+const val JETTA_FUNCTION_INTERNAL_NAME =
+    "net/singularity/jetta/runtime/functions/JettaFunction"
 
-    fun generate(): CompilationResult {
-        val cw = ClassWriter(ClassWriter.COMPUTE_MAXS or ClassWriter.COMPUTE_FRAMES)
-        cw.visit(
-            Constants.JVM_TARGET_VERSION,
-            Opcodes.ACC_PUBLIC,
-            className,
-            lambda.arrowType!!.signature(),
-            Type.getInternalName(Object::class.java),
-            arrayOf(lambda.arrowType!!.getJvmInterfaceName())
-        )
-        lambda.position?.let { cw.visitSource(it.filename, null) }
-        val init = cw.visitMethod(
-            Opcodes.ACC_PUBLIC,
-            "<init>",
-            mkLambdaInitDescriptor(capturedVariables),
-            null,
-            null
-        )
-        generateFields(cw)
-        generateInit(init)
-        val genericApply = cw.visitMethod(
-            Opcodes.ACC_PUBLIC,
-            "apply",
-            lambda.arrowType!!.getApplyJvmPlainDescriptor(),
-            null,
-            null
-        )
-        generateGenericApply(genericApply)
-        val methodDesc = lambda.arrowType!!.getApplyJvmDescriptor(false)
-        val apply = LocalVariablesSorter(
-            Opcodes.ACC_PRIVATE,
-            methodDesc,
-            cw.visitMethod(
-                Opcodes.ACC_PRIVATE,
-                "apply",
-                methodDesc,
-                null,
-                null
-            )
-        )
-        generateApply(apply)
-        return CompilationResult(className, cw.toByteArray())
+private const val JETTA_LAMBDA_METAFACTORY_INTERNAL_NAME =
+    "net/singularity/jetta/runtime/functions/JettaLambdaMetafactory"
+
+private const val LAMBDA_BOOTSTRAP_DESCRIPTOR =
+    "(Ljava/lang/invoke/MethodHandles\$Lookup;" +
+        "Ljava/lang/String;" +
+        "Ljava/lang/invoke/MethodType;" +
+        "Ljava/lang/invoke/MethodHandle;" +
+        ")Ljava/lang/invoke/CallSite;"
+
+/**
+ * Static handle to [net.singularity.jetta.runtime.functions.JettaLambdaMetafactory.bootstrap],
+ * embedded in every indy lambda creation site as the bootstrap method.
+ */
+val LAMBDA_BOOTSTRAP_HANDLE: Handle = Handle(
+    Opcodes.H_INVOKESTATIC,
+    JETTA_LAMBDA_METAFACTORY_INTERNAL_NAME,
+    "bootstrap",
+    LAMBDA_BOOTSTRAP_DESCRIPTOR,
+    false,
+)
+
+private const val JETTA_CALL_SITE_INTERNAL_NAME =
+    "net/singularity/jetta/runtime/functions/JettaCallSite"
+
+private const val CALL_SITE_BOOTSTRAP_DESCRIPTOR =
+    "(Ljava/lang/invoke/MethodHandles\$Lookup;" +
+        "Ljava/lang/String;" +
+        "Ljava/lang/invoke/MethodType;" +
+        // Trailing static bootstrap arg: the owning module's space name, baked at
+        // each dispatch site so JettaCallSite can query the right space for `(= …)`
+        // rules. Bound into the dispatch handle by JettaCallSite.bootstrap.
+        "Ljava/lang/String;" +
+        ")Ljava/lang/invoke/CallSite;"
+
+/**
+ * Static handle to [net.singularity.jetta.runtime.functions.JettaCallSite.bootstrap],
+ * embedded in every indy JIT-eval dispatch site (`(head args…)` where head is not
+ * a statically-known compiled-function Symbol).
+ */
+val CALL_SITE_BOOTSTRAP_HANDLE: Handle = Handle(
+    Opcodes.H_INVOKESTATIC,
+    JETTA_CALL_SITE_INTERNAL_NAME,
+    "bootstrap",
+    CALL_SITE_BOOTSTRAP_DESCRIPTOR,
+    false,
+)
+
+/**
+ * Emits a lambda body as a `private static synthetic` method on the enclosing
+ * class. The method signature is `(captures..., samArgs-typed...) -> samReturn-typed`.
+ * Captures take the leading slots — variable references in the body resolve to
+ * those parameters via the regular parameter-index logic (no GETFIELD pathway
+ * needed, no per-lambda class generated).
+ *
+ * The created indy site at the lambda's creation point pairs this static body
+ * with [net.singularity.jetta.runtime.functions.JettaLambdaMetafactory.bootstrap].
+ */
+fun emitLambdaMethod(
+    cw: ClassWriter,
+    enclosingClassInternalName: String,
+    methodName: String,
+    lambda: Lambda,
+    moduleSpaceName: String,
+) {
+    val captures = lambda.capturedVariables()
+    val descriptor = buildString {
+        append('(')
+        captures.forEach { append(it.type!!.toJvmType()) }
+        lambda.params.forEach { append(it.type!!.toJvmType()) }
+        append(')')
+        append(lambda.returnType!!.toJvmType())
     }
 
-    private fun generateFields(cw: ClassWriter) {
-        capturedVariables.forEach {
-            cw.visitField(
-                Opcodes.ACC_PRIVATE,
-                it.name,
-                it.type!!.toJvmType(),
-                null,
-                null
-            )
-        }
-    }
+    val access = Opcodes.ACC_PRIVATE or Opcodes.ACC_STATIC or Opcodes.ACC_SYNTHETIC
+    val raw = cw.visitMethod(access, methodName, descriptor, null, null)
+    lambda.position?.let { /* line numbers emitted by FunctionGenerator */ }
 
-    private fun generateInit(mv: MethodVisitor) {
-        mv.visitVarInsn(Opcodes.ALOAD, 0)
-        mv.visitMethodInsn(
-            Opcodes.INVOKESPECIAL,
-            "java/lang/Object",
-            "<init>",
-            "()V",
-            false
-        )
-        capturedVariables.forEach {
-            mv.visitVarInsn(Opcodes.ALOAD, 0)
-            generateLoadVar(mv, it, capturedVariables, false, null)
-            mv.visitFieldInsn(Opcodes.PUTFIELD, className, it.name, it.type!!.toJvmType())
-        }
-        mv.visitInsn(Opcodes.RETURN)
-        mv.visitMaxs(1, 1)
-    }
+    val mv = LocalVariablesSorter(access, descriptor, raw)
 
-    private fun generateApply(mv: LocalVariablesSorter) {
-        val generator = FunctionGenerator(mv, lambda, false, className)
-        generator.generate()
-    }
+    // Synthetic Lambda with captures spliced into the params list — that's how
+    // captured-variable references inside the body resolve to method parameters
+    // (LOAD instructions) instead of to capture fields (GETFIELD).
+    val syntheticParams = captures + lambda.params
+    val synthetic = Lambda(syntheticParams, lambda.arrowType, lambda.body, lambda.position)
 
-    private fun generateGenericApply(mv: MethodVisitor) {
-        mv.visitVarInsn(Opcodes.ALOAD, 0) // this
-        lambda.params.forEachIndexed { index, variable ->
-            mv.visitVarInsn(Opcodes.ALOAD, index + 1)
-            unboxIfNeeded(mv, variable.type as? GroundedType)
-        }
-        mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL,
-            className,
-            "apply",
-            lambda.arrowType!!.getApplyJvmDescriptor(false),
-            false
-        )
-        boxIfNeeded(mv, lambda.returnType as? GroundedType)
-        mv.visitInsn(Opcodes.ARETURN)
-        mv.visitMaxs(lambda.params.size + 1, lambda.params.size + 1)
-    }
+    FunctionGenerator(
+        mv = mv,
+        function = synthetic,
+        isStatic = true,
+        className = null,
+        moduleSpaceName = moduleSpaceName,
+        enclosingClassInternalName = enclosingClassInternalName,
+    ).generate()
 }

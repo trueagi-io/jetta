@@ -108,7 +108,7 @@ class ExternalCallsTest : GeneratorTestBase() {
             }
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
-            assertEquals(2, classes.size)
+            assertEquals(1, classes.size)
             val res = classes["GenerateSimple"]!!.getMethod("__main").invoke(null)
             println(res)
         }

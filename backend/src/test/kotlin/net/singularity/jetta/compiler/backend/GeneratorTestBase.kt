@@ -10,12 +10,14 @@ import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
+import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
 import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.logger.Logger
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.runtime.JettaProgram
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
+import net.singularity.jetta.runtime.space.SpaceImpl
 import java.io.File
 import kotlin.io.path.Path
 
@@ -33,14 +35,21 @@ abstract class GeneratorTestBase {
         code: String,
         mapImpl: JvmMethod? = null,
         flatMapImpl: JvmMethod? = null,
+        autoTable: Boolean = false,
         init: (Context) -> Unit = {}
     ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, mapImpl, flatMapImpl)
+        val context = Context(messageCollector, mapImpl, flatMapImpl, SpaceImpl())
         init(context)
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
-        rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
+        rewriter.add {
+            FunctionRewriter(
+                messageCollector, context.getSpace(),
+                isReducibleName = { context.resolve(it) != null }
+            )
+        }
+        rewriter.add { LetRewriter() }
         rewriter.add { LambdaRewriter(messageCollector) }
         val parsed = parser.parse(Source(filename, code), messageCollector)
         val result = rewriter.rewrite(parsed).let { context.resolveRecursively(it) }
@@ -52,10 +61,10 @@ abstract class GeneratorTestBase {
         }
         val outputDir = Path("/tmp/metta")
         val programName = filename.substringBeforeLast('.')
-        SpaceDirectorySerializer.save(context.getSpace(), outputDir, programName = programName)
+        SpaceDirectorySerializer.save(context.getSpace() as SpaceImpl, outputDir, programName = programName)
         JettaProgram.setDataDir(outputDir)
 
-        val generator = Generator()
+        val generator = Generator(autoTable = autoTable)
         val compiled = generator.generate(result)
         compiled.forEach {
             log.debug { "Writing " + it.className }
@@ -70,7 +79,7 @@ abstract class GeneratorTestBase {
         flatMapImpl: JvmMethod? = null
     ): Pair<List<CompilationResult>, MessageCollector> {
         val messageCollector = MessageCollector()
-        val context = Context(messageCollector, mapImpl, flatMapImpl)
+        val context = Context(messageCollector, mapImpl, flatMapImpl, SpaceImpl())
         val parser = createParserFacade()
         val rewriter = CompositeRewriter()
         rewriter.add { FunctionRewriter(messageCollector, context.getSpace()) }
@@ -108,14 +117,12 @@ abstract class GeneratorTestBase {
     protected val mapImpl = JvmMethod(
         owner = "net/singularity/jetta/runtime/UtilKt",
         name = "simpleMap",
-        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
-        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;TR;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+        descriptor = "(Lnet/singularity/jetta/runtime/functions/JettaFunction;Ljava/util/List;)Ljava/util/List;",
     )
 
     protected val flatMapImpl = JvmMethod(
         owner = "net/singularity/jetta/runtime/UtilKt",
         name = "simpleFlatMap",
-        descriptor = "(Ljava/util/function/Function;Ljava/util/List;)Ljava/util/List;",
-        signature = "<T:Ljava/lang/Object;R:Ljava/lang/Object;>(Ljava/util/function/Function<TT;Ljava/util/List<TR;>;>;Ljava/util/List<+TT;>;)Ljava/util/List<TR;>;",
+        descriptor = "(Lnet/singularity/jetta/runtime/functions/JettaFunction;Ljava/util/List;)Ljava/util/List;",
     )
 }

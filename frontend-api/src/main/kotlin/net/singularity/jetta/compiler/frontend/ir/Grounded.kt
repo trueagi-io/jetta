@@ -8,7 +8,10 @@ class Grounded<T>(val value: T, override val position: SourcePosition? = null) :
             is Boolean -> GroundedType.BOOLEAN
             is Double -> GroundedType.DOUBLE
             is String -> GroundedType.STRING
-            else -> TODO("Not implemented yet $value")
+            // Any other object is an opaque grounded value (e.g. a runtime state cell) — a
+            // plain reference with no primitive unboxing. This is the whole point of a
+            // "grounded" atom: wrap a foreign object and carry it through as an Atom.
+            else -> GroundedType.ATOM
         }
 
     override val id: Int = UniqueAtomIdGenerator.generate()

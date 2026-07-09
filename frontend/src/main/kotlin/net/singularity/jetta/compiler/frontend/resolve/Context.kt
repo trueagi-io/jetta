@@ -13,31 +13,69 @@ import net.singularity.jetta.compiler.frontend.rewrite.LowerAssertExpressionsRew
 import net.singularity.jetta.compiler.frontend.rewrite.MarkMultivaluedFunctionsRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.QuotePureSymbolicBodiesRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ReplaceNodesRewriter
-import net.singularity.jetta.runtime.space.SpaceImpl
+import net.singularity.jetta.runtime.space.Space
 import net.singularity.jetta.compiler.logger.Logger
 import kotlin.collections.component1
 import kotlin.collections.component2
 
-class Context(
+class Context private constructor(
     private val messageCollector: MessageCollector,
-    mapImpl: JvmMethod? = null,
-    flatMapImpl: JvmMethod? = null
+    private val mapImpl: JvmMethod?,
+    private val flatMapImpl: JvmMethod?,
+    private val space: Space,
+    // DURABLE symbol tables — the resolved output of AOT, shared (copy-on-write) by
+    // [fork]. Default fresh for a top-level compile.
+    val definedFunctions: MutableMap<String, SymbolDef>,
+    private val resolvedFunctions: MutableMap<String, SymbolDef>,
+    private val functions: MutableMap<String, FunctionDefinition>,
+    private val systemFunctions: MutableMap<String, ResolvedSymbol>,
 ) {
+    constructor(
+        messageCollector: MessageCollector,
+        mapImpl: JvmMethod? = null,
+        flatMapImpl: JvmMethod? = null,
+        space: Space,
+    ) : this(
+        messageCollector, mapImpl, flatMapImpl, space,
+        mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(),
+    )
+
     private val logger = Logger.getLogger(Context::class.java)
-    val definedFunctions = mutableMapOf<String, SymbolDef>()
-    private val resolvedFunctions = mutableMapOf<String, SymbolDef>()
-    private val functions = mutableMapOf<String, FunctionDefinition>()
-    private val systemFunctions = mutableMapOf<String, ResolvedSymbol>()
+    // TRANSIENT working state — what "comes out of a resolve/match pass". Always fresh
+    // (never shared by [fork]): each eval gets its own.
     private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
     private val nodesToReplace = mutableMapOf<Atom, Atom>()
     private var main: FunctionDefinition? = null
     private var typeInferenceDone = false
     private val mapSymbol = mapImpl?.let { ResolvedSymbol(it, null, false) }
     private val flatMapSymbol = flatMapImpl?.let { ResolvedSymbol(it, null, false) }
-    private val space = SpaceImpl()
     private val matchPatterns = mutableSetOf<Expression>()
 
-    fun getSpace(): SpaceImpl {
+    /**
+     * Fork this resolved environment for JIT-eval (same-JVM). The durable symbol
+     * tables are shared copy-on-write via [OverlayMap] — the fork's synthetic
+     * `__evalN` lands in its own local layer and never pollutes the AOT tables, and
+     * concurrent/repeated evals stay independent. Transient working state and the
+     * space start fresh: [forkSpace] is a throwaway because FunctionRewriter writes the
+     * synthetic `(= (__evalN) …)` rule back into it (it must never be the caller's
+     * space), and [forkMessageCollector] isolates eval diagnostics.
+     *
+     * Because `resolvedFunctions` carries each program function's owner class, eval'd
+     * code that calls a user function resolves to an `INVOKESTATIC` against the
+     * already-compiled class — it LINKS, it does not recompile the rule body.
+     */
+    fun fork(forkSpace: Space, forkMessageCollector: MessageCollector): Context = Context(
+        forkMessageCollector,
+        mapImpl,
+        flatMapImpl,
+        forkSpace,
+        OverlayMap(definedFunctions),
+        OverlayMap(resolvedFunctions),
+        OverlayMap(functions),
+        OverlayMap(systemFunctions),
+    )
+
+    fun getSpace(): Space {
         if (matchPatterns.isNotEmpty()) {
             space.mkIndex(matchPatterns.distinct())
             matchPatterns.clear()
@@ -175,9 +213,12 @@ class Context(
                                 }
 
                                 is Grounded<*> -> {
-                                    if (arg.type != null && !isAssignableFrom(type, arg.type!!)) {
-                                        TODO()
-                                    }
+                                    // A literal whose type doesn't match the param type
+                                    // (an Int reaching a still-Atom param mid-inference,
+                                    // or a genuine mismatch) is left for the authoritative
+                                    // resolve pass to box or report via
+                                    // IncompatibleTypesMessage — this heuristic pass must
+                                    // not crash on it.
                                 }
 
                                 is Expression -> inferTypeForExpression(arg, scope)
@@ -214,10 +255,19 @@ class Context(
                     expression.type = thenBranch.type ?: elseBranch.type
                 }
 
-                Predefined.COND_EQ -> {
+                Predefined.COND_EQ,
+                Predefined.COND_NEQ,
+                Predefined.COND_LT,
+                Predefined.COND_GT,
+                Predefined.COND_LE,
+                Predefined.COND_GE -> {
                     val (_, lhs, rhs) = expression.atoms
                     inferType(lhs, scope)
                     inferType(rhs, scope)
+                    // Propagate a known side's type to an unknown side. This is how
+                    // `(== $v 5)` infers `$v: Int` — the standard symmetry trick.
+                    // Order-comparison operators (<, >, ≤, ≥) only need a Number-ish
+                    // type but the side-propagation logic is the same.
                     if (lhs.type != null && rhs.type == null) {
                         rhs.type = lhs.type
                         if (rhs is Variable) scope.data[rhs.name] = lhs.type!!
@@ -229,10 +279,16 @@ class Context(
                     expression.type = GroundedType.BOOLEAN
                 }
 
-                Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
-                    expression.arguments().forEach {
-                        inferType(it, scope)
-                    }
+                Predefined.TIMES, Predefined.MINUS, Predefined.PLUS,
+                Predefined.DIVIDE, Predefined.DIV, Predefined.MOD -> {
+                    val operands = expression.arguments()
+                    operands.forEach { inferType(it, scope) }
+                    inferArithmeticOperandTypes(atom.value, operands, scope)
+                }
+
+                Predefined.RUN_SEQ, Predefined.SEQ -> {
+                    expression.arguments().forEach { inferType(it, scope) }
+                    expression.type = expression.atoms.lastOrNull()?.type ?: GroundedType.ATOM
                 }
 
                 Predefined.MAP_, Predefined.FLAT_MAP_ -> { /* skip it */
@@ -253,12 +309,28 @@ class Context(
             }
 
             is Lambda -> {
-                TODO()
+                // Inline lambda application `((\ params body) args)` — common
+                // shape after `let` desugaring. Type is the lambda's declared
+                // return type when known, otherwise ATOM. Recurse into args
+                // so their types are inferred too.
+                expression.atoms.drop(1).forEach { inferType(it, scope) }
+                expression.type = atom.returnType ?: GroundedType.ATOM
             }
 
             is Expression -> {
                 expression.atoms.forEach { inferType(it, scope) }
                 expression.type = GroundedType.ATOM
+            }
+
+            is Variable -> {
+                // Variable-headed application — `($f x y)` in higher-order code.
+                // The variable's own ArrowType (if any) determines the result type;
+                // otherwise treat the call as inert/ATOM. JIT-eval dispatcher
+                // ([net.singularity.jetta.runtime.functions.JettaCallSite]) handles
+                // it at runtime.
+                expression.atoms.drop(1).forEach { inferType(it, scope) }
+                val arrow = atom.type as? ArrowType
+                expression.type = arrow?.types?.lastOrNull() ?: GroundedType.ATOM
             }
 
             else -> TODO("atom=$atom")
@@ -332,33 +404,149 @@ class Context(
         typeInferenceDone = true
     }
 
-    private fun refineFunctionArrowTypes() {
-        resolvedFunctions.forEach { (_, def) ->
+    private fun refineFunctionArrowTypes(): Boolean {
+        var changed = false
+        resolvedFunctions.toList().forEach { (_, def) ->
             val arrowType = def.func.arrowType ?: return@forEach
             val paramTypes = arrowType.types.dropLast(1)
-            if (paramTypes.none { it == GroundedType.ATOM }) return@forEach
+            val currentReturn = arrowType.types.last()
 
-            val inferredParamTypes = mutableMapOf<String, Atom>()
-            collectVariableTypes(def.func.body, inferredParamTypes)
-
-            val refinedTypes = def.func.params.mapIndexed { index, param ->
-                if (paramTypes[index] == GroundedType.ATOM) {
-                    val inferred = inferredParamTypes[param.name]
-                    if (inferred != null && inferred != GroundedType.ATOM) {
-                        param.type = inferred
-                        inferred
+            // 1. Lift ATOM parameters to a concrete type collected from the body
+            //    (e.g. `$n` typed Int by a comparison or an arithmetic operand).
+            val refinedParams = if (paramTypes.any { it == GroundedType.ATOM }) {
+                val inferredParamTypes = mutableMapOf<String, Atom>()
+                collectVariableTypes(def.func.body, inferredParamTypes)
+                def.func.params.mapIndexed { index, param ->
+                    if (paramTypes[index] == GroundedType.ATOM) {
+                        val inferred = inferredParamTypes[param.name]
+                        if (inferred != null && inferred != GroundedType.ATOM) {
+                            param.type = inferred
+                            inferred
+                        } else {
+                            paramTypes[index]
+                        }
                     } else {
                         paramTypes[index]
                     }
-                } else {
-                    paramTypes[index]
                 }
+            } else {
+                paramTypes
             }
-            if (refinedTypes != paramTypes) {
-                def.func.arrowType = ArrowType(refinedTypes + arrowType.types.last())
+
+            // 2. Lift an ATOM/ANY return type to the resolved body type. An untyped
+            //    `fib` resolves its body (`if`) to Int, but the arrow's return was
+            //    frozen at Any on the first pass (it is only ever *set*, never
+            //    refined). Codegen would then emit `ireturn` of a primitive against
+            //    an Object descriptor → VerifyError. Only widen the dynamic top
+            //    (Atom/Any) toward a concrete grounded type, never a SeqType (the
+            //    multivalued List contract owns that), so this is monotonic and the
+            //    enclosing fixpoint converges.
+            val bodyType = inferReturnFromBody(def.func)
+            val refinedReturn = if ((currentReturn == GroundedType.ATOM || currentReturn == GroundedType.ANY) &&
+                bodyType != null && bodyType != GroundedType.ATOM && bodyType != GroundedType.ANY &&
+                bodyType !is SeqType
+            ) {
+                bodyType
+            } else {
+                currentReturn
+            }
+
+            val refinedTypes = refinedParams + refinedReturn
+            if (refinedTypes != arrowType.types) {
+                def.func.arrowType = ArrowType(refinedTypes)
                 addResolvedFunction(def.owner, def.func)
+                changed = true
             }
         }
+        return changed
+    }
+
+    /**
+     * Arithmetic operands are numeric, so pin any still-untyped variable operand
+     * to a numeric type. This is the mechanism that lets an untyped `(+ $x $x)`
+     * infer `$x: Int` — the same symmetry the comparison operators already use to
+     * type `(== $v 5)`. `+ - *` are Int unless a sibling operand is Double (float
+     * contagion); `div`/`mod` are integer-only. Writing both the operand's own
+     * `.type` and `scope.data` lets sibling occurrences resolve immediately and
+     * lets [refineFunctionArrowTypes] lift the type onto the function's parameter.
+     * Only genuinely untyped (null) operands are touched, never a concrete type.
+     */
+    private fun inferArithmeticOperandTypes(op: String, operands: List<Atom>, scope: Scope) {
+        val numeric = when {
+            op == Predefined.DIV || op == Predefined.MOD -> GroundedType.INT
+            operands.any { it.type == GroundedType.DOUBLE } -> GroundedType.DOUBLE
+            else -> GroundedType.INT
+        }
+        operands.forEach {
+            if (it is Variable && it.type == null) {
+                it.type = numeric
+                scope.data[it.name] = numeric
+            }
+        }
+    }
+
+    /**
+     * Infer a function's return type from the result-position types in its body,
+     * unifying the branches of an `if`/Match. A *self-recursive* call whose type is
+     * still the unrefined dynamic top (Atom/Any/null) contributes no information —
+     * this is a least-fixpoint from bottom, so a tail-recursive body such as gcd's
+     * `(if (== $b 0) $a (gcd $b (mod $a $b)))` yields Int (from the base case)
+     * rather than collapsing to Any when unified with the recursive call's
+     * provisional Atom. A *genuinely* Atom leaf (a Symbol, or a call to some other
+     * Atom-returning function) is kept, so heterogeneous functions still type as
+     * Atom. Returns the plain body type when no branch is informative.
+     */
+    private fun inferReturnFromBody(func: FunctionDefinition): Atom? {
+        val types = mutableListOf<Atom>()
+        collectResultTypes(func.body, func.name, types)
+        if (types.isEmpty()) return func.body.type
+        return types.reduce { acc, t -> unifyType(acc, t) }
+    }
+
+    private fun collectResultTypes(atom: Atom, funcName: String, acc: MutableList<Atom>) {
+        when (atom) {
+            is Expression -> {
+                val head = atom.atoms.firstOrNull()
+                if ((head as? Special)?.value == Predefined.IF && atom.atoms.size == 4) {
+                    collectResultTypes(atom.atoms[2], funcName, acc)
+                    collectResultTypes(atom.atoms[3], funcName, acc)
+                    return
+                }
+                val type = atom.type
+                val isSelfRecursive = (head as? Symbol)?.name == funcName
+                val isUnrefinedTop =
+                    type == null || type == GroundedType.ATOM || type == GroundedType.ANY
+                if (isSelfRecursive && isUnrefinedTop) return
+                type?.let { acc.add(it) }
+            }
+
+            is Match -> atom.branches.forEach { collectResultTypes(it.body, funcName, acc) }
+            else -> atom.type?.let { acc.add(it) }
+        }
+    }
+
+    /**
+     * A comparison forces both operands to a common type. When one side is a
+     * concrete grounded type and the other is a still-untyped variable, pin the
+     * variable — this is how `(== $m 0)` infers `$m: Int`, mirroring the symmetry
+     * the [inferType] pass already performs and complementing the arithmetic
+     * operand inference so a parameter used only in comparisons still gets a
+     * concrete type. Only a genuinely untyped (null) variable is touched — an Atom
+     * operand (e.g. a symbol or a destructured pattern var) is left alone so the
+     * comparison-over-Atom codegen path is preserved, and a symbolic comparison
+     * such as `(== $x Foo)` (concrete side is Atom) propagates nothing.
+     */
+    private fun propagateComparisonOperandType(lhs: Atom, rhs: Atom, scope: Scope) {
+        fun pin(variable: Atom, other: Atom) {
+            val t = other.type ?: return
+            if (t == GroundedType.ATOM || t == GroundedType.ANY) return
+            if (variable is Variable && variable.type == null) {
+                variable.type = t
+                scope.data[variable.name] = t
+            }
+        }
+        pin(lhs, rhs)
+        pin(rhs, lhs)
     }
 
     private fun collectVariableTypes(atom: Atom, result: MutableMap<String, Atom>) {
@@ -555,15 +743,51 @@ class Context(
         main = source.code.find { it is FunctionDefinition && it.name == FunctionRewriter.MAIN } as? FunctionDefinition
         resolveSource(source)
         typeInferenceLoop(source)
-        refineFunctionArrowTypes()
-        resolveSource(source)
+        // Refine ATOM params and ATOM/ANY return types from resolved body types,
+        // re-resolving between rounds so a refined return type propagates to the
+        // (recursive) call sites that consume it — which in turn can make another
+        // body/param type concrete. Refinement only widens the dynamic top toward a
+        // concrete type, so it is monotonic and converges; the bound is a safety net.
+        var round = 0
+        do {
+            val changed = refineFunctionArrowTypes()
+            resolveSource(source)
+            round++
+        } while (changed && round < 16)
         val normalizedMain = normalizeMainForCodegen(source)
         val postprocessed = applyPostResolveRewriters(normalizedMain)
         messageCollector.clear()
+        registerUntypedFunctions(postprocessed)
         resolveSource(postprocessed)
         validateExecutableCalls(postprocessed)
         defaultUntypedToAtom(postprocessed)
         return postprocessed
+    }
+
+    /**
+     * After type inference has converged and the post-resolve rewriters have run, any
+     * user function still lacking an arrowType has a body whose type could not be
+     * inferred: a bare-variable identity body (`(= (I $x) $x)`) or a body headed by an
+     * unresolved symbol (`(= (hide $x) (empty))`). In MeTTa these are ordinary rewrite
+     * rules — `(I 5)` and `(hide …)` must still reduce — so default their signature to
+     * Atom and register them. Without this the final [resolveSource] below leaves such
+     * calls inert: `resolve(name)` returns null, the call gets no `.resolved`, and
+     * codegen quotes it as data (so an argument's applicative side effects are lost).
+     * [defaultUntypedToAtom] fabricates the same arrowType for the method body later, but
+     * it runs *after* call-site resolution — too late to turn the call into an
+     * INVOKESTATIC. Only `=`-rule heads reach here as FunctionDefinitions (plain data
+     * facts are space atoms, never functions), so genuine data constructors are untouched.
+     */
+    private fun registerUntypedFunctions(source: ParsedSource) {
+        val owner = source.getJvmClassName()
+        source.code.forEach { fd ->
+            if (fd is FunctionDefinition && fd.name != FunctionRewriter.MAIN && fd.arrowType == null) {
+                val paramTypes = fd.params.map { it.type ?: GroundedType.ATOM }
+                val returnType = fd.body.type ?: GroundedType.ATOM
+                fd.arrowType = ArrowType(paramTypes + returnType)
+                addResolvedFunction(owner, fd)
+            }
+        }
     }
 
     /**
@@ -580,6 +804,17 @@ class Context(
             is FunctionDefinition -> {
                 atom.params.forEach { it.type = it.type ?: GroundedType.ATOM }
                 defaultUntypedToAtom(atom.body)
+                // Symmetric with the Lambda branch below: when the earlier
+                // inference passes left arrowType null (e.g. identity-style
+                // `(= (I $x) $x)` has no constraint that pins a non-Atom
+                // type), aggregate it from the now-defaulted params and body.
+                // Without this the backend hits `arrowType!!` in
+                // getJvmDescriptor and NPEs.
+                if (atom.arrowType == null) {
+                    val paramTypes = atom.params.map { it.type!! }
+                    val returnType = atom.body.type ?: GroundedType.ATOM
+                    atom.arrowType = ArrowType(paramTypes + returnType)
+                }
             }
 
             is Lambda -> {
@@ -712,10 +947,8 @@ class Context(
         functionDefinition.typedParameters?.forEach {
             functionDefinition.params.find { v -> v.name == it.name }?.type = it.type
         }
-        resolveAtom(
-            functionDefinition.body,
-            Scope(functionDefinition)
-        )
+        val scope = Scope(functionDefinition)
+        resolveAtom(functionDefinition.body, scope)
         // If arrowType is still null after resolving, try to infer it.
         // This handles purely symbolic functions like (= (And T T) T)
         // where body type is known but no explicit type annotation exists.
@@ -725,7 +958,15 @@ class Context(
                 ?: inferBodyType(functionDefinition.body)
             if (bodyType != null) {
                 functionDefinition.body.type = bodyType
-                val types = functionDefinition.params.map { it.type ?: GroundedType.ATOM } + bodyType
+                // Prefer a type inferred into the scope (e.g. `$m` pinned to Int by
+                // an arithmetic operand or a comparison) over the head param
+                // Variable's own type: the head's param instances are distinct
+                // objects from the body occurrences and never receive the inferred
+                // type directly, so reading `param.type` alone would freeze an
+                // arithmetic-only parameter at Atom.
+                val types = functionDefinition.params.map {
+                    it.type ?: scope.data[it.name] ?: GroundedType.ATOM
+                } + bodyType
                 functionDefinition.arrowType = ArrowType(types)
                 addResolvedFunction(owner, functionDefinition)
             }
@@ -734,8 +975,30 @@ class Context(
     }
 
     private fun isAssignableFrom(left: Atom, right: Atom): Boolean {
-        if (left == GroundedType.ANY) return true
+        // Atom and Any are the dynamic top: any value is assignable to them (the
+        // call site boxes a primitive as needed). Without this, passing an Int to
+        // an Atom-typed parameter — routine when a self-recursive callee's param
+        // type is still the provisional Atom — is falsely reported as an
+        // incompatibility instead of being boxed.
+        if (left == GroundedType.ANY || left == GroundedType.ATOM) return true
         return left == right
+    }
+
+    /**
+     * Within an inert data constructor, resolve reducible sub-calls (applicative order)
+     * while leaving genuine data untouched. Descends through nested data constructors; when
+     * a sub-expression's head is a KNOWN function it is resolved as a call (so it carries
+     * `.resolved` + a concrete type and codegen evaluates it), otherwise the sub-atom stays
+     * inert. Pure symbols/literals/variables are left as-is.
+     */
+    private fun resolveNestedCallsInData(atom: Atom, scope: Scope) {
+        if (atom !is Expression) return
+        val headName = (atom.atoms.firstOrNull() as? Symbol)?.name
+        if (headName != null && resolve(headName) != null) {
+            resolveExpression(atom, scope)
+        } else {
+            atom.atoms.forEach { resolveNestedCallsInData(it, scope) }
+        }
     }
 
     private fun resolveAtom(atom: Atom, scope: Scope, suggestedType: Atom? = null) {
@@ -744,11 +1007,28 @@ class Context(
             is Expression -> {
                 // If the expected type is Atom, this expression is data (a constructor),
                 // not a function call — don't try to resolve its head symbol.
-                if (suggestedType == GroundedType.ATOM && resolve(
-                        (atom.atoms.firstOrNull() as? Symbol)?.name ?: ""
-                    ) == null
+                // Exception: a Special head (flat-map?/map?/if/arithmetic/…) is always
+                // an executable form, even in an argument position with expected type
+                // Atom — route it through resolveExpression so it receives its resolved
+                // symbol and SeqType. Without this, a nested (flat-map? …) passed as a
+                // call argument (e.g. inside `(ift (flat-map? …) …)`) would be stamped
+                // Atom and reach codegen unresolved.
+                val head = atom.atoms.firstOrNull()
+                if (suggestedType == GroundedType.ATOM && head !is Special &&
+                    resolve((head as? Symbol)?.name ?: "") == null
                 ) {
                     atom.type = GroundedType.ATOM
+                    // Applicative order: a data constructor does not suppress reduction of
+                    // its arguments. Descend through the (data) constructor and resolve any
+                    // reducible call nested inside — e.g. `(Cons (Bind $x (ev $e $env)) …)`,
+                    // so codegen evaluates `(ev …)` and stores its VALUE, not an inert thunk.
+                    // Pure data (symbols, literals, unknown sub-constructors) is left inert.
+                    // Scan ALL elements including the head: for a plain tuple whose head is
+                    // itself a call — `((add-atom …) (remove-atom …))`, the argument of
+                    // `hide`/`superpose` — element 0 is a value too and must be reduced.
+                    // A Symbol constructor head (`Cons`) is a no-op in resolveNestedCallsInData
+                    // (not an Expression), so genuine constructors are unaffected.
+                    atom.atoms.forEach { resolveNestedCallsInData(it, scope) }
                 } else {
                     resolveExpression(atom, scope)
                 }
@@ -830,6 +1110,14 @@ class Context(
                 }
             }
 
+            is ArrowType -> {
+                // An ArrowType atom in a value position (not a type annotation) — e.g.
+                // the literal `(-> Number Number Number)` on the RHS of `assertEqual`,
+                // or the result of evaluating `(get-type +)`. It's inert data; the
+                // resolver just stamps its type. Codegen turns it into a runtime atom.
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+
             else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
@@ -860,10 +1148,30 @@ class Context(
             logger.debug { "Add $expression >> $scope" }
             unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
         }
+        if (expression.atoms.isEmpty()) {
+            // Empty `()` — pure data. Used by `(quote ())` and similar.
+            expression.type = GroundedType.ATOM
+            return
+        }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val resolved = resolve(atom.name)
-                if (resolved != null) {
+                val expectedArity = resolved?.arrowType()?.let { it.types.size - 1 }
+                if (resolved != null && expectedArity != null &&
+                    definedFunctions[atom.name] != null &&
+                    expression.arguments().size != expectedArity
+                ) {
+                    // Arity mismatch on a user-defined function: an under-application
+                    // like `(S Z)` for 3-ary S, or a partial like `(K $x)`. This is NOT
+                    // a JVM-invokable call — it's an inert MeTTa expression (data). Leave
+                    // `resolved` null so codegen emits a quoted expression; runtime
+                    // dispatch (JettaCallSite) can still reduce it via a matching `(= …)`
+                    // space rule. Without this guard, codegen would emit an INVOKESTATIC
+                    // with the function's full arity and the verifier/frame computation
+                    // fails on the argument-count mismatch.
+                    expression.type = GroundedType.ATOM
+                    expression.arguments().forEach { resolveAtom(it, scope) }
+                } else if (resolved != null) {
                     val arrowType = resolved.arrowType()
                     expression.arguments().mapIndexed { index, arg ->
                         resolveAtom(arg, scope, arrowType.types[index])
@@ -909,7 +1217,32 @@ class Context(
                     resolveAtom(cond, scope)
                     resolveAtom(thenBranch, scope)
                     resolveAtom(elseBranch, scope)
-                    expression.type = unifyType(thenBranch.type, elseBranch.type!!)
+                    // Either branch may still be untyped if it contains an unresolved
+                    // grounded call (e.g. `(superpose ())` before that built-in is
+                    // implemented). Fall back to ATOM rather than crashing.
+                    val thenT = thenBranch.type ?: GroundedType.ATOM
+                    val elseT = elseBranch.type ?: GroundedType.ATOM
+                    // A homogenized multivalued `if` stays a List. CanonicalFormRewriter
+                    // seq-wraps the scalar arm of an `if` whose other arm is a multivalued
+                    // (List) call, so both arms are Lists (upholding "multivalued `-> T` is
+                    // physically `List<T>`"). If either arm is a SeqType, the `if` is a
+                    // SeqType — and BOTH arms must carry the SAME element type so the
+                    // consuming map?/flat-map? lambda (typed to that element) can unbox
+                    // uniformly. A seq-wrapped scalar arm's element type came from the scalar
+                    // (typically Atom); re-pin that seq artifact to the more specific element
+                    // type (a grounded value beats Atom) so generateSeq unwraps its Grounded
+                    // instead of leaving a raw Atom (Grounded→Number CCE downstream).
+                    if (thenT is SeqType || elseT is SeqType) {
+                        val thenE = (thenT as? SeqType)?.elementType ?: thenT
+                        val elseE = (elseT as? SeqType)?.elementType ?: elseT
+                        val elem = mostSpecificElementType(thenE, elseE)
+                        val seqType = SeqType(elem)
+                        if (thenBranch.isSeqArtifact()) thenBranch.type = seqType
+                        if (elseBranch.isSeqArtifact()) elseBranch.type = seqType
+                        expression.type = seqType
+                    } else {
+                        expression.type = unifyType(thenT, elseT)
+                    }
                 }
 
                 Predefined.COND_EQ,
@@ -921,15 +1254,15 @@ class Context(
                     val (_, lhs, rhs) = expression.atoms
                     resolveAtom(lhs, scope)
                     resolveAtom(rhs, scope)
+                    propagateComparisonOperandType(lhs, rhs, scope)
                     expression.type = GroundedType.BOOLEAN
                 }
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
-                    var hasDouble = false
-                    expression.atoms.drop(1).forEach {
-                        resolveAtom(it, scope)
-                        if (it.type == GroundedType.DOUBLE) hasDouble = true
-                    }
+                    val operands = expression.arguments()
+                    operands.forEach { resolveAtom(it, scope) }
+                    inferArithmeticOperandTypes(atom.value, operands, scope)
+                    val hasDouble = operands.any { it.type == GroundedType.DOUBLE }
                     expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
                 }
 
@@ -944,6 +1277,7 @@ class Context(
                     val (_, lhs, rhs) = expression.atoms
                     resolveAtom(lhs, scope)
                     resolveAtom(rhs, scope)
+                    inferArithmeticOperandTypes(atom.value, listOf(lhs, rhs), scope)
                     expression.type = GroundedType.INT
                 }
 
@@ -978,7 +1312,21 @@ class Context(
                     resolveAtom(lambda, scope)
                     expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
                     val bodyType = lambda.body.type ?: GroundedType.ATOM
-                    expression.type = SeqType(bodyType, lambda.body.position)
+                    // A map? lambda whose body is a void/Unit call — e.g. mapping `println`
+                    // over a multivalued bag, `(map? (\ _x (println _x)) (pick))` — must
+                    // still return a reference for the `JettaFunction` SAM: generateCall
+                    // leaves a null placeholder on the stack after a void call, and the
+                    // lambda ARETURNs it. A Unit/primitive return type would emit a void
+                    // return / IRETURN of that null → VerifyError. Retype the lambda's
+                    // return (and the map?'s element) as ANY so codegen ARETURNs; the map?
+                    // then yields a bag of Units (side effects already happened).
+                    val elementType = if (bodyType == GroundedType.UNIT) {
+                        lambda.arrowType = lambda.arrowType?.let {
+                            ArrowType(it.types.dropLast(1) + GroundedType.ANY)
+                        }
+                        GroundedType.ANY
+                    } else bodyType
+                    expression.type = SeqType(elementType, lambda.body.position)
                     expression.resolved = mapSymbol
                 }
 
@@ -992,7 +1340,25 @@ class Context(
                 }
 
                 Predefined.QUOTE -> {
-                    // don't need to resolve
+                    // A quoted form is inert data. Stamp it Atom: callers that pass a
+                    // (quote …) as an argument with expected type Atom relied on the
+                    // resolveAtom data-shortcut for this type; now that Special heads are
+                    // routed here, set it explicitly.
+                    expression.type = GroundedType.ATOM
+                }
+
+                Predefined.ANNOTATION,
+                Predefined.PATTERN,
+                Predefined.TYPE,
+                Predefined.ARROW -> {
+                    // Specials used as data heads (curried `(= ((K $x) $y) …)`,
+                    // meta-rule `(= (= $x $x) T)`, tuple type tag `(: (A B) …)`,
+                    // doc/annotation `(@ doc-string …)`, or a type form sitting in
+                    // a value position). The rewriter-fallback (21bbee2) routes
+                    // them to the space as facts; here in resolve they're inert
+                    // data — type ATOM, recurse to resolve sub-atoms.
+                    expression.type = GroundedType.ATOM
+                    expression.atoms.drop(1).forEach { resolveAtom(it, scope) }
                 }
 
                 else -> TODO("atom=$atom")
@@ -1006,14 +1372,39 @@ class Context(
             }
 
             is Lambda -> {
-                if (atom.arrowType != null) {
-                    resolveAtom(atom, scope)
-                } else {
-                    unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
+                // Inline lambda application `((\ ($x …) body) arg …)` — the shape
+                // `let` desugars into. Resolve the argument(s) first so their types
+                // are known, propagate them onto the bound parameters, then resolve
+                // the lambda body (so grounded calls such as superpose/collapse inside
+                // it are resolved, not left inert). The application's type is the
+                // body's resolved type — which may be multivalued (Atom*) when the
+                // body is e.g. `(superpose …)`.
+                val args = expression.arguments()
+                args.forEach { resolveAtom(it, scope) }
+                if (atom.params.size == args.size) {
+                    val paramTypes = atom.params.mapIndexed { index, param ->
+                        param.type ?: args[index].type ?: GroundedType.ATOM
+                    }
+                    // Provisional arrowType so resolveAtom(lambda) stamps the params;
+                    // the return slot is refined from the resolved body below.
+                    atom.arrowType = ArrowType(paramTypes + GroundedType.ATOM)
                 }
+                resolveAtom(atom, scope)
+                val bodyType = atom.body.type ?: GroundedType.ATOM
+                atom.arrowType = ArrowType(atom.params.map { it.type ?: GroundedType.ATOM } + bodyType)
+                atom.type = atom.arrowType
+                expression.type = bodyType
             }
 
             is Expression -> {
+                expression.type = GroundedType.ATOM
+                expression.atoms.forEach { resolveAtom(it, scope) }
+            }
+
+            is Grounded<*>, is ArrowType -> {
+                // Expression with a non-functional head — a literal `(2 7)` tuple,
+                // a `((-> A B) ...)` type form used as data, etc. The whole
+                // expression is inert data; recurse to resolve sub-atoms.
                 expression.type = GroundedType.ATOM
                 expression.atoms.forEach { resolveAtom(it, scope) }
             }
@@ -1035,6 +1426,24 @@ class Context(
         if (lhsType == null || lhsType == rhsType) return rhsType
         return GroundedType.ANY // FIXME: too narrow, please introduce NUMBER
     }
+
+    // Pick the more specific of two element types when homogenizing the arms of a
+    // multivalued `if`. Atom / ANY are the dynamic "top" — a concrete grounded value
+    // (Int, Double, …) on the other side wins, so a seq-wrapped scalar arm inherits the
+    // real element type of the other (List) arm. Genuinely conflicting concrete types
+    // fall back to unifyType (ANY).
+    private fun mostSpecificElementType(a: Atom, b: Atom): Atom = when {
+        a == b -> a
+        a == GroundedType.ATOM || a == GroundedType.ANY -> b
+        b == GroundedType.ATOM || b == GroundedType.ANY -> a
+        else -> unifyType(a, b)
+    }
+
+    // True for a `(seq …)` produced by rewriteIf's homogenization of a scalar `if` arm —
+    // the arm whose element type should be re-pinned to match the other (List) arm.
+    private fun Atom.isSeqArtifact(): Boolean =
+        this is Expression && atoms.isNotEmpty() &&
+                (atoms[0] as? Special)?.value == Predefined.SEQ
 
     fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolvedFunctions[name]

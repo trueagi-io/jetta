@@ -11,6 +11,20 @@ class CanonicalFormRewriter(
     val messageCollector: MessageCollector,
     private val context: Context,
 ) : Rewriter {
+    companion object {
+        // Grounded functions that consume the whole bag of results of each argument
+        // (a non-determinism barrier). A bare multivalued call in their argument
+        // position is passed as a List rather than lifted into a map/flat-map.
+        //
+        // `assertEqual`/`assertEqualToResult` are barriers: they compare the FULL bag
+        // produced by each argument (multiset compare in Assertions.kt). Lifting a
+        // multivalued arg into a map/flat-map would instead call the barrier once per
+        // value, yielding a singleton on the actual side — see b4_nondeterm. They
+        // depend on the non-reduction fallback (commit 4ebe9d0) so a non-matching call
+        // like `(eq Green Blue)` reduces to itself rather than to an empty bag.
+        private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult", "msort", "once")
+    }
+
     private var variableCount = 0
     private var functionCount = 0
     private val multivaluedCalls: MutableMap<Int, Int> = mutableMapOf()
@@ -59,7 +73,19 @@ class CanonicalFormRewriter(
                 }
                 else -> {
                     val newBody = extractIfStatementsIfNeeded(owner, body, root = true)
-                    collectNonDeterministicAtomsRecursively(newBody, functionDefinition)
+                    // Pass newBody.id as reducedScopeId — same as the Match branch
+                    // path above. Without this, when the body is a single bare
+                    // multivalued call like `(= (green $x) (frog $x))`, the scope
+                    // registration uses the parameter variable's scope.id (the
+                    // function scope), while rewriteExpression looks up by the
+                    // call's expression.id (the body itself). Those keys
+                    // disagreed, so multivaluedCallsInverse came back null and
+                    // the map/flat-map wrapper was never generated — the body
+                    // collapsed to a free `$__varN` whose at-runtime value is a
+                    // fresh Variable atom (mis-cast as List by the caller's
+                    // simpleMap). Pinning the scope to the body's own id keeps
+                    // both sides consulting the same bucket.
+                    collectNonDeterministicAtomsRecursively(newBody, functionDefinition, newBody.id)
                     rewriteAtom(newBody)
                 }
             }
@@ -192,27 +218,111 @@ class CanonicalFormRewriter(
         }
         if (!expression.isNonDeterministic()) return expression
 
-        val body = multivaluedCalls[expression.id]?.let {
-            mkVariable(it, expression.position)
-        } ?: Expression(atoms = expression.atoms.map { atom ->
-            multivaluedCalls[atom.id]?.let {
-                mkVariable(it, expression.position)
-            } ?: rewriteAtom(atom)
-        }, position = expression.position)
-        // check the expression is a scope
-        val replacement = multivaluedCallsInverse[expression.id]
-        if (replacement != null) {
-            // Determine the innermost op: if the body expression calls
-            // a multivalued function, use FLAT_MAP_ so its List results
-            // are flattened rather than nested.
-            val innermostOp = if (body is Expression
-                && body.atoms.isNotEmpty()
-                && body.atoms[0] is Symbol
-                && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
-            ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
-            return createMaps(replacement, body, innermostOp)
+        // A multivalued COMPOUND argument — e.g. `(And C1 C2)` where C1/C2 are
+        // themselves multivalued calls — is a non-deterministic function call, not a
+        // simple registered leaf call. Its parent must be lifted OVER its result bag:
+        // `(ift (And …) T)` → `flat-map?(\$c. (ift $c T), (And …))`. Without this the
+        // parent receives the whole bag as a single argument (b4's
+        // `(ift <bag> (stop $z))` → `toAtom(List)` crash). Such args are collected
+        // here, replaced by a fresh variable in the body, and lifted out below.
+        // A barrier (assertEqual/assertEqualToResult/collapse) consumes the WHOLE bag
+        // of each argument, so a multivalued compound argument here must be inlined
+        // (handed over as its full List result), NOT lifted — same rule the simple-call
+        // path already follows via the `barrierArg` flag in collection.
+        val isBarrierParent = (expression.atoms.getOrNull(0) as? Symbol)?.name in BARRIER_FUNCTIONS
+        val compoundLifts = mutableListOf<Triple<Int, Atom, Atom?>>()
+        fun rewriteOrLift(atom: Atom): Atom {
+            multivaluedCalls[atom.id]?.let { return mkVariable(it, expression.position) }
+            if (!isBarrierParent
+                && atom is Expression
+                && atom.isNonDeterministic()
+                && atom.atoms.isNotEmpty()
+                && atom.atoms[0] is Symbol
+                && isMultivaluedHead((atom.atoms[0] as Symbol).name)
+            ) {
+                val v = variableCount++
+                compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
+                return mkVariable(v, expression.position)
+            }
+            return rewriteAtom(atom)
         }
-        return body
+
+        // A self-registered call (identity-lift at its own scope) is normally collapsed to
+        // its bound variable so an enclosing map/flat-map binds it (the tail-call case, e.g.
+        // lookup's `(lookup $key $rest)` → `map?(\$v. $v) (lookup …)`). BUT if this call ALSO
+        // has NESTED multivalued calls scoped under it — the inner `(ev $e $env)` buried in a
+        // data-constructor argument of `(ev $body (Cons (Bind $x (ev $e $env)) $env))` — those
+        // must be lifted OUT and their result vars substituted INTO this call's arguments, with
+        // the (substituted) call as the innermost body. Collapsing to a variable would leave
+        // the inner call inline as an unevaluated thunk (later cast Expression→Grounded → CCE).
+        // So force the substituted-body branch and drop the self-entry from the lift list.
+        val selfVar = multivaluedCalls[expression.id]
+        val scopedLifts = multivaluedCallsInverse[expression.id]
+        val hasNestedLifts = scopedLifts != null && scopedLifts.any { it.second.id != expression.id }
+        val body = if (selfVar != null && !hasNestedLifts) {
+            mkVariable(selfVar, expression.position)
+        } else Expression(
+            atoms = expression.atoms.map { rewriteOrLift(it) },
+            position = expression.position
+        )
+        // Apply compound-argument lifts INNERMOST: the compound (e.g. `(And $v1 $v2)`)
+        // and the enclosing call over it must sit where the compound's leaf-call
+        // variables are bound, so a variable bound inside the compound (`$z` from the
+        // `makes` flat-map) is in scope for the enclosing call (`(stop $z)` in `ift`).
+        // `flat-map?(\$v3. (ift $v3 (stop $z)), (And $v1 $v2))`. The simple leaf calls
+        // (prevents, makes) — bubbled to THIS scope in collection — then wrap OUTSIDE
+        // via createMaps, binding $v1/$v2 the compound source references.
+        var inner: Atom = body
+        for ((v, source, type) in compoundLifts) {
+            inner = Expression(
+                PredefinedAtoms.FLAT_MAP_,
+                Lambda(
+                    listOf(mkVariable(v, expression.position)),
+                    flatMapLambdaTypeFor(type),
+                    inner,
+                    position = expression.position
+                ),
+                source,
+                position = expression.position
+            )
+        }
+        // check the expression is a scope
+        var result: Atom = inner
+        // When the substituted-body branch fired for a self-registered call with nested lifts,
+        // its own identity-lift is subsumed by the substituted body — drop the self-entry so
+        // only the genuinely nested calls are lifted around it.
+        val replacement = if (selfVar != null && hasNestedLifts)
+            scopedLifts!!.filter { it.second.id != expression.id }
+        else scopedLifts
+        if (!replacement.isNullOrEmpty()) {
+            // Innermost op: if `inner` yields a List (a compound lift, or the body
+            // calls a multivalued function), the innermost wrap must FLAT_MAP_ so its
+            // results are flattened rather than nested.
+            val innermostOp = if (compoundLifts.isNotEmpty()
+                || (body is Expression
+                    && body.atoms.isNotEmpty()
+                    && body.atoms[0] is Symbol
+                    && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true)
+            ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
+            // Reversed so the FIRST-registered (left-most) multivalued call is the
+            // OUTERMOST loop — left-to-right evaluation, matching both the reference
+            // interpreter (b4 `(pair (bin) (bin))` → `((A A)(A B)(B A)(B B))`) and
+            // PeTTa (Prolog left-to-right goal order). `createMaps` wraps
+            // `replacement[0]` innermost. Result ORDER is invisible to the compat
+            // suite (assertEqual/assertEqualToResult compare multisets), but the
+            // SET matters for cross-binding deductions: a wrongly-outer conjunct
+            // over-binds a shared variable and leaks non-reducing branches (b4 #11/#12).
+            result = createMaps(replacement.reversed(), inner, innermostOp)
+        }
+        return result
+    }
+
+    // Lambda arrow type for the flat-map? that lifts a multivalued compound argument:
+    // the lambda receives one element of the argument's result bag and returns a bag.
+    private fun flatMapLambdaTypeFor(type: Atom?): ArrowType {
+        val t = type ?: GroundedType.ATOM
+        val elementType = if (t is SeqType) t.elementType else t
+        return ArrowType(elementType, SeqType(elementType))
     }
 
     /*
@@ -231,6 +341,10 @@ class CanonicalFormRewriter(
                 expression.atoms[other].isNonDeterministic()
             ) {
                 val inner = rewriteAtom(expression.atoms[ind])
+                // Element type is provisional here (inner is often a destructured Atom); the
+                // authoritative element type is pinned when the enclosing `if` is re-resolved
+                // (resolveExpression's IF case homogenizes the two arms' element types), so
+                // generateSeq coerces this scalar to match the other arm's List elements.
                 return Expression(Special(Predefined.SEQ), inner, type = SeqType(inner.type!!))
             } else {
                 return rewriteAtom(expression.atoms[ind])
@@ -265,13 +379,45 @@ class CanonicalFormRewriter(
                 replacement[0].second
             )
         }
+
+        // The `if` is not itself a lifted multivalued CALL (replacement == null), yet it
+        // can still be HETEROGENEOUS: one arm scalar, the other a multivalued (List) call
+        // — e.g. `(if (== …) $v (lookup … $rest))` as the body of a multivalued function,
+        // where the else arm is a tail recursive call registered at its OWN scope (so it
+        // never lands in multivaluedCallsInverse[if.id]). The compiled result must uphold
+        // the invariant "a multivalued `-> T` function is physically `List<T>`": both arms
+        // must yield a List. Seq-wrap the scalar arm so the `if`'s type becomes SeqType and
+        // generateMatchBranch takes the addAll (flatten) path — instead of coercing a List
+        // as if it were a single Grounded value (ClassCastException at runtime).
+        if (expression.isNonDeterministic()) {
+            val thenArm = rewriteAndMkSeqIfNeeded(expression, 2)
+            val elseArm = rewriteAndMkSeqIfNeeded(expression, 3)
+            val seqType = (thenArm.type as? SeqType)
+                ?: (elseArm.type as? SeqType)
+                ?: SeqType(expression.type ?: GroundedType.ATOM)
+            return Expression(
+                atoms = listOf(
+                    expression.atoms[0],
+                    rewriteAtom(expression.atoms[1]),
+                    thenArm,
+                    elseArm
+                ),
+                type = seqType,
+                id = expression.id
+            )
+        }
         return expression
     }
 
     private fun collectNonDeterministicAtomsRecursively(
         atom: Atom,
         functionDefinition: FunctionLike,
-        reducedScopeId: Int? = null
+        reducedScopeId: Int? = null,
+        // True when [atom] is a direct argument of a non-determinism barrier
+        // (`assertEqual`/`assertEqualToResult`/`collapse`). Such a barrier consumes the
+        // WHOLE bag of results of each argument, so a bare multivalued call here must be
+        // handed over as a List rather than lifted into a map at the parent scope.
+        barrierArg: Boolean = false
     ): Boolean {
         // returns closest scope according call parameters
         fun getScopeId(call: Expression): Int =
@@ -286,6 +432,12 @@ class CanonicalFormRewriter(
             is Expression -> {
                 if (atom.atoms.isEmpty()) return false
 
+                // `quote` is a hard boundary: its contents are inert DATA, never
+                // evaluated, so a multivalued call inside a quote — e.g. the `superpose`
+                // in `(eval '(superpose …))` — must NOT be lifted out to the enclosing
+                // scope. Same rule as `match` below, which owns its own result scope.
+                if (atom.atoms[0] == PredefinedAtoms.QUOTE) return false
+
                 when (val f = atom.atoms[0]) {
                     is Symbol -> {
                         // match expressions have their own variable scope —
@@ -295,22 +447,43 @@ class CanonicalFormRewriter(
                             return false
                         }
                         val def = context.definedFunctions[f.name]
-                        if (def != null && def.func.isMultivalued()) {
+                        val userMultivalued = def != null && def.func.isMultivalued()
+                        // A system multivalued function (e.g. `superpose`, `generate`):
+                        // present in systemFunctions with isMultiValued, absent from
+                        // definedFunctions. `match` is already excluded above.
+                        val systemMultivalued = def == null &&
+                                context.resolve(f.name)?.isMultiValued == true
+                        if (userMultivalued || systemMultivalued) {
                             // Check if arguments contain multivalued sub-calls.
                             // If so, don't register this call at the parent scope —
                             // instead, let the children be scoped to this call.
                             val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
                                 arg is Expression && arg.atoms.isNotEmpty() &&
                                         arg.atoms[0] is Symbol &&
-                                        context.definedFunctions[(arg.atoms[0] as Symbol).name]?.func?.isMultivalued() == true
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
                             }
-                            if (!hasMultivaluedArgs) {
+                            // A bare multivalued call that is a direct barrier argument is
+                            // handed over whole (as its List result) — skip lifting it so
+                            // the barrier receives the full bag instead of being mapped
+                            // once per element.
+                            if (!hasMultivaluedArgs && !barrierArg) {
                                 val scopeId = reducedScopeId ?: getScopeId(atom)
-                                multivaluedCalls[atom.id] = variableCount
-                                multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
-                                    .add(variableCount to atom)
-                                variableCount++
-                                isMultivalued = true
+                                // User @multivalued functions are lifted everywhere — even at
+                                // the tail (scopeId == own id), because match-branch
+                                // destructuring depends on that registration. System
+                                // multivalued calls are lifted ONLY in argument position; at
+                                // the tail/result position they return their bag directly,
+                                // matching the prior behaviour where system calls were never
+                                // lifted (a tail `!(superpose …)` / `!(generate …)` must not
+                                // gain a spurious identity `(map? (\ ($v) $v) call)`, which
+                                // would also need a mapImpl pure-symbolic programs lack).
+                                if (userMultivalued || scopeId != atom.id) {
+                                    multivaluedCalls[atom.id] = variableCount
+                                    multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
+                                        .add(variableCount to atom)
+                                    variableCount++
+                                    isMultivalued = true
+                                }
                             }
                         }
                     }
@@ -338,16 +511,44 @@ class CanonicalFormRewriter(
                     // When the current expression is a function call,
                     // scope any multivalued children to THIS expression
                     // so the flatMap chain wraps this call.
-                    val childScope = if (atom.atoms[0] is Symbol
-                        && context.definedFunctions[(atom.atoms[0] as Symbol).name] != null
-                    ) atom.id else reducedScopeId
+                    val headName = (atom.atoms[0] as? Symbol)?.name
+                    // A multivalued COMPOUND call — multivalued head with a multivalued
+                    // argument, e.g. `(And (prevents …) (makes …))` — is NOT registered
+                    // as a leaf (see hasMultivaluedArgs above); it gets compound-lifted in
+                    // rewriteExpression with the enclosing call applied per result. For the
+                    // lift to thread bindings, a variable bound inside the compound (e.g.
+                    // `$z` from `makes`) must be in scope for the enclosing call (`(stop $z)`
+                    // in `ift`). That requires the compound's leaf calls to lift at the
+                    // PARENT scope (around the enclosing call), not nested under the
+                    // compound — so bubble its children to reducedScopeId.
+                    // …unless this compound is itself a direct barrier argument: a
+                    // barrier (assertEqual/collapse) consumes the WHOLE bag, so the
+                    // compound stays self-contained (children scoped to it) and is NOT
+                    // compound-lifted — bubbling here would desync with rewriteExpression,
+                    // which leaves barrier args inlined.
+                    val isMvCompound = !barrierArg && headName != null && isMultivaluedHead(headName) &&
+                            atom.atoms.drop(1).any { arg ->
+                                arg is Expression && arg.atoms.isNotEmpty() &&
+                                        arg.atoms[0] is Symbol &&
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
+                            }
+                    val childScope = if (isMvCompound) {
+                        reducedScopeId
+                    } else if (headName != null && context.definedFunctions[headName] != null) {
+                        atom.id
+                    } else reducedScopeId
+
+                    // Direct arguments of a barrier (assertEqual/collapse/…) are tagged
+                    // so a bare multivalued call among them is handed over as a whole bag.
+                    val childIsBarrierArg = (atom.atoms[0] as? Symbol)?.name in BARRIER_FUNCTIONS
 
                     // other specials and symbols
                     atom.atoms.drop(1).forEach {
                         if (collectNonDeterministicAtomsRecursively(
                                 it,
                                 functionDefinition,
-                                childScope
+                                childScope,
+                                childIsBarrierArg
                             )
                         ) isMultivalued = true
                     }
@@ -362,15 +563,31 @@ class CanonicalFormRewriter(
 
     private fun Expression.checkIsNonDeterministicRecursively(): Boolean {
         if (atoms.isEmpty()) return false
-        if (atoms[0] is Symbol && context.definedFunctions[(atoms[0] as Symbol).name]!!.func.isMultivalued()) return true
+        // Safe lookup: a Symbol head need not be a user-defined function — it can be a data
+        // constructor or a system builtin, absent from definedFunctions. Treat those as not
+        // multivalued rather than asserting (`!!`) and NPE-ing (crashed if2/smartdispatch/…).
+        val head = atoms[0]
+        if (head is Symbol && context.definedFunctions[head.name]?.func?.isMultivalued() == true) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
         }
         return false
     }
 
+    // True for a multivalued call — a user-defined function annotated @multivalued,
+    // OR a system function (e.g. `superpose`) whose resolved symbol reports
+    // isMultiValued. `match` is excluded: it owns its own result scope and is
+    // special-cased throughout this pass, so a `(match …)` in argument position is
+    // never lifted.
+    private fun isMultivaluedHead(name: String): Boolean {
+        if (name == "match") return false
+        return context.definedFunctions[name]?.func?.isMultivalued()
+            ?: (context.resolve(name)?.isMultiValued == true)
+    }
+
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
-        context.definedFunctions[name]?.func?.arrowType?.types?.let { types ->
+        (context.definedFunctions[name]?.func?.arrowType?.types
+            ?: context.resolve(name)?.arrowType?.types)?.let { types ->
             val returnType = types.last()
             // If the function is multivalued (returns SeqType), the map/flatMap
             // lambda receives individual elements, not the whole list.

@@ -1,7 +1,10 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
+import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
+import net.singularity.jetta.runtime.JettaProgram
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -100,7 +103,10 @@ class MultivaluedFunctionTest : GeneratorTestBase() {
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
             val value = classes["RewriteNestedExpression"]!!.getMethod("bar", Int::class.java).invoke(null, 2)
-            assertEquals(listOf(3, 4, 5, 5, 6, 7, 7, 8, 9), value)
+            // Left-to-right evaluation: the FIRST (foo) is the outer loop, the second
+            // (inside `* $x`) the inner. So for $x=2: (1+2*1,1+2*2,1+2*3, 2+2*1,…) =
+            // [3,5,7, 4,6,8, 5,7,9]. Matches the reference / PeTTa argument order.
+            assertEquals(listOf(3, 5, 7, 4, 6, 8, 5, 7, 9), value)
         }
 
     @Test
@@ -234,4 +240,36 @@ class MultivaluedFunctionTest : GeneratorTestBase() {
             val value = classes["NonDeterministicFunction"]!!.getMethod("baz").invoke(null)
             assertEquals(listOf(2, 3, 4), value)
         }
+
+    // A system multivalued call (`superpose`) in the argument position of an
+    // ordinary single-valued function must be lifted into a map?, exactly like a
+    // user @multivalued function (cf. compileOneArgCall above). Before the fix,
+    // CanonicalFormRewriter only recognised user @multivalued functions, so the
+    // superpose bag was handed to `rev` as a raw List and crashed codegen.
+    // Mirrors b4_nondeterm's `(rev A (superpose (B C D)))`.
+    @Test
+    fun liftSystemMultivaluedArgIntoOrdinaryFunction() =
+        compile(
+            "LiftSuperposeArg.metta",
+            """
+            (= (rev _x _y) (_y _x))
+            !(rev A (superpose (B C D)))
+            """.trimIndent().replace('_', '$'),
+            mapImpl, flatMapImpl
+        ) { context -> registerExternals(context) }
+            .let { (result, messageCollector) ->
+                messageCollector.list().forEach { println(it) }
+                assertTrue(messageCollector.list().isEmpty())
+                val classes = result.toMap().toClasses()
+                JettaProgram.init("LiftSuperposeArg")
+                val value = classes["LiftSuperposeArg"]!!.getMethod("__main").invoke(null)
+                assertEquals(
+                    listOf(
+                        Expression(Symbol("B"), Symbol("A")),
+                        Expression(Symbol("C"), Symbol("A")),
+                        Expression(Symbol("D"), Symbol("A")),
+                    ),
+                    value
+                )
+            }
 }

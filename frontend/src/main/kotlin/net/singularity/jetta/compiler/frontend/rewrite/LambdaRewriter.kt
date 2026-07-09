@@ -32,7 +32,7 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
                 Lambda(
                     extractFormalParams(params as Expression),
                     null,
-                    rewriteExpression(body as Expression) as Expression,
+                    rewriteAtom(body),
                     expression.position
                 )
             }

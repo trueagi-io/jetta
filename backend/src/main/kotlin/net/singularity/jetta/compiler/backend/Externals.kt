@@ -6,30 +6,25 @@ import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.resolve.JvmMethod
-import net.singularity.jetta.runtime.Assertions
-import net.singularity.jetta.runtime.IO
-import net.singularity.jetta.runtime.Matcher
-import net.singularity.jetta.runtime.Random
-import net.singularity.jetta.runtime.functions.Function1
 import org.objectweb.asm.Type
 
 fun registerExternals(context: Context) {
     val random = JvmMethod(
-        owner = Type.getInternalName(Random::class.java),
+        owner = RuntimeNames.RANDOM,
         name = "random",
         descriptor = "()D"
     )
     val seed = JvmMethod(
-        owner = Type.getInternalName(Random::class.java),
+        owner = RuntimeNames.RANDOM,
         name = "seed",
         descriptor = "(J)V"
     )
     context.addSystemFunction(ResolvedSymbol(random, null, false))
     context.addSystemFunction(ResolvedSymbol(seed, null, false))
     val generate = JvmMethod(
-        owner = Type.getInternalName(Random::class.java),
+        owner = RuntimeNames.RANDOM,
         name = "generate",
-        descriptor = "(L${Type.getInternalName(Function1::class.java)};DDD)Ljava/util/List;",
+        descriptor = "(L${RuntimeNames.JETTA_FUNCTION};DDD)Ljava/util/List;",
     )
     context.addSystemFunction(ResolvedSymbol(generate,
         ArrowType(ArrowType(GroundedType.DOUBLE, GroundedType.DOUBLE),
@@ -39,7 +34,7 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(IO::class.java),
+                owner = RuntimeNames.IO,
                 name = "println",
                 descriptor = "(Ljava/lang/Object;)V"
             ), null, false
@@ -48,7 +43,7 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(Assertions::class.java),
+                owner = RuntimeNames.ASSERTIONS,
                 name = "assertEqual",
                 descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
@@ -59,7 +54,7 @@ fun registerExternals(context: Context) {
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
-                owner = Type.getInternalName(Assertions::class.java),
+                owner = RuntimeNames.ASSERTIONS,
                 name = "assertEqualToResult",
                 descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
@@ -72,9 +67,178 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "match",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                // Space arg is Object (not String) so `match` works INDIRECTLY too — when the
+                // space arrives through a variable as an Atom (e.g. a match-single wrapper),
+                // not just as a baked-in name String. Pattern arg is Atom (not Expression) so
+                // a bare-variable match-all pattern `(match &kb $x $x)` is legal.
+                // JettaProgram.match resolves the space name and dispatches on the pattern shape.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "superpose",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // Space mutation built-ins. First arg is the space (an ATOM in the arrow type; `&self`
+    // lowers to the module's space-name String at the call site, exactly like `match`). The
+    // atom arg is typed ATOM so the resolver does NOT reduce it — `add-atom` stores data
+    // verbatim (hyperon's `add-reduct` is the reducing variant). `add-atom`/`remove-atom`
+    // return the unit atom `()` (an ATOM value, as in hyperon — NOT void: a void/UNIT
+    // return can't be unboxed when the call is nested in a lambda-lifted context); not
+    // multivalued. `get-atoms` returns the space's atom bag (multivalued).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "add-atom",
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "remove-atom",
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-atoms",
+                descriptor = "(Ljava/lang/String;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `is-var` — variable predicate. Argument is ATOM (unreduced) so a variable reaches the
+    // builtin as a Variable, not as its binding.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "is-var",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // Mutable state: new-state creates a cell, bind! names it via a token, get-state reads,
+    // change-state! writes. Value/token args are ATOM (stored/looked-up as data, unreduced);
+    // bind!'s value arg is ANY so `(bind! s (new-state x))` reduces the new-state first.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "new-state",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "bind!",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-state",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "change-state!",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "collapse",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
+    // msort — sort a tuple (typically the result of `collapse`) into a canonical order so a
+    // nondeterministic bag can be compared against a literal. ANY param → the argument is
+    // reduced (the `collapse` runs) before sorting; single-valued (returns one Atom).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "msort",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
+    // once — non-determinism barrier keeping only the first result (see CanonicalFormRewriter
+    // / MarkMultivaluedFunctionsRewriter BARRIER_FUNCTIONS, which route the full bag here).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "once",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
+    // eval — the JIT-eval primitive. `(eval (quote EXPR))` hands the inert EXPR to
+    // JettaJit, which compiles+loads+invokes it at call time and returns the result bag.
+    // The argument must arrive as DATA (hence `quote`): the param type Atom keeps the
+    // resolver from reducing it at the call site. Multivalued — returns a List<Atom>.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/functions/JettaJit",
+                name = "eval",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true
         )
     )
@@ -83,9 +247,9 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "matchEval",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/util/function/Function;)Ljava/util/List;"
+                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)), SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)), SeqType(GroundedType.ATOM)),
             true
         )
     )

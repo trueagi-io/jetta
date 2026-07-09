@@ -1,7 +1,6 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -22,7 +21,7 @@ class LambdaTest : GeneratorTestBase() {
             }
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
-            assertEquals(2, classes.size)
+            assertEquals(1, classes.size)
             val value = classes["Lambda"]!!.getMethod("__main").invoke(null)
             assertEquals(30, value)
         }
@@ -184,18 +183,22 @@ class LambdaTest : GeneratorTestBase() {
             }
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
-            assertEquals(2, classes.size)
+            assertEquals(1, classes.size)
             val value = classes["PassFunction"]!!.getMethod("__main").invoke(null)
             assertEquals(30, value)
         }
 
+    // Inline lambda application `((\ ($x) body) arg)` — the shape `let` desugars
+    // into. The resolver now resolves the argument and the lambda body and
+    // propagates the argument's type onto the bound parameter (Context.kt
+    // resolveExpression, Lambda-head branch). Previously this left the argument
+    // typed Atom and crashed codegen in castIfNeeded.
     @Test
-    @Ignore
     fun `apply in-place`() =
         compile(
             "ApplyInPlace.metta",
             """
-                (: foo (-> Int Int))
+                (: foo (-> Int))
                 (= (foo) ((\ (_x) (+ _x 1)) 2))
                 """.trimIndent().replace('_', '$')
         ).let { (result, messageCollector) ->
@@ -204,8 +207,25 @@ class LambdaTest : GeneratorTestBase() {
             }
             assertTrue(messageCollector.list().isEmpty())
             val classes = result.toMap().toClasses()
-            assertEquals(2, classes.size)
-            val value = classes["PassFunction"]!!.getMethod("foo").invoke(null)
+            val value = classes["ApplyInPlace"]!!.getMethod("foo").invoke(null)
             assertEquals(3, value)
+        }
+
+    // Inline lambda application at top level, mirroring `(let $x (+ 10 20) (+ $x 1))`.
+    @Test
+    fun `inline lambda application binds and evaluates body`() =
+        compile(
+            "InlineLambdaApp.metta",
+            """
+                !((\ (_x) (+ _x 1)) (+ 10 20))
+                """.trimIndent().replace('_', '$')
+        ).let { (result, messageCollector) ->
+            messageCollector.list().forEach {
+                println(it)
+            }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            val value = classes["InlineLambdaApp"]!!.getMethod("__main").invoke(null)
+            assertEquals(31, value)
         }
 }
