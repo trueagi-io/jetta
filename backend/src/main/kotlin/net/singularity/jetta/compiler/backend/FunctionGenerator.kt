@@ -197,6 +197,14 @@ open class FunctionGenerator(
         emitLineNumber(atom)
         when (atom) {
             is Expression -> {
+                // The empty tuple `()` is a value, not a call — it has no head to dispatch
+                // on. Emit it as a runtime empty Expression (e.g. the else arm synthesized for
+                // a 2-arg `(if cond then)`, or a bare `()` reached outside a quoted body).
+                if (atom.atoms.isEmpty()) {
+                    generateQuote(mv, atom)
+                    if (doReturn) mv.visitInsn(Opcodes.ARETURN)
+                    return
+                }
                 val func = atom.atoms[0]
                 val arguments = atom.atoms.drop(1)
 
@@ -1419,6 +1427,23 @@ open class FunctionGenerator(
                 }
             }
 
+            // A bare boolean literal used directly as a condition — `(if True …)` — must
+            // leave the int 0/1 the caller's IF_ICMPNE expects, not the Symbol/Grounded
+            // object that generateAtom would push (which the verifier rejects against int).
+            // Ordinary conditions are comparison Expressions handled above; this covers the
+            // constant-condition and boolean-valued-Grounded cases.
+            is Symbol -> when (expr.name) {
+                "True" -> mv.visitInsn(Opcodes.ICONST_1)
+                "False" -> mv.visitInsn(Opcodes.ICONST_0)
+                else -> generateAtom(mv, expr, exit, false)
+            }
+
+            is Grounded<*> -> if (expr.value is Boolean) {
+                generateLoadBoolean(expr.value as Boolean)
+            } else {
+                generateAtom(mv, expr, exit, false)
+            }
+
             else -> generateAtom(mv, expr, exit, false)
         }
     }
@@ -1431,16 +1456,27 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.ICONST_1)
         val elseLabel = Label()
         mv.visitJumpInsn(Opcodes.IF_ICMPNE, elseLabel)
-        generateAtom(mv, thenExpr, exit, doReturn)
         // Value-producing if (the body of a Match branch / an argument): neither branch
         // returns nor jumps to an outer exit, so the then-branch must jump PAST the else
         // to a join — otherwise it falls through and both branches' values pile on the
         // stack (ASM Frame.merge fails). For the doReturn / exit cases each branch already
         // leaves via areturn / GOTO exit, so no join is needed.
         val joinLabel = if (!doReturn && exit == null) Label() else null
+        // When the two arms leave DIFFERENT JVM stack types — a grounded primitive vs an
+        // object Atom, as in a 2-arg `(if cond then)` whose synthesized `()` else is an
+        // Expression — the join (or the method return) merges `int` with a reference and the
+        // verifier rejects it. Homogenize to Atom: wrap the primitive arm in Grounded (which
+        // IS an Atom). Only in the value-producing path, where each arm leaves its value on
+        // the stack right before the join so we can wrap in place.
+        val thenPrim = (thenExpr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+        val elsePrim = (elseExpr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+        val homogenize = joinLabel != null && (thenPrim == null) != (elsePrim == null)
+        generateAtom(mv, thenExpr, exit, doReturn)
+        if (homogenize && thenPrim != null) wrapValueOnStackInGrounded(thenPrim)
         if (joinLabel != null) mv.visitJumpInsn(Opcodes.GOTO, joinLabel)
         mv.visitLabel(elseLabel)
         generateAtom(mv, elseExpr, exit, doReturn)
+        if (homogenize && elsePrim != null) wrapValueOnStackInGrounded(elsePrim)
         if (joinLabel != null) mv.visitLabel(joinLabel)
     }
 

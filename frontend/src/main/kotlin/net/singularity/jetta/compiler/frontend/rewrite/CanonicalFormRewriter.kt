@@ -563,7 +563,11 @@ class CanonicalFormRewriter(
 
     private fun Expression.checkIsNonDeterministicRecursively(): Boolean {
         if (atoms.isEmpty()) return false
-        if (atoms[0] is Symbol && context.definedFunctions[(atoms[0] as Symbol).name]!!.func.isMultivalued()) return true
+        // Safe lookup: a Symbol head need not be a user-defined function — it can be a data
+        // constructor or a system builtin, absent from definedFunctions. Treat those as not
+        // multivalued rather than asserting (`!!`) and NPE-ing (crashed if2/smartdispatch/…).
+        val head = atoms[0]
+        if (head is Symbol && context.definedFunctions[head.name]?.func?.isMultivalued() == true) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
         }

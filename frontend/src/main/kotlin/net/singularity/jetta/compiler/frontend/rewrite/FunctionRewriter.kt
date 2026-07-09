@@ -763,12 +763,16 @@ class FunctionRewriter(
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {
-            if (func is Special && func.value == Predefined.ARROW) {
-                mkArrow(it)
-            } else if (func is Symbol && specials.contains(func.name)) {
-                mkSpecialFromSymbol(it)
-            } else {
-                it
+            when {
+                func is Special && func.value == Predefined.ARROW -> mkArrow(it)
+                // 2-arg `(if cond then)` — hyperon sugar for "then when cond, else Empty".
+                // Pad with an empty-tuple else so every downstream `if` site (resolver,
+                // CanonicalFormRewriter.rewriteIf, generateIf) can assume the 3-arg shape
+                // and needn't special-case arity (they destructure `atoms[3]` directly).
+                func is Special && func.value == Predefined.IF && it.atoms.size == 3 ->
+                    it.copy(atoms = it.atoms + Expression(emptyList()))
+                func is Symbol && specials.contains(func.name) -> mkSpecialFromSymbol(it)
+                else -> it
             }
         }
     }
