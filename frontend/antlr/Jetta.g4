@@ -293,6 +293,7 @@ DIVIDE
     
 LAMBDA
     : '\\'
+    | '|->'
     ;
 
 LPAREN
