@@ -22,7 +22,7 @@ class CanonicalFormRewriter(
         // value, yielding a singleton on the actual side — see b4_nondeterm. They
         // depend on the non-reduction fallback (commit 4ebe9d0) so a non-matching call
         // like `(eq Green Blue)` reduces to itself rather than to an empty bag.
-        private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult", "msort", "once")
+        private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult", "msort", "once", "unique")
     }
 
     private var variableCount = 0
@@ -157,6 +157,11 @@ class CanonicalFormRewriter(
                 else if (atom.atoms[0].isIf()) rewriteIf(atom)
                 else rewriteExpression(atom)
             }
+
+            // Descend into a lambda body (the `(\ $e …)` a `let` desugars to, or an explicit
+            // `\`): its `if`s are homogenized and its multivalued calls wrapped, using the
+            // registrations `collect` populated for the lambda's scope.
+            is Lambda -> atom.copy(body = rewriteAtom(atom.body))
 
             else -> atom
         }
@@ -298,12 +303,16 @@ class CanonicalFormRewriter(
             // Innermost op: if `inner` yields a List (a compound lift, or the body
             // calls a multivalued function), the innermost wrap must FLAT_MAP_ so its
             // results are flattened rather than nested.
-            val innermostOp = if (compoundLifts.isNotEmpty()
-                || (body is Expression
-                    && body.atoms.isNotEmpty()
-                    && body.atoms[0] is Symbol
-                    && context.definedFunctions[(body.atoms[0] as Symbol).name]?.func?.isMultivalued() == true)
-            ) PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
+            val bodyCallsMultivalued = body is Expression && body.atoms.isNotEmpty() && when (val h = body.atoms[0]) {
+                // The body is a call to a multivalued user function …
+                is Symbol -> context.definedFunctions[h.name]?.func?.isMultivalued() == true
+                // … or an APPLIED lambda (a `let` body) whose own body yields a bag — the
+                // application returns a List, so the wrap must flatten, not nest (List<List>).
+                is Lambda -> h.body.isNonDeterministic()
+                else -> false
+            }
+            val innermostOp = if (compoundLifts.isNotEmpty() || bodyCallsMultivalued)
+                PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
             // Reversed so the FIRST-registered (left-most) multivalued call is the
             // OUTERMOST loop — left-to-right evaluation, matching both the reference
             // interpreter (b4 `(pair (bin) (bin))` → `((A A)(A B)(B A)(B B))`) and
@@ -337,7 +346,13 @@ class CanonicalFormRewriter(
     private fun rewriteIf(expression: Expression): Atom {
         fun rewriteAndMkSeqIfNeeded(expression: Expression, ind: Int): Atom {
             val other = if (ind == 2) 3 else 2
+            // Seq-wrap this arm only if it is genuinely SCALAR. An arm whose type is already a
+            // SeqType is a List (e.g. a system multivalued call like `(empty)` / `(superpose …)`
+            // sitting at a result position, which returns its bag directly and is never
+            // registered in multivaluedAtoms) — wrapping it in `(seq …)` would nest it to
+            // List<List> (`[emptyList]` instead of `emptyList`) and break the map/flat-map.
             if (!expression.atoms[ind].isNonDeterministic() &&
+                expression.atoms[ind].type !is SeqType &&
                 expression.atoms[other].isNonDeterministic()
             ) {
                 val inner = rewriteAtom(expression.atoms[ind])
@@ -482,9 +497,30 @@ class CanonicalFormRewriter(
                                     multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
                                         .add(variableCount to atom)
                                     variableCount++
-                                    isMultivalued = true
                                 }
+                                // The call IS non-deterministic regardless of whether it also
+                                // gets an identity-map lift above. Propagate that upward (the
+                                // `multivaluedAtoms.add` below keys off this flag) so an enclosing
+                                // `if`/consumer treats both it and itself as a List — e.g.
+                                // `(if … (quote …) (empty))` must homogenize (seq-wrap the scalar
+                                // `(quote …)` arm) instead of returning a bare List from one arm
+                                // and a scalar from the other. A system call at its own result
+                                // scope still takes NO lift (the identity-map guard is unchanged),
+                                // so a tail `!(superpose …)` gains no spurious `(map? (\$v $v) …)`.
+                                isMultivalued = true
                             }
+                        }
+                    }
+
+                    is Lambda -> {
+                        // An APPLIED lambda — e.g. the `(\ $e …)` a `let` desugars to. Its body
+                        // is a nested scope (Lambda is FunctionLike): analyze it so multivalued
+                        // calls and `if`-homogenization INSIDE the lambda are handled, and so we
+                        // learn whether the APPLICATION is itself multivalued (its result is the
+                        // lambda body's result). That flag makes the lift of a multivalued
+                        // argument (`(gen $d)` in `(let $e (gen $d) …)`) flatten rather than nest.
+                        if (collectNonDeterministicAtomsRecursively(f.body, f, f.body.id)) {
+                            isMultivalued = true
                         }
                     }
 
@@ -553,6 +589,15 @@ class CanonicalFormRewriter(
                         ) isMultivalued = true
                     }
                 }
+            }
+
+            is Lambda -> {
+                // A lambda in a non-head position (an explicit `\` passed as an argument):
+                // analyze its body as a nested scope so multivalued calls / `if`s inside are
+                // handled. The lambda VALUE itself is not a bag, so this does not mark the
+                // enclosing atom multivalued.
+                collectNonDeterministicAtomsRecursively(atom.body, atom, atom.body.id)
+                return false
             }
 
             else -> return false

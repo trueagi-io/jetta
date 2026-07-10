@@ -210,13 +210,15 @@ open class FunctionGenerator(
 
                 when (func) {
                     is Special -> when (func.value) {
-                        Predefined.PLUS, Predefined.TIMES, Predefined.MINUS -> generateArithmetics(
-                            mv,
-                            func,
-                            arguments,
-                            atom.type as GroundedType,
-                            doReturn
-                        )
+                        Predefined.PLUS, Predefined.TIMES, Predefined.MINUS ->
+                            // operator-as-data: when the resolver stamped this arithmetic
+                            // form inert ATOM (an operator tuple inside a data container like
+                            // `(superpose (+ - *))`), it is DATA, not a computation — quote it
+                            // like the other Special-headed data forms below. Genuine
+                            // arithmetic always carries an INT/DOUBLE type, so this never
+                            // suppresses a real `(+ …)`/`(* …)`/`(- …)` computation.
+                            if (atom.type == GroundedType.ATOM) generateQuote(mv, atom)
+                            else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
 
                         Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
                         Predefined.DIV -> generateDiv(mv, arguments, doReturn)

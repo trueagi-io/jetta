@@ -89,6 +89,46 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `empty` — the empty non-deterministic bag (zero results); prunes a branch. No args,
+    // multivalued (returns a List).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "empty",
+                descriptor = "()Ljava/util/List;"
+            ),
+            ArrowType(SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `unique` — non-determinism barrier that dedupes the bag (see BARRIER_FUNCTIONS). Consumes
+    // the whole bag (an Object) and returns the distinct results (multivalued → List).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "unique",
+                descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
+    // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`).
+    // Param is ANY so the argument (e.g. `(render $e)`) IS reduced before the quote is stripped.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "unquote",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
     // Space mutation built-ins. First arg is the space (an ATOM in the arrow type; `&self`
     // lowers to the module's space-name String at the call site, exactly like `match`). The
     // atom arg is typed ATOM so the resolver does NOT reduce it — `add-atom` stores data

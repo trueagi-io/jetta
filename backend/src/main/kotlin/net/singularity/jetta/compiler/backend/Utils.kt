@@ -75,6 +75,23 @@ fun generateLoadVar(
         return
     }
 
+    // The physical slot holds the param's DECLARED type; the usage type (`variable.type`)
+    // can differ — e.g. an Atom-typed param passed where a callee expects a primitive
+    // (`(solve $s:Atom $d:Atom)` calling `(gen $d:Int)`). Keying the load purely on the
+    // usage type would emit ILOAD over an Atom slot -> VerifyError. When the slot is a
+    // boxed/Atom reference but a numeric/boolean primitive is wanted, ALOAD the reference
+    // and unwrap+unbox it instead.
+    val slotType = if (index >= 0) params.firstOrNull { it.name == variable.name }?.type else null
+    val usage = variable.type
+    if (index >= 0 && (slotType == GroundedType.ATOM || slotType == GroundedType.ANY) &&
+        (usage == GroundedType.INT || usage == GroundedType.LONG ||
+            usage == GroundedType.DOUBLE || usage == GroundedType.BOOLEAN)
+    ) {
+        mv.visitVarInsn(Opcodes.ALOAD, index + offset)
+        unwrapGroundedToPrimitive(mv, usage as GroundedType)
+        return
+    }
+
     when (variable.type) {
         GroundedType.INT,
         GroundedType.BOOLEAN -> {

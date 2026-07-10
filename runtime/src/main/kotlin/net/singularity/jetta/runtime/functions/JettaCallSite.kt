@@ -52,6 +52,28 @@ object JettaCallSite {
     @JvmStatic
     fun dispatch(spaceName: String, head: Any?, args: Array<Any?>): Any? {
         if (head is JettaFunction) return head.apply(args)
+        // Compiled-binary variable-head dispatch (P1): when `head` is a Symbol naming a user
+        // function of matching arity, LINK against its compiled method via the registry loaded
+        // from `.jctx`. This is the AOT counterpart to the JIT-eval path below — it lets
+        // `($f x)` reduce (grounded ops run, user fns invoke) in a `jetta` run that has no
+        // JitEnv. Registry is empty in the REPL (JitEnv path handles it there), so this is a
+        // no-op miss and the existing behaviour is unchanged. Arity mismatch (e.g. currying)
+        // is not a P1 case — fall through.
+        // Registry dispatch (P1 user fns + P3 grounded ops): resolve the head — a Symbol
+        // (user function) or a Special/Symbol operator (`+`/`-`/`*`, applied through a variable
+        // head by an interpreter that carries operators as data, `(ev (Bin $op …)) → ($op …)`)
+        // — to a MethodHandle and invoke it. This is one indirect call, NOT a per-call operator
+        // switch: P2's polymorphic-inline-cache then relinks the site to the resolved handle so
+        // HotSpot inlines the hot op near-natively. A grounded op over non-numeric operands
+        // returns null (not computable) → fall through to the inert form.
+        opHeadName(head)?.let { name ->
+            JettaLinkRegistry.lookup(name)?.let { entry ->
+                if (entry.paramTypes.size == args.size) {
+                    val result = JettaLinkRegistry.invoke(entry, args)
+                    if (result != null || !entry.groundedOp) return result
+                }
+            }
+        }
         val callExpr = buildInertExpression(head, args)
         // When a JIT env is installed (same-JVM: REPL / in-process run), EVALUATE the
         // application by compiling+running it. This is what makes higher-order code like
@@ -134,6 +156,13 @@ object JettaCallSite {
         )
         val bound = MethodHandles.insertArguments(target, 0, spaceName)
         return ConstantCallSite(bound.asType(invokedType))
+    }
+
+    /** The name a dispatch head denotes — a Symbol's name or an operator Special's value. */
+    private fun opHeadName(head: Any?): String? = when (val h = if (head is BoundAtom) head.atom else head) {
+        is Symbol -> h.name
+        is Special -> h.value
+        else -> null
     }
 
     private fun buildInertExpression(head: Any?, args: Array<Any?>): Expression {

@@ -172,6 +172,14 @@ class Compiler(
             )
         }
 
+        // Linker table for variable-head dispatch in the compiled binary (P1). Written once
+        // per program as `<program>.jctx` beside its `.class`; loaded by JettaProgram.init so
+        // JettaCallSite can link `($f x)` (with `$f` naming a user fn) against the compiled
+        // method instead of leaving the application inert. The table is context-global (owner
+        // disambiguates), so every program's `.jctx` carries the full set — cheap and lets a
+        // program dispatch to any resolved function.
+        val linkerTableText = renderLinkerTable(context.linkerTable())
+
         resolved.forEach {
             // autoTable = true: AOT is a closed world (rules fixed at compile), so memoizing
             // pure/deterministic recursive functions is sound without cache invalidation.
@@ -185,6 +193,7 @@ class Compiler(
             )
             val compiled = generator.generate(it)
             compiled.forEach(::writeResult)
+            writeLinkerTable(programName, linkerTableText)
         }
         return true to messageCollector.list()
     }
@@ -193,6 +202,20 @@ class Compiler(
         Paths.get(source.filename).toAbsolutePath().normalize()
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
+
+    /**
+     * Serialize the linker table as tab-separated lines `name\towner\tdescriptor\tmultivalued`
+     * (one function per line). A plain text format keeps `.jctx` diffable and trivial to parse
+     * at runtime without pulling a serialization dependency into the runtime module.
+     */
+    private fun renderLinkerTable(entries: List<Context.LinkerSymbol>): String =
+        entries.joinToString("\n") { "${it.name}\t${it.owner}\t${it.descriptor}\t${it.multivalued}" }
+
+    private fun writeLinkerTable(programName: String, text: String) {
+        val file = File(outputDir + File.separator + "$programName.jctx")
+        if (!file.parentFile.exists()) file.parentFile.mkdirs()
+        file.writeText(text)
+    }
 
     fun writeResult(result: CompilationResult) {
         val file = File(outputDir + File.separator + "${result.className}.class")

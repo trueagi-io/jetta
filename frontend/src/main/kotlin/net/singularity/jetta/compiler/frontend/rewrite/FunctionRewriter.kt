@@ -342,11 +342,34 @@ class FunctionRewriter(
 
         fun walk(atom: Atom, bound: Set<String>) {
             if (atom !is Expression) return
-            (atom.atoms.firstOrNull() as? Symbol)?.let { head ->
+            val head = atom.atoms.firstOrNull()
+            // `let`/`let*` introduce variables that are NOT pattern parameters but ARE bound in
+            // the body. Extend `bound` for the appropriate sub-walk so a callee applied to a
+            // let-bound variable — `(let $e (gen $d) … (render $e) …)` — is not falsely seen as
+            // relational (which would wrongly mark it @multivalued). Handles the `(quote $v)`
+            // pattern LHS too (its variable is bound in the body). Runs before LetRewriter, so
+            // `let`/`let*` are still literal here.
+            if (head is Symbol && head.name == "let" && atom.atoms.size == 4) {
+                walk(atom.atoms[2], bound)
+                walk(atom.atoms[3], bound + collectVariableNames(atom.atoms[1]))
+                return
+            }
+            if (head is Symbol && head.name == "let*" && atom.atoms.size == 3) {
+                var b = bound
+                (atom.atoms[1] as? Expression)?.atoms?.forEach { pair ->
+                    if (pair is Expression && pair.atoms.size == 2) {
+                        walk(pair.atoms[1], b)
+                        b = b + collectVariableNames(pair.atoms[0])
+                    }
+                }
+                walk(atom.atoms[2], b)
+                return
+            }
+            (head as? Symbol)?.let { h ->
                 val argsHaveFreeVar = atom.atoms.drop(1).any { arg ->
                     collectVariableNames(arg).any { it !in bound }
                 }
-                if (argsHaveFreeVar) relational.add(head.name)
+                if (argsHaveFreeVar) relational.add(h.name)
             }
             atom.atoms.forEach { walk(it, bound) }
         }

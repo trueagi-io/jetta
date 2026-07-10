@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.JettaFunction
+import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
@@ -96,6 +97,18 @@ open class JettaProgram {
                 SpaceRegistry.register(SpaceId.FromModule(programName), env.space)
                 return
             }
+
+            // Cross-JVM (AOT) variable-head dispatch: load this program's linker table so
+            // JettaCallSite can resolve `($f x)` (with `$f` naming a user function) by linking
+            // against the compiled method. Missing `.jctx` is a no-op — a program with no
+            // linkable functions dispatches nothing dynamically. Done here (not gated on the
+            // manifest) because a program's `=` rules live as compiled functions regardless of
+            // whether it also has space facts.
+            JettaLinkRegistry.load(
+                dataDir,
+                programName,
+                Thread.currentThread().contextClassLoader ?: JettaProgram::class.java.classLoader,
+            )
 
             val manifestFile = dataDir.resolve("$programName.manifest.json")
             if (!manifestFile.exists()) {
