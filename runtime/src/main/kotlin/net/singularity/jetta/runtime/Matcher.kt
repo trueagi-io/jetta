@@ -105,9 +105,27 @@ object Matcher {
      * materialise a non-deterministic branch's result against the bindings its branch
      * installed — [resolveBinding] alone only handles a top-level variable.
      */
-    fun resolveDeep(atom: Atom): Atom = when (val resolved = resolveBinding(atom)) {
-        is Expression -> Expression(resolved.atoms.map { resolveDeep(it) }, position = resolved.position)
+    fun resolveDeep(atom: Atom): Atom {
+        // Fast path: if nothing is bound anywhere on the stack, no Variable can
+        // resolve and there is nothing to substitute, so the full recursive tree
+        // rebuild below is pure waste (it reallocates an identical Expression at
+        // every node). This is the dominant cost of map?/flat-map? materialisation
+        // when branches carry no bindings. A top-level BoundAtom still installs its
+        // own bindings via resolveBinding, so exclude it from the shortcut; nested
+        // BoundAtoms do not occur (they only ever wrap a top-level match result).
+        if (atom !is BoundAtom && allFramesEmpty()) return atom
+        return resolveDeepRec(atom)
+    }
+
+    private fun resolveDeepRec(atom: Atom): Atom = when (val resolved = resolveBinding(atom)) {
+        is Expression -> Expression(resolved.atoms.map { resolveDeepRec(it) }, position = resolved.position)
         else -> resolved
+    }
+
+    private fun allFramesEmpty(): Boolean {
+        val stack = bindingStack.get()
+        for (frame in stack) if (frame.isNotEmpty()) return false
+        return true
     }
 
     fun match(space: Space, src: Expression, dst: Atom): List<Atom> =

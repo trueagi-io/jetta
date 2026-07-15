@@ -35,8 +35,14 @@ fun simpleFlatMap(f: JettaFunction, list: List<Any?>): List<Any?> {
             Matcher.getBindings().putAll(element.bindings)
             element.atom
         } else element
+        // A branch that does not reduce to any value yields no results — it contributes
+        // nothing to the flattened bag (MeTTa non-determinism: an empty branch is dropped,
+        // not an error). A JettaFunction whose compiled body has no applicable clause hands
+        // back null here; treat that as the empty list. Tolerating it in the combinator (a)
+        // matches the semantics and (b) avoids a thrown NullPointerException on the hot path —
+        // exceptions must never be part of normal control flow.
         @Suppress("UNCHECKED_CAST")
-        (f.apply(arrayOf(unwrapped)) as List<Any?>).forEach { result.add(materialize(it)) }
+        (f.apply(arrayOf(unwrapped)) as List<Any?>?)?.forEach { result.add(materialize(it)) }
         Matcher.pop()
     }
     return result

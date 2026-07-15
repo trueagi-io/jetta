@@ -92,11 +92,9 @@ object SpaceDirectorySerializer {
             cachedSpaceField.isAccessible = true
             cachedSpaceField.set(indexer, space)
 
-            val indexersField = SpaceImpl::class.java.getDeclaredField("indexers")
-            indexersField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val indexers = indexersField.get(space) as MutableMap<Expression, IndexerImpl>
-            indexers[indexer.pattern] = indexer
+            // Register under the space's canonical pattern key so a runtime `match` with the
+            // same pattern finds this pre-built index instead of rebuilding it lazily.
+            space.registerPrebuiltIndexer(indexer)
         }
 
         return space to manifest
@@ -203,7 +201,7 @@ object SpaceDirectorySerializer {
         val indexersField = SpaceImpl::class.java.getDeclaredField("indexers")
         indexersField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
-        val indexers = indexersField.get(space) as Map<Expression, IndexerImpl>
+        val indexers = indexersField.get(space) as Map<*, IndexerImpl>
 
         return indexers.values.mapIndexed { index, indexer ->
             val indexId = "index-%04d".format(index + 1)

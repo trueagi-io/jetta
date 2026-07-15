@@ -7,8 +7,6 @@ import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toSAtom
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
 
 class IndexerImpl(val pattern: Expression) : Indexer {
 
@@ -85,45 +83,20 @@ class IndexerImpl(val pattern: Expression) : Indexer {
 
         cachedSpace = space
 
-        val k = 8
-        val threadPool = Executors.newFixedThreadPool(k)
+        packedMatches.clear()
+        spaceVarSubstitutions.clear()
 
-        try {
-            val chunks = space.chunks(k)
-            val chunkSize = (space.getStoreSize() + k - 1) / k
-
-            val futures = mutableListOf<Future<List<Pair<PackedMatch, Map<String, SAtom>>>>>()
-
-            chunks.forEachIndexed { chunkIndex, chunk ->
-                val future = threadPool.submit<List<Pair<PackedMatch, Map<String, SAtom>>>> {
-                    val chunkResults = mutableListOf<Pair<PackedMatch, Map<String, SAtom>>>()
-
-                    var localIndex = 0
-                    chunk.forEach { spaceExpr ->
-                        val globalStoreIndex = chunkIndex * chunkSize + localIndex
-                        val result = tryMatch(spaceExpr, globalStoreIndex, space)
-                        if (result != null) {
-                            chunkResults.add(result)
-                        }
-                        localIndex++
-                    }
-
-                    chunkResults
-                }
-                futures.add(future)
+        // Ask the space's structural trie for the store atoms that could match this pattern —
+        // an O(pattern) walk returning a superset in ascending store order — then run the
+        // exact match/capture on just those. This replaces the old O(store) full scan (and
+        // its per-build thread pool): on a large KB with varied queries it is the difference
+        // between O(store) and ~O(pattern) per `match`. Candidates are structurally
+        // compatible only; tryMatch enforces cross-position variable consistency.
+        for (storeIndex in space.candidateIndices(pattern)) {
+            tryMatch(space.storeAt(storeIndex), storeIndex, space)?.let { (match, subs) ->
+                packedMatches.add(match)
+                spaceVarSubstitutions.add(subs)
             }
-
-            packedMatches.clear()
-            spaceVarSubstitutions.clear()
-            futures.forEach { future ->
-                future.get().forEach { (match, subs) ->
-                    packedMatches.add(match)
-                    spaceVarSubstitutions.add(subs)
-                }
-            }
-
-        } finally {
-            threadPool.shutdown()
         }
     }
 
