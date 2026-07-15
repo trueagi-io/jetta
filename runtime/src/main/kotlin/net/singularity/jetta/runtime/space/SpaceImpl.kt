@@ -3,7 +3,6 @@ package net.singularity.jetta.runtime.space
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
-import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.compiler.logger.Logger
@@ -14,12 +13,13 @@ import net.singularity.jetta.runtime.space.atoms.toSAtom
 
 class SpaceImpl : Space {
     private val store = mutableListOf<Expression>()
-    // Keyed by a canonical structural string, NOT the pattern Expression: `Variable` has no
-    // structural equals (identity only), so a `Map<Expression, _>` would MISS on every
-    // pattern containing a variable — e.g. `(Implication $a (Evaluation (mortal p0)))` never
-    // matched a structurally-identical earlier pattern, rebuilding its index on every query.
-    // The canonical key (see [indexerKey]) makes structurally-equal patterns share one index.
-    private val indexers = mutableMapOf<String, IndexerImpl>()
+    // Keyed by [PatternKey], NOT the pattern Expression: `Variable` has no structural equals
+    // (identity only), so a `Map<Expression, _>` would MISS on every pattern containing a
+    // variable — e.g. `(Implication $a (Evaluation (mortal p0)))` never matched a
+    // structurally-identical earlier pattern, rebuilding its index on every query. PatternKey
+    // makes structurally-equal patterns share one index via a cached structural hash — no
+    // per-lookup string is built (which profiled at ~12% of a backchain query).
+    private val indexers = mutableMapOf<PatternKey, IndexerImpl>()
     // One structural index over the whole store, maintained incrementally. Turns a lazy
     // pattern's candidate retrieval from an O(store) scan into an O(query) trie walk — the
     // difference between backward chaining costing O(store) per query and staying flat.
@@ -71,36 +71,13 @@ class SpaceImpl : Space {
         patterns.forEach { pattern ->
             val indexer = IndexerImpl(pattern)
             indexer.index(this, pattern)
-            indexers[indexerKey(pattern)] = indexer
+            indexers[PatternKey(pattern)] = indexer
         }
     }
 
-    /** Register a pre-built (deserialized `.jtsi`) indexer under its pattern's canonical key. */
+    /** Register a pre-built (deserialized `.jtsi`) indexer under its pattern's structural key. */
     internal fun registerPrebuiltIndexer(indexer: IndexerImpl) {
-        indexers[indexerKey(indexer.pattern)] = indexer
-    }
-
-    /**
-     * Canonical structural key for an indexer pattern: symbols, grounded values (class-tagged
-     * so `5:Int` and `"5":String` never collide), variable names, and expression nesting —
-     * everything `match` dispatches on — but NOT type/position/id. Two patterns share an index
-     * iff this key is equal, which (unlike `Expression.equals` over identity-`Variable`s)
-     * holds for structurally-identical variable-bearing patterns.
-     */
-    private fun indexerKey(atom: Expression): String = StringBuilder().also { appendKey(atom, it) }.toString()
-
-    private fun appendKey(atom: Atom, sb: StringBuilder) {
-        when (atom) {
-            is Variable -> sb.append('?').append(atom.name)
-            is Symbol -> sb.append('\'').append(atom.name)
-            is Grounded<*> -> sb.append('#').append(atom.value?.javaClass?.name).append('=').append(atom.value)
-            is Expression -> {
-                sb.append('(')
-                atom.atoms.forEach { appendKey(it, sb); sb.append(' ') }
-                sb.append(')')
-            }
-            else -> sb.append('@').append(atom.toString())
-        }
+        indexers[PatternKey(indexer.pattern)] = indexer
     }
 
     override fun contains(id: Int): Boolean {
@@ -122,7 +99,7 @@ class SpaceImpl : Space {
         }
 
         // Get or create indexer for this pattern
-        val indexer = indexers.getOrPut(indexerKey(src)) {
+        val indexer = indexers.getOrPut(PatternKey(src)) {
             IndexerImpl(src).also {
                 it.index(this, src)
             }
@@ -436,7 +413,7 @@ class SpaceImpl : Space {
             return joinConjunctionBranches(pattern.atoms.drop(1))
         }
 
-        val indexer = indexers.getOrPut(indexerKey(pattern)) {
+        val indexer = indexers.getOrPut(PatternKey(pattern)) {
             IndexerImpl(pattern).also { it.index(this, pattern) }
         }
         val packedIndex = indexer.getPackedIndex()
