@@ -123,55 +123,64 @@ class SpaceImpl : Space {
         // dominant per-call cost in deep backward chaining, where nearly every `match &self`
         // yields 0 or 1 rows. Zero results already allocate nothing (empty map below).
         if (enablePerCallBindings && size == 1) {
-            val bindings = packedIndex.resolve(0, this)
-            val result = substituteVariables(dst, bindings)
+            // Atom-valued resolve: extract store atoms directly, with NO SAtom round-trip.
+            // The old path went store-Atom -> SAtom (extractAtom) -> Atom (twice, in
+            // substituteVariables + writeBindingsToVariables), a full recursive tree copy
+            // each way per bound variable. `toAtom` profiled at ~13% of a deep-chain query.
+            // Store IR atoms are immutable value objects, so sharing the reference is safe
+            // (substituteVariables already reuses the dst leaf for unbound vars).
+            val bindings = packedIndex.resolveToAtoms(0, this)
+            val result = substituteVariablesA(dst, bindings)
             val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(0)
             val final = applySpaceVarSubstitutions(result, spaceVarSubs)
-            writeBindingsToVariables(src, bindings)
+            writeBindingsToVariablesA(src, bindings)
             logger.trace { "|match| result[0] = $final (spaceVarSubs=$spaceVarSubs, elided)" }
             return listOf(final)
         }
 
         return (0 until size).map { matchIndex ->
-            val bindings = packedIndex.resolve(matchIndex, this)
-            val result = substituteVariables(dst, bindings)
+            // Atom-valued resolve (see the size==1 fast path): the returned map is keyed by
+            // exactly this pattern's variable names (schema == VariableSchema.fromPattern),
+            // so it doubles as the BoundAtom foliation snapshot — no separate collectBindings
+            // walk and no SAtom round-trip. Fresh per branch, so sharing it with the snapshot
+            // is safe (BoundAtom bindings are read-only downstream).
+            val bindings = packedIndex.resolveToAtoms(matchIndex, this)
+            val result = substituteVariablesA(dst, bindings)
             val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)
             val final = applySpaceVarSubstitutions(result, spaceVarSubs)
-            // Capture per-result bindings as a foliation leaf
             if (enablePerCallBindings) {
-                val snapshot = mutableMapOf<String, Atom>()
-                collectBindings(src, bindings, snapshot)
-                writeBindingsToVariables(src, bindings)
+                writeBindingsToVariablesA(src, bindings)
                 logger.trace { "|match| result[$matchIndex] = $final (spaceVarSubs=$spaceVarSubs)" }
-                BoundAtom(final, snapshot)
+                BoundAtom(final, bindings)
             } else {
                 final
             }
         }
     }
 
-    private fun collectBindings(pattern: Atom, bindings: Bindings, out: MutableMap<String, Atom>) {
+    /**
+     * Write each of the pattern's bound variables up into the current Matcher frame, so the
+     * caller observes bindings produced by this match (upward propagation — see Matcher.pop).
+     * Atom-valued: the map holds raw store atoms, so there is no SAtom.toAtom() per binding.
+     */
+    private fun writeBindingsToVariablesA(pattern: Atom, bindings: Map<String, Atom>) {
         when (pattern) {
-            is Variable -> bindings[pattern.name]?.let { out[pattern.name] = it.toAtom() }
-            is Expression -> pattern.atoms.forEach { collectBindings(it, bindings, out) }
+            is Variable -> bindings[pattern.name]?.let { Matcher.setBinding(pattern.name, it) }
+            is Expression -> pattern.atoms.forEach { writeBindingsToVariablesA(it, bindings) }
             else -> {}
         }
     }
 
-    private fun writeBindingsToVariables(pattern: Atom, bindings: Bindings) {
-        when (pattern) {
-            is Variable -> {
-                bindings[pattern.name]?.let {
-                    val bound = it.toAtom()
-                    Matcher.setBinding(pattern.name, bound)
-                }
-            }
-
-            is Expression -> {
-                pattern.atoms.forEach { writeBindingsToVariables(it, bindings) }
-            }
-
-            else -> {}
+    /** Render `dst`, substituting each bound Variable with its Atom value (unbound vars stay). */
+    private fun substituteVariablesA(atom: Atom, bindings: Map<String, Atom>): Atom {
+        return when (atom) {
+            is Variable -> bindings[atom.name] ?: atom
+            is Expression -> Expression(
+                atoms = atom.atoms.map { substituteVariablesA(it, bindings) },
+                type = atom.type,
+                resolved = atom.resolved
+            )
+            else -> atom
         }
     }
 
@@ -204,25 +213,20 @@ class SpaceImpl : Space {
         return current.toSAtom()
     }
 
-    private fun substituteVariables(atom: Atom, bindings: Bindings): Atom {
-        return when (atom) {
-            is Variable -> {
-                // Variables not in this match's bindings stay as Variables — they
-                // belong to a different scope (e.g. a nested `match` template
-                // whose own variables are bound by the inner call, not the outer).
-                bindings[atom.name]?.toAtom() ?: atom
+    /**
+     * Like [extractAtom] but returns the raw store [Atom] with NO SAtom conversion. The
+     * returned reference points into the immutable store IR; callers must treat it as
+     * read-only (they do — it's only embedded into rendered results or set as a binding).
+     */
+    internal fun extractAtomRaw(packed: PackedBinding): Atom {
+        var current: Atom = store[packed.storeIndex]
+        for (index in packed.atomPath) {
+            current = when (current) {
+                is Expression -> current.atoms[index]
+                else -> throw IllegalStateException("Invalid path in PackedBinding: cannot traverse non-expression")
             }
-
-            is Expression -> {
-                Expression(
-                    atoms = atom.atoms.map { substituteVariables(it, bindings) },
-                    type = atom.type,
-                    resolved = atom.resolved
-                )
-            }
-
-            else -> atom
         }
+        return current
     }
 
     override fun chunks(numberOfChunks: Int): List<Iterator<Expression>> {

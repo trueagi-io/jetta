@@ -42,7 +42,7 @@ object Matcher {
         // bindings produced by callees (e.g., match results).
         // This is still needed for cases where a captured Variable in a lambda
         // must resolve to a value bound deep in a callee chain.
-        if (stack.isNotEmpty()) {
+        if (childFrame.isNotEmpty() && stack.isNotEmpty()) {
             stack.last().putAll(childFrame)
         }
         log.trace {

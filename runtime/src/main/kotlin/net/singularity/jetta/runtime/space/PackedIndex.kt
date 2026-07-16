@@ -1,8 +1,12 @@
 package net.singularity.jetta.runtime.space
 
+import net.singularity.jetta.compiler.frontend.ir.Atom
+import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.SExpression
 import net.singularity.jetta.runtime.space.atoms.SVariable
+import net.singularity.jetta.runtime.space.atoms.toAtom
 
 /**
  * Efficient storage for all matches of an indexed pattern.
@@ -37,6 +41,34 @@ class PackedIndex(
         }
 
         return bindings
+    }
+
+    /**
+     * Atom-valued counterpart of [resolve]: extract each variable's value as the raw store
+     * [net.singularity.jetta.compiler.frontend.ir.Atom] with NO SAtom round-trip. Space-var
+     * substitutions (rare on the backward-chaining fast path) still convert only the small
+     * substituted RHS, and only when present; with empty subs the extracted atom is returned
+     * untouched (zero allocation).
+     */
+    fun resolveToAtoms(matchIndex: Int, space: SpaceImpl): HashMap<String, Atom> {
+        val match = matches[matchIndex]
+        val subs = getSpaceVarSubstitutions(matchIndex)
+        val out = HashMap<String, Atom>()
+        schema.variableNames.forEachIndexed { varIndex, varName ->
+            val atom = space.extractAtomRaw(match.getBinding(varIndex))
+            out[varName] = if (subs.isNotEmpty()) applySubstitutionsAtom(atom, subs) else atom
+        }
+        return out
+    }
+
+    private fun applySubstitutionsAtom(atom: Atom, subs: Map<String, SAtom>): Atom = when (atom) {
+        is Variable -> subs[atom.name]?.toAtom() ?: atom
+        is Expression -> Expression(
+            atoms = atom.atoms.map { applySubstitutionsAtom(it, subs) },
+            type = atom.type,
+            resolved = atom.resolved
+        )
+        else -> atom
     }
 
     private fun applySubstitutions(atom: SAtom, subs: Map<String, SAtom>): SAtom {
