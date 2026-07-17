@@ -17,7 +17,7 @@ fun simpleMap(f: JettaFunction, list: List<Any?>): List<Any?> {
     for (element in list) {
         Matcher.push()
         val unwrapped = if (element is BoundAtom) {
-            Matcher.getBindings().putAll(element.bindings)
+            Matcher.installBindings(element.bindings)
             element.atom
         } else element
         result.add(materialize(f.apply(arrayOf(unwrapped))))
@@ -32,7 +32,7 @@ fun simpleFlatMap(f: JettaFunction, list: List<Any?>): List<Any?> {
     for (element in list) {
         Matcher.push()
         val unwrapped = if (element is BoundAtom) {
-            Matcher.getBindings().putAll(element.bindings)
+            Matcher.installBindings(element.bindings)
             element.atom
         } else element
         // A branch that does not reduce to any value yields no results — it contributes

@@ -126,7 +126,7 @@ object JettaCallSite {
         val results = JettaProgram.match(spaceName, pattern, r)
         val first = results.firstOrNull() ?: return null
         return if (first is BoundAtom) {
-            Matcher.getBindings().putAll(first.bindings)
+            Matcher.installBindings(first.bindings)
             first.atom
         } else first
     }

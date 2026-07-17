@@ -78,7 +78,7 @@ open class JettaProgram {
 
         private fun initInternal(programName: String, expectedAtomCount: Int?, expectedContentHash: String?) {
             SpaceRegistry.reset()
-            Matcher.getBindings().clear()
+            Matcher.clearTop()
             tokens.clear()
             currentSpaceName = programName
 
@@ -348,7 +348,7 @@ open class JettaProgram {
         ): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst).flatMap { substituted ->
                 val unwrapped = if (substituted is BoundAtom) {
-                    Matcher.getBindings().putAll(substituted.bindings)
+                    Matcher.installBindings(substituted.bindings)
                     substituted.atom
                 } else substituted
                 @Suppress("UNCHECKED_CAST")

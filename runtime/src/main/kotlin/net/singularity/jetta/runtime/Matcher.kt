@@ -10,18 +10,30 @@ import net.singularity.jetta.compiler.logger.Logger
 import net.singularity.jetta.runtime.space.Space
 
 object Matcher {
-    private val bindingStack = ThreadLocal.withInitial {
-        ArrayDeque<MutableMap<String, Atom>>().also { it.addLast(mutableMapOf()) }
+    /**
+     * Per-thread binding state, bundled in one holder so the hot path pays a single
+     * `ThreadLocal.get()`. [bound] is the running total of entries across *all* frames,
+     * maintained at every mutation site; `bound == 0` is therefore an O(1) test for
+     * "nothing is bound anywhere" — see [allFramesEmpty]. (It replaces an O(depth) scan
+     * that profiled at ~19% of the synth benchmark: there the binding stack is ~48 frames
+     * deep on average and almost always entirely empty, so the scan walked ~48 empty maps
+     * on every map?/flat-map? materialisation only to conclude "nothing to substitute".)
+     * The frame maps are plain [HashMap]s (not insertion-ordered LinkedHashMaps): no code
+     * depends on frame iteration order, and putAll/alloc are cheaper.
+     */
+    private class Frames {
+        @JvmField val stack = ArrayDeque<MutableMap<String, Atom>>().also { it.addLast(HashMap()) }
+        @JvmField var bound = 0
     }
-    private val depth = ThreadLocal.withInitial { 0 }
+    private val frames = ThreadLocal.withInitial { Frames() }
     private val log = Logger.getLogger(Matcher::class.java)
 
     @JvmStatic
     fun push() {
-        val d = depth.get()
-        depth.set(d + 1)
-        bindingStack.get().addLast(mutableMapOf())
-        log.trace {
+        val f = frames.get()
+        val d = f.stack.size - 1
+        f.stack.addLast(HashMap())
+        if (log.isTraceEnabled) log.trace {
             val caller = try {
                 throw Exception()
             } catch (e: Exception) {
@@ -34,25 +46,31 @@ object Matcher {
 
     @JvmStatic
     fun pop() {
-        val d = depth.get() - 1
-        depth.set(d)
-        val stack = bindingStack.get()
+        val f = frames.get()
+        val stack = f.stack
         val childFrame = stack.removeLast()
-        // Propagate bindings from child to parent so callers can see
-        // bindings produced by callees (e.g., match results).
-        // This is still needed for cases where a captured Variable in a lambda
-        // must resolve to a value bound deep in a callee chain.
-        if (childFrame.isNotEmpty() && stack.isNotEmpty()) {
-            stack.last().putAll(childFrame)
+        // Propagate bindings from child to parent so callers can see bindings produced by
+        // callees (e.g. match results) — a captured Variable in a lambda must resolve to a
+        // value bound deep in a callee chain. (Never fires in the tracked benchmarks, where
+        // child frames are always empty, but it is load-bearing for BackchainWho-style deep
+        // binding propagation, so it stays.) Keep [bound] in sync: colliding keys merged
+        // into the parent shrink the total, and the discarded child removes its own entries.
+        val childSize = childFrame.size
+        if (childSize != 0 && stack.isNotEmpty()) {
+            val parent = stack.last()
+            val before = parent.size
+            parent.putAll(childFrame)
+            f.bound += parent.size - before
         }
-        log.trace {
+        f.bound -= childSize
+        if (log.isTraceEnabled) log.trace {
             val caller = try {
                 throw Exception()
             } catch (e: Exception) {
                 e.stackTrace.getOrNull(3)
             }
-            val indent = "  ".repeat(d)
-            "|call| ${indent}pop  #$d <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})"
+            val indent = "  ".repeat(stack.size - 1)
+            "|call| ${indent}pop  #${stack.size - 1} <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})"
         }
     }
 
@@ -66,16 +84,45 @@ object Matcher {
      */
     @JvmStatic
     fun clearAll() {
-        bindingStack.get().forEach { it.clear() }
+        val f = frames.get()
+        f.stack.forEach { it.clear() }
+        f.bound = 0
     }
 
+    /**
+     * The current (top) frame. Read-only for callers: every *write* must go through
+     * [setBinding] / [installBindings] / [clearTop] (or [pop]) so the [Frames.bound]
+     * counter stays exact — mutating the returned map directly would desync it and make
+     * [allFramesEmpty] lie.
+     */
     @JvmStatic
-    fun getBindings(): MutableMap<String, Atom> = bindingStack.get().last()
+    fun getBindings(): MutableMap<String, Atom> = frames.get().stack.last()
 
     @JvmStatic
     fun setBinding(name: String, value: Atom) {
-        log.trace { "|bind| $name = $value" }
-        bindingStack.get().last()[name] = value
+        if (log.isTraceEnabled) log.trace { "|bind| $name = $value" }
+        val f = frames.get()
+        if (f.stack.last().put(name, value) == null) f.bound++
+    }
+
+    /** Bulk-install [bindings] into the current (top) frame, keeping [Frames.bound] in sync. */
+    @JvmStatic
+    fun installBindings(bindings: Map<String, Atom>) {
+        if (bindings.isEmpty()) return
+        val f = frames.get()
+        val top = f.stack.last()
+        val before = top.size
+        top.putAll(bindings)
+        f.bound += top.size - before
+    }
+
+    /** Clear only the current (top) frame, keeping [Frames.bound] in sync. */
+    @JvmStatic
+    fun clearTop() {
+        val f = frames.get()
+        val top = f.stack.last()
+        f.bound -= top.size
+        top.clear()
     }
 
     // called only from JeTTa programs
@@ -83,13 +130,13 @@ object Matcher {
     @JvmStatic
     fun resolveBinding(atom: Atom): Atom {
         val target = if (atom is BoundAtom) {
-            getBindings().putAll(atom.bindings)
+            installBindings(atom.bindings)
             atom.atom
         } else atom
 
         if (target is Variable) {
             // Search from top of stack downward
-            val stack = bindingStack.get()
+            val stack = frames.get().stack
             for (i in stack.indices.reversed()) {
                 val bound = stack.elementAt(i)[target.name]
                 if (bound != null) return bound
@@ -122,11 +169,8 @@ object Matcher {
         else -> resolved
     }
 
-    private fun allFramesEmpty(): Boolean {
-        val stack = bindingStack.get()
-        for (frame in stack) if (frame.isNotEmpty()) return false
-        return true
-    }
+    // O(1): the invariant `bound == 0` means every frame on the stack is empty. See [Frames].
+    private fun allFramesEmpty(): Boolean = frames.get().bound == 0
 
     fun match(space: Space, src: Expression, dst: Atom): List<Atom> =
         space.match(src, dst)
