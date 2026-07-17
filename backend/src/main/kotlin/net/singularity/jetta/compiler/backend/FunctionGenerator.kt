@@ -1237,15 +1237,29 @@ open class FunctionGenerator(
 
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
         emitLineNumber(expr)
+        // Push one operand of a primitive comparison onto the stack. A MeTTa boolean is the
+        // bare symbol `True`/`False` (not a `Grounded<Boolean>`), so when it appears as a
+        // literal operand of a BOOLEAN comparison — e.g. the `True` in a rule LHS
+        // `(= (ift True $then) …)`, lowered to `(== $param True)` — load the primitive
+        // constant directly. Otherwise it would go through generateAtom (pushing a Symbol)
+        // + coerceComparisonOperand, which unwraps it as a Grounded and CHECKCASTs on a
+        // Symbol at runtime (ClassCastException).
+        fun pushComparisonOperand(operand: Atom, elemType: GroundedType) {
+            if (elemType == GroundedType.BOOLEAN && operand is Symbol &&
+                (operand.name == "True" || operand.name == "False")
+            ) {
+                generateLoadBoolean(operand.name == "True")
+                return
+            }
+            val label = Label()
+            generateAtom(mv, operand, label, false)
+            mv.visitLabel(label)
+            coerceComparisonOperand(mv, operand.type, elemType)
+        }
+
         fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int, elemType: GroundedType = GroundedType.INT) {
-            val label1 = Label()
-            generateAtom(mv, left, label1, false)
-            mv.visitLabel(label1)
-            coerceComparisonOperand(mv, left.type, elemType)
-            val label2 = Label()
-            generateAtom(mv, right, label2, false)
-            mv.visitLabel(label2)
-            coerceComparisonOperand(mv, right.type, elemType)
+            pushComparisonOperand(left, elemType)
+            pushComparisonOperand(right, elemType)
             val jumpIfFalse = Label()
             mv.visitJumpInsn(inverseOp, jumpIfFalse)
             mv.visitInsn(Opcodes.ICONST_1)
