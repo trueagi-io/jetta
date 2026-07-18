@@ -1,15 +1,13 @@
 package net.singularity.jetta.runtime
 
-import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.runtime.functions.JettaFunction
 
-// Materialise a branch result against the bindings its branch installed: a plain
-// Atom carrying bound variables (e.g. ift returning `(stop $z)` with $z bound to
-// ventilation) is deep-resolved to `(stop ventilation)`. BoundAtoms are left intact
-// so their per-branch bindings keep foliating downstream map?/flat-map? stages.
-private fun materialize(value: Any?): Any? =
-    if (value is Atom && value !is BoundAtom) Matcher.resolveDeep(value) else value
+// Materialise a branch result against the bindings its branch installed AND foliate those
+// bindings onto the result so they survive to downstream map?/flat-map? stages. See
+// [Matcher.foliate] for the full rationale (per-branch binding isolation vs pop's last-wins
+// upward merge). No-op — plain value returned — when the branch bound nothing (hot path).
+private fun materialize(value: Any?): Any? = Matcher.foliate(value)
 
 @Suppress("unused")
 fun simpleMap(f: JettaFunction, list: List<Any?>): List<Any?> {

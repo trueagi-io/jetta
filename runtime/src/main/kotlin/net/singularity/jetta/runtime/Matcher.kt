@@ -116,6 +116,42 @@ object Matcher {
         f.bound += top.size - before
     }
 
+    /**
+     * Materialise AND foliate a non-deterministic branch result in a single ThreadLocal read
+     * (the non-det combinators call this once per branch result — a hot path). Two jobs:
+     *  1. Substitute the branch's bound variables into the result (as [resolveDeep] does): a
+     *     plain Atom like `(stop $z)` with `$z` bound becomes `(stop ventilation)`.
+     *  2. FOLIATE the branch's bindings onto the result so they survive to downstream
+     *     map?/flat-map? stages. Each branch runs under its own pushed frame, so the TOP frame
+     *     holds exactly the vars this branch bound (its source [BoundAtom]'s bindings, installed
+     *     at entry, plus anything its callees propagated up into it). Wrapping the result in a
+     *     [BoundAtom] carrying that frame keeps sibling branches isolated: the alternative,
+     *     [pop]'s upward merge, is last-wins and cannot tell two sibling branches apart, so a
+     *     free var shared across a non-deterministic conjunction (e.g. `(And (croaks $x)
+     *     (eat_flies $x))` matching several facts) would collapse to the last branch's binding.
+     *
+     * When nothing is bound anywhere (`bound == 0`, the common case) the value is returned
+     * untouched — identical to the old resolve fast path, so the hot loop pays nothing. A
+     * result that is ALREADY a [BoundAtom] keeps its own bindings, merged OVER the branch
+     * frame so the more specific match bindings win.
+     */
+    @JvmStatic
+    fun foliate(value: Any?): Any? {
+        if (value !is Atom) return value
+        val f = frames.get()
+        if (value is BoundAtom) {
+            val top = f.stack.last()
+            if (top.isEmpty()) return value
+            val merged = HashMap<String, Atom>(top)
+            merged.putAll(value.bindings)
+            return BoundAtom(value.atom, merged)
+        }
+        if (f.bound == 0) return value // nothing to resolve or foliate
+        val resolved = resolveDeepRec(value)
+        val top = f.stack.last()
+        return if (top.isEmpty()) resolved else BoundAtom(resolved, HashMap(top))
+    }
+
     /** Clear only the current (top) frame, keeping [Frames.bound] in sync. */
     @JvmStatic
     fun clearTop() {

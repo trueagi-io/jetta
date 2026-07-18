@@ -374,10 +374,30 @@ class FunctionRewriter(
             atom.atoms.forEach { walk(it, bound) }
         }
 
-        patterns.forEach { (_, list) ->
-            list.forEach { p -> walk(p.value, collectVariableNames(p.pattern)) }
-        }
-        runs.forEach { walk(it, emptySet()) }
+        // Interprocedural fixpoint. A call site passing a FREE variable seeds its callee
+        // relational (the base case). But relational-ness must then PROPAGATE down the call
+        // chain: once F is known relational, a caller can pass a free var into any of F's
+        // clause-pattern parameters, so those params are themselves possibly-free — walking
+        // F's body with them treated as free flags every callee F applies to a term
+        // containing one. This is what reaches `(croaks $x)` three calls below a top-level
+        // `(green $x)`: green → frog → croaks, each hop widening the free set. Iterate until
+        // the set stops growing (monotone, so it terminates in ≤ |functions| passes).
+        //
+        // Still an over-approximation toward relational (the safe direction — see the doc
+        // above): a relational F's params are ALL treated as free even when some are always
+        // ground, and a function is freed to scalar only when NO caller can pass any of its
+        // args a free var (d/ev/lookup/fib stay scalar — never seeded).
+        do {
+            val before = relational.size
+            patterns.forEach { (name, list) ->
+                list.forEach { p ->
+                    val bound =
+                        if (name in relational) emptySet() else collectVariableNames(p.pattern)
+                    walk(p.value, bound)
+                }
+            }
+            runs.forEach { walk(it, emptySet()) }
+        } while (relational.size > before)
         return relational
     }
 
