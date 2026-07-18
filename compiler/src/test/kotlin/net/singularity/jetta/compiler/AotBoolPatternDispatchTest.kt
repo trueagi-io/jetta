@@ -84,6 +84,30 @@ class AotBoolPatternDispatchTest {
         assertEquals(listOf("ok"), compileAndRun(src, "ArgBool"))
     }
 
+    /**
+     * Bool-coercion #4: a boolean op (`and`/`or`/`if`) whose operand is a VALUE reduced at
+     * runtime — a Variable or a multivalued call that yields the *symbol* True/False, not a
+     * primitive. Here `(and (croaks $x) (eat_flies $x))` conjoins two multivalued Atom results
+     * (croaks/eat_flies each return the symbol True). The operands used to be loaded as Atom
+     * objects and fed straight to IF_ICMP (VerifyError: Atom not assignable to int); the
+     * conjunction's Grounded<Boolean> result then reached an identity map? lambda typed Bool,
+     * whose SAM adapter CHECKCAST'd it to java.lang.Boolean (ClassCastException). Both are now
+     * routed through the runtime isTruthy, which accepts the symbol, a Grounded, or a raw
+     * Boolean. Drives the compiled binary to prove it neither VerifyErrors nor CCEs.
+     */
+    @Test
+    fun `and over multivalued symbol-boolean operands evaluates truthiness without a verify error`() {
+        val src = """
+            (= (frog ${'$'}x) (and (croaks ${'$'}x) (eat_flies ${'$'}x)))
+            (= (croaks Fritz) True)
+            (= (eat_flies Fritz) True)
+            (= (green ${'$'}x) (frog ${'$'}x))
+            !(println (if (green Fritz) ok bad))
+            !(println (if (and (croaks Fritz) (eat_flies Fritz)) yes nope))
+        """.trimIndent()
+        assertEquals(listOf("ok", "yes"), compileAndRun(src, "AndSym"))
+    }
+
     private fun compileAndRun(source: String, programName: String): List<String> {
         val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-boolpat-" + UUID.randomUUID())
         val srcDir = File(tmp, "src").apply { mkdirs() }

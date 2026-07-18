@@ -1253,9 +1253,24 @@ open class FunctionGenerator(
     }
 
     /** If [actual] is a reference (Atom/Any) but a primitive [target] is required for the
-     *  comparison, unwrap the Grounded and unbox. */
+     *  comparison, coerce it. For a BOOLEAN target the reference may be the *symbol* True/False
+     *  (a MeTTa boolean is a Symbol, not a Grounded<Boolean>) — e.g. `(== (croaks $x) True)`
+     *  where croaks yields the symbol True — so route through the runtime isTruthy, which
+     *  accepts a Symbol or a Grounded. Numeric targets unwrap the Grounded and unbox. */
     private fun coerceComparisonOperand(mv: MethodVisitor, actual: Atom?, target: GroundedType) {
-        if (actual == GroundedType.ATOM || actual == GroundedType.ANY) unwrapGroundedToPrimitive(mv, target)
+        if (actual == GroundedType.ATOM || actual == GroundedType.ANY) {
+            if (target == GroundedType.BOOLEAN) {
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESTATIC,
+                    RuntimeNames.JETTA_PROGRAM,
+                    "isTruthy",
+                    "(Ljava/lang/Object;)Z",
+                    false
+                )
+            } else {
+                unwrapGroundedToPrimitive(mv, target)
+            }
+        }
     }
 
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
@@ -1278,6 +1293,28 @@ open class FunctionGenerator(
             generateAtom(mv, operand, label, false)
             mv.visitLabel(label)
             coerceComparisonOperand(mv, operand.type, elemType)
+        }
+
+        // Reduce a VALUE operand (a Variable/Symbol/Grounded/call — anything that is not a
+        // comparison or logical sub-expression) to the primitive boolean the surrounding
+        // IF_ICMP expects. A MeTTa boolean is the bare symbol True/False (an Atom), most often
+        // produced by a user function — e.g. `(and $__var0 $__var1)` in a rewritten
+        // conjunction, where each var holds the *symbol* True a multivalued croaks/eat_flies
+        // returned. Route through the runtime isTruthy, which accepts the True/False symbol, a
+        // Grounded<Boolean>, or a boxed primitive. Leaves the int 0/1 on the stack and falls
+        // through to the caller's `exit` label (placed immediately after, like the comparison
+        // paths' explicit GOTO exit).
+        fun pushValueAsCondition(operand: Atom) {
+            generateAtom(mv, operand, null, false)
+            (operand.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+                ?.let { generateBoxingIfNeeded(it) }
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                RuntimeNames.JETTA_PROGRAM,
+                "isTruthy",
+                "(Ljava/lang/Object;)Z",
+                false
+            )
         }
 
         fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int, elemType: GroundedType = GroundedType.INT) {
@@ -1467,18 +1504,7 @@ open class FunctionGenerator(
                     // it to a value and test truthiness at runtime (hyperon booleans are the
                     // symbols True/False; a grounded Boolean also counts). Leaves the int 0/1
                     // the caller's branch test expects.
-                    else -> {
-                        generateAtom(mv, expr, null, false)
-                        (expr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
-                            ?.let { generateBoxingIfNeeded(it) }
-                        mv.visitMethodInsn(
-                            Opcodes.INVOKESTATIC,
-                            "net/singularity/jetta/runtime/JettaProgram",
-                            "isTruthy",
-                            "(Ljava/lang/Object;)Z",
-                            false
-                        )
-                    }
+                    else -> pushValueAsCondition(expr)
                 }
             }
 
@@ -1490,16 +1516,19 @@ open class FunctionGenerator(
             is Symbol -> when (expr.name) {
                 "True" -> mv.visitInsn(Opcodes.ICONST_1)
                 "False" -> mv.visitInsn(Opcodes.ICONST_0)
-                else -> generateAtom(mv, expr, exit, false)
+                // Any other symbol used as a condition is a value — test its truthiness.
+                else -> pushValueAsCondition(expr)
             }
 
             is Grounded<*> -> if (expr.value is Boolean) {
                 generateLoadBoolean(expr.value as Boolean)
             } else {
-                generateAtom(mv, expr, exit, false)
+                pushValueAsCondition(expr)
             }
 
-            else -> generateAtom(mv, expr, exit, false)
+            // A bare value operand (most often a Variable that is a boxed Atom at runtime —
+            // e.g. an `(and $a $b)` conjunct holding the symbol True) reduced to a primitive.
+            else -> pushValueAsCondition(expr)
         }
     }
 
