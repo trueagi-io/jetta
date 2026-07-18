@@ -195,6 +195,21 @@ open class FunctionGenerator(
         needBoxing: Boolean = false
     ) {
         emitLineNumber(atom)
+        // A bare `True`/`False` symbol RETURNED from a `Bool`-typed function must materialize as
+        // the primitive boolean constant the descriptor's trailing `Z` expects — not the Symbol
+        // object the generic atom path (generateLoad) would push, which the verifier rejects at
+        // `ireturn` (a Symbol is not assignable to int). A MeTTa boolean is the bare symbol
+        // True/False, and only a Bool RETURN slot demands the primitive — elsewhere True/False
+        // stay Symbols (e.g. flowing into an Atom-typed sink like `(add-atom &kb (Green $x))`).
+        // Multivalued Bool functions return a `List`, so exclude them (they take the ARETURN path).
+        if (doReturn && atom is Symbol && (atom.name == "True" || atom.name == "False") &&
+            function.returnType == GroundedType.BOOLEAN &&
+            !((function as? FunctionDefinition)?.isMultivalued() ?: false)
+        ) {
+            generateLoadBoolean(atom.name == "True")
+            generateReturn(mv)
+            return
+        }
         when (atom) {
             is Expression -> {
                 // The empty tuple `()` is a value, not a call — it has no head to dispatch
@@ -1054,7 +1069,15 @@ open class FunctionGenerator(
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
         arguments.forEachIndexed { index, arg ->
             val argType = arg.type
-            if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
+            if (jvmSymbol.isParameterBooleanType(index) && arg is Symbol &&
+                (arg.name == "True" || arg.name == "False")
+            ) {
+                // A MeTTa boolean literal (`True`/`False`) passed to a `Bool` (primitive `Z`)
+                // parameter — push the primitive constant, not the Symbol object, which the
+                // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
+                // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
+                generateLoadBoolean(arg.name == "True")
+            } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 // A grounded VALUE (Int/Double/String/…) passed to an Atom-typed parameter
                 // must be wrapped in a Grounded: a bare box (Integer) is not an Atom subtype,
                 // so the verifier rejects `Integer` where `Atom` is expected. Routine in

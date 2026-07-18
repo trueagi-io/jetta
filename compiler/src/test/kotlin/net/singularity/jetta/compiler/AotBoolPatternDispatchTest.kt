@@ -50,6 +50,54 @@ class AotBoolPatternDispatchTest {
         }
     }
 
+    /**
+     * Bool-coercion #2: a `Bool`-typed function whose body is the bare symbol `True`/`False`.
+     * The value must be returned as the primitive boolean the descriptor `()Z` expects, not the
+     * `Symbol` object the generic atom path would push — that used to fail the verifier at
+     * `ireturn` (a Symbol is not assignable to int).
+     */
+    @Test
+    fun `bare True or False returned from a Bool function returns a primitive boolean`() {
+        val src = """
+            (: yes (-> Bool))
+            (= (yes) True)
+            (: no (-> Bool))
+            (= (no) False)
+            !(println (yes))
+            !(println (no))
+        """.trimIndent()
+        assertEquals(listOf("true", "false"), compileAndRun(src, "RetBool"))
+    }
+
+    /**
+     * Bool-coercion #3: a bare `True`/`False` literal passed to a `Bool` (primitive `Z`)
+     * parameter. It must be pushed as the primitive constant, not the `Symbol` object — that
+     * used to fail the verifier at the INVOKESTATIC call against a `Z` parameter.
+     */
+    @Test
+    fun `literal True passed to a Bool parameter is coerced to a primitive boolean`() {
+        val src = """
+            (: ift (-> Bool Atom Atom))
+            (= (ift True ${'$'}then) ${'$'}then)
+            !(println (ift True ok))
+        """.trimIndent()
+        assertEquals(listOf("ok"), compileAndRun(src, "ArgBool"))
+    }
+
+    private fun compileAndRun(source: String, programName: String): List<String> {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-boolpat-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "$programName.metta").apply { writeText(source) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+            return runCompiled(outDir, programName).trim().lines().map { it.trim() }
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)
         val clazz = loader.loadClass(programName)

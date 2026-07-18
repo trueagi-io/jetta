@@ -147,6 +147,9 @@ fun JvmMethod.doesParameterHaveAnyType(index: Int) =
 fun JvmMethod.isParameterAtomType(index: Int) =
     descriptor.parseDescriptor()[index] == "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
 
+fun JvmMethod.isParameterBooleanType(index: Int) =
+    descriptor.parseDescriptor()[index] == "Z"
+
 private fun toType(jvmType: String): Atom =
     when (jvmType) {
         "I" -> GroundedType.INT
