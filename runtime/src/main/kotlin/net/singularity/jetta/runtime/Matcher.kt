@@ -137,7 +137,6 @@ object Matcher {
      */
     @JvmStatic
     fun foliate(value: Any?): Any? {
-        if (value !is Atom) return value
         val f = frames.get()
         if (value is BoundAtom) {
             val top = f.stack.last()
@@ -146,10 +145,18 @@ object Matcher {
             merged.putAll(value.bindings)
             return BoundAtom(value.atom, merged)
         }
-        if (f.bound == 0) return value // nothing to resolve or foliate
-        val resolved = resolveDeepRec(value)
+        if (f.bound == 0) return value // nothing to resolve or foliate (hot path)
         val top = f.stack.last()
-        return if (top.isEmpty()) resolved else BoundAtom(resolved, HashMap(top))
+        if (top.isEmpty()) return if (value is Atom) resolveDeepRec(value) else value
+        // A branch result that is NOT an Atom — a raw boxed primitive (java.lang.Boolean /
+        // Integer / …) produced by a VALUE-typed multivalued branch, e.g. green's identity
+        // `map?` over a Bool, whose lambda returns a java.lang.Boolean. foliate cannot wrap a
+        // non-Atom in a BoundAtom, so this branch's bindings (its own $x) would be lost and
+        // pop's last-wins upward merge would then collapse sibling branches to the last one's
+        // binding ([Sam, Sam] instead of [Fritz, Sam]). Wrap it in a Grounded (an Atom) first
+        // so its bindings foliate like any structural (Symbol/Expression) branch result.
+        val resolved: Atom = if (value is Atom) resolveDeepRec(value) else Grounded(value)
+        return BoundAtom(resolved, HashMap(top))
     }
 
     /** Clear only the current (top) frame, keeping [Frames.bound] in sync. */

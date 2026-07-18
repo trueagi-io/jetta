@@ -376,4 +376,40 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             classes["MultiFactBackchain"]!!.getMethod("__main").invoke(null)
         }
     }
+
+    @Test
+    fun `foliation survives a boolean and and an extra relational hop (e1_kb_write core)`() {
+        compile(
+            "AndFoliation.metta",
+            $$"""
+                ; e1_kb_write's exact shape: the conjunction is the grounded boolean `and`
+                ; (not the data ctor `And`), the truth value is the symbol `True`, and `ift`
+                ; is typed `(-> Bool …)` so its dispatch coerces via isTruthy. `green` adds an
+                ; extra relational hop over `frog` — an identity `map?` whose Bool-typed lambda
+                ; returns a raw java.lang.Boolean, a NON-Atom. foliate could not attach that
+                ; branch's $x to a non-Atom, so the binding was lost and pop's last-wins merge
+                ; collapsed the two solutions to [Sam, Sam]. With the non-Atom value wrapped in
+                ; a Grounded before foliation, each branch keeps its own $x → {Fritz, Sam}.
+                (= (croaks Fritz) True)
+                (= (eat_flies Fritz) True)
+                (= (croaks Sam) True)
+                (= (eat_flies Sam) True)
+                (= (frog $x) (and (croaks $x) (eat_flies $x)))
+                (= (green $x) (frog $x))
+                (: ift (-> Bool Atom Atom))
+                (= (ift True $then) $then)
+
+                !(assertEqualToResult (ift (green $x) $x) (Fritz Sam))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("AndFoliation")
+            classes["AndFoliation"]!!.getMethod("__main").invoke(null)
+        }
+    }
 }
