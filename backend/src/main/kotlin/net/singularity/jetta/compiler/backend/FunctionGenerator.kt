@@ -138,6 +138,20 @@ open class FunctionGenerator(
 
             is Symbol -> {
                 when {
+                    // A MeTTa boolean literal is a grounded Bool, not a plain symbol. hyperon
+                    // registers `True`/`False` as grounded-Bool tokens, and every comparison /
+                    // `and` / `or` yields that same grounded Bool — so `(assertEqual (> 2 1)
+                    // True)` holds and `(get-type True)` is Bool. Emit `Grounded<Boolean>` here
+                    // (a value position) so a `True`/`False` VALUE has the same representation as
+                    // a boolean-op result and structurally equals it. Pattern, condition and
+                    // Bool-return positions never reach generateLoad: they intercept the symbol
+                    // earlier (pushComparisonOperand, generateBooleanExpr, the Bool-return case)
+                    // and use the primitive. (A user's own truth token like b3's `T` is NOT a
+                    // boolean — `(get-type T)` is %Undefined% in hyperon — so it stays a Symbol.)
+                    atom.name == "True" || atom.name == "False" -> {
+                        generateLoadBoolean(atom.name == "True")
+                        wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+                    }
                     // &self materialises as the owner module's space name. The runtime's
                     // match/matchEval take this string as their leading argument and
                     // look up the corresponding Space via SpaceRegistry.
@@ -410,7 +424,15 @@ open class FunctionGenerator(
         // returns List). Boxing it as that primitive would emit `Integer.valueOf(I)` over a
         // reference → VerifyError. Skip boxing for such calls — the List is already an Object.
         val isMultivaluedCall = (atom as? Expression)?.resolved?.isMultiValued == true
-        if (needBoxing && !isMultivaluedCall) generateBoxingIfNeeded(atom.type!!)
+        if (needBoxing && !isMultivaluedCall) {
+            // A Bool value boxed into an Object/Atom slot (a `println`/data argument, a lambda
+            // arg) becomes a Grounded<Boolean> — the canonical MeTTa boolean that renders as
+            // True/False and IS an Atom — not a raw java.lang.Boolean (lowercase, not an Atom).
+            // Other primitives box to their wrapper as before. A `True`/`False` literal reaches
+            // here already as a Grounded<Boolean> (type ATOM), so it is not double-wrapped.
+            if (atom.type == GroundedType.BOOLEAN) wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+            else generateBoxingIfNeeded(atom.type!!)
+        }
         if (doReturn) {
             coerceForReturn(atom)
             generateReturn(mv)

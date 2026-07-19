@@ -43,8 +43,10 @@ class AotBoolPatternDispatchTest {
 
             val output = runCompiled(outDir, "IftBool")
             // (> 2 1) is True  -> the True rule fires, returns the then-branch `ok`.
-            // (> 1 2) is False -> no rule matches, so the call stays inert.
-            assertEquals(listOf("ok", "(ift false no)"), output.trim().lines().map { it.trim() })
+            // (> 1 2) is False -> no rule matches, so the call stays inert. The unmatched
+            // boolean materialises as the MeTTa boolean `False` (a grounded Bool renders
+            // True/False, matching hyperon), not Kotlin's lowercase `false`.
+            assertEquals(listOf("ok", "(ift False no)"), output.trim().lines().map { it.trim() })
         } finally {
             tmp.deleteRecursively()
         }
@@ -54,10 +56,11 @@ class AotBoolPatternDispatchTest {
      * Bool-coercion #2: a `Bool`-typed function whose body is the bare symbol `True`/`False`.
      * The value must be returned as the primitive boolean the descriptor `()Z` expects, not the
      * `Symbol` object the generic atom path would push — that used to fail the verifier at
-     * `ireturn` (a Symbol is not assignable to int).
+     * `ireturn` (a Symbol is not assignable to int). When it is then printed it materialises as
+     * the MeTTa boolean `True`/`False` (a grounded Bool renders capitalised, like hyperon).
      */
     @Test
-    fun `bare True or False returned from a Bool function returns a primitive boolean`() {
+    fun `bare True or False returned from a Bool function prints as the MeTTa boolean`() {
         val src = """
             (: yes (-> Bool))
             (= (yes) True)
@@ -66,7 +69,7 @@ class AotBoolPatternDispatchTest {
             !(println (yes))
             !(println (no))
         """.trimIndent()
-        assertEquals(listOf("true", "false"), compileAndRun(src, "RetBool"))
+        assertEquals(listOf("True", "False"), compileAndRun(src, "RetBool"))
     }
 
     /**
@@ -106,6 +109,29 @@ class AotBoolPatternDispatchTest {
             !(println (if (and (croaks Fritz) (eat_flies Fritz)) yes nope))
         """.trimIndent()
         assertEquals(listOf("ok", "yes"), compileAndRun(src, "AndSym"))
+    }
+
+    /**
+     * A MeTTa boolean is one representation — a grounded Bool that renders `True`/`False`,
+     * matching hyperon (where True/False ARE the grounded-Bool values and every comparison /
+     * `and` / `or` yields that same grounded Bool). A `True`/`False` literal, a comparison
+     * result, a boolean-op result and a boolean nested in data must all print capitalised, never
+     * Kotlin's lowercase `true`/`false`.
+     */
+    @Test
+    fun `booleans render as the MeTTa True and False everywhere, matching hyperon`() {
+        val src = """
+            !(println True)
+            !(println (> 2 1))
+            !(println (< 2 1))
+            !(println (not True))
+            !(println (or False True))
+            !(println (Pair True False))
+        """.trimIndent()
+        assertEquals(
+            listOf("True", "True", "False", "False", "True", "(Pair True False)"),
+            compileAndRun(src, "BoolRender"),
+        )
     }
 
     private fun compileAndRun(source: String, programName: String): List<String> {
