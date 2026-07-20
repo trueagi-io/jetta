@@ -115,6 +115,44 @@ class AotVariableHeadDispatchTest {
         }
     }
 
+    // b3_direct's "retrieve the variable binding by constructing an expression with it": a
+    // variable in expression-HEAD position, `($x (green $x))`. `(green $x)` backchains
+    // (binds `$x`=Fritz through upward-propagated foliation, yields T); the body `($x <T>)`
+    // reaches `JettaCallSite.dispatch` with `$x` as an UNRESOLVED Variable head. It must be
+    // resolved against the Matcher bindings to Fritz before building the inert form, else
+    // `($x T)` unifies as a PATTERN against the space `=` rules (pattern-var `$x` matches
+    // `(green $x)`'s head) and wrongly reduces to `(And (croaks T) (eat_flies T))`. Also
+    // covers `(match &self (= ($p Fritz) T) $p)` — a space query whose pattern has a variable
+    // in head position, binding `$p` to each matching rule head (`croaks`, `eat_flies`).
+    private val varHeadConstruct = """
+        (= (croaks Fritz) T)
+        (= (eat_flies Fritz) T)
+        (= (And T T) T)
+        (= (frog ${'$'}x) (And (croaks ${'$'}x) (eat_flies ${'$'}x)))
+        (= (green ${'$'}x) (frog ${'$'}x))
+        !(println (${'$'}x (green ${'$'}x)))
+        !(assertEqual (${'$'}x (green ${'$'}x)) (Fritz T))
+        !(assertEqualToResult (match &self (= (${'$'}p Fritz) T) ${'$'}p) (croaks eat_flies))
+    """.trimIndent()
+
+    @Test
+    fun `variable-head application substitutes the bound head and constructs the inert expression`() {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-varhead-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "VarHeadConstruct.metta").apply { writeText(varHeadConstruct) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+
+            // No throw = both assertEqual / assertEqualToResult held; println pins assert-3's value.
+            val output = runCompiled(outDir, "VarHeadConstruct").trim()
+            assertEquals("(Fritz T)", output.lines().first().trim())
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     /** Load and run the generated `__main` in-process, with no JitEnv, capturing stdout. */
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)

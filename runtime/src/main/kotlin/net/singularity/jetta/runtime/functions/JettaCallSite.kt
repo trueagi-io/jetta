@@ -52,6 +52,18 @@ object JettaCallSite {
     @JvmStatic
     fun dispatch(spaceName: String, head: Any?, args: Array<Any?>): Any? {
         if (head is JettaFunction) return head.apply(args)
+        // A free-variable head reaches dispatch as an UNRESOLVED Variable object: `($x arg…)`
+        // where `$x` was bound by an enclosing non-deterministic branch (b3_direct's
+        // `($x (green $x))` binds `$x`=Fritz through `(green $x)`'s upward-propagated foliation).
+        // Resolve it against the Matcher bindings BEFORE anything else — otherwise the inert form
+        // `($x arg…)` is later fed to `reduceToFixedPoint`, where the still-free `$x` makes it a
+        // *pattern* that unifies against the space `=` rules (pattern-var `$x` matches ANY rule
+        // head → reduces down the wrong rule: `(green $x)` with rule-var `$x`=arg). With the head
+        // resolved to its binding (Fritz — a non-function symbol), `(Fritz arg…)` is inert data,
+        // its own normal form. A genuinely-free head is returned unchanged (Variable), preserving
+        // the prior behaviour. Bindings are `Map<String, Atom>`, so this never yields a
+        // JettaFunction; the compiled-lambda case is already handled above.
+        val resolvedHead = if (head is Atom) Matcher.resolveBinding(head) else head
         // Compiled-binary variable-head dispatch (P1): when `head` is a Symbol naming a user
         // function of matching arity, LINK against its compiled method via the registry loaded
         // from `.jctx`. This is the AOT counterpart to the JIT-eval path below — it lets
@@ -66,7 +78,7 @@ object JettaCallSite {
         // switch: P2's polymorphic-inline-cache then relinks the site to the resolved handle so
         // HotSpot inlines the hot op near-natively. A grounded op over non-numeric operands
         // returns null (not computable) → fall through to the inert form.
-        opHeadName(head)?.let { name ->
+        opHeadName(resolvedHead)?.let { name ->
             JettaLinkRegistry.lookup(name)?.let { entry ->
                 if (entry.paramTypes.size == args.size) {
                     val result = JettaLinkRegistry.invoke(entry, args)
@@ -74,7 +86,7 @@ object JettaCallSite {
                 }
             }
         }
-        val callExpr = buildInertExpression(head, args)
+        val callExpr = buildInertExpression(resolvedHead, args)
         // When a JIT env is installed (same-JVM: REPL / in-process run), EVALUATE the
         // application by compiling+running it. This is what makes higher-order code like
         // `(= (apply $f $x) ($f $x))` yield a value: `$f` bound to a function-naming Symbol
