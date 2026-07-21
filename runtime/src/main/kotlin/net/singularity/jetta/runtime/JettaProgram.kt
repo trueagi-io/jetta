@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.runtime.functions.GroundedOps
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
@@ -308,6 +309,40 @@ open class JettaProgram {
                 target.add(atom as? Expression ?: Expression(listOf(atom)))
             }
             return UNIT_ATOM
+        }
+
+        /**
+         * `matchReduce` — like [match], but each result is passed through [reduceGrounded].
+         * Used when the match TEMPLATE is a grounded-operator expression, e.g.
+         * `(match &kb (, (Venus orbit $x au) (Mars orbit $y au)) (- $y $x))`: match substitutes
+         * the bindings to `(- 1.5 0.7)` but returns it inert; hyperon evaluates it (→ 0.8). The
+         * rewriter routes such templates here instead of to plain `match`.
+         */
+        @JvmStatic
+        fun matchReduce(space: Any?, src: Atom, dst: Atom): List<Atom> =
+            match(space, src, dst).map { reduceGrounded(it) }
+
+        /**
+         * Reduce a fully-substituted grounded-operator expression to its value. Recursively
+         * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
+         * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —
+         * so no static numeric type is needed (the values arrive as `Grounded` from the match
+         * bindings). A non-grounded-op head, wrong arity, or a non-numeric operand leaves the
+         * atom unchanged (inert), matching hyperon's "unreduced unless computable" rule.
+         */
+        private fun reduceGrounded(atom: Atom): Atom {
+            val inner = if (atom is BoundAtom) atom.atom else atom
+            if (inner !is Expression || inner.atoms.size != 3) return atom
+            val op = when (val h = inner.atoms[0]) {
+                is Symbol -> h.name
+                is net.singularity.jetta.compiler.frontend.ir.Special -> h.value
+                else -> return atom
+            }
+            val x = reduceGrounded(inner.atoms[1])
+            val y = reduceGrounded(inner.atoms[2])
+            // apply returns null when [op] is not a grounded operator OR an operand is not a
+            // number — both mean "leave inert" here, so a single null check covers both.
+            return GroundedOps.apply(op, x, y) ?: atom
         }
 
         /**

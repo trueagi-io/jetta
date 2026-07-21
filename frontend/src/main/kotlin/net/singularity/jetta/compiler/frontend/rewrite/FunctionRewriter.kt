@@ -703,6 +703,23 @@ class FunctionRewriter(
             return Expression(Special(Predefined.MAP_), lambda, matchCall)
         }
 
+        // Grounded-operator template, e.g. `(match &kb (, …) (- $y $x))`. `match` substitutes
+        // the bindings into the template — `(- 1.5 0.7)` — but returns it inert; hyperon
+        // evaluates it (→ 0.8). Route to `matchReduce`, which runs each substituted result
+        // through the runtime grounded-op reducer. Quoting is identical to the inert fall-
+        // through below: the `quote` is a compile-time "treat as data" marker, so at runtime
+        // matchReduce's inner `match` still substitutes into `(- $y $x)` before reducing.
+        if (templateIsGroundedOp(template)) {
+            return expression.copy(
+                listOf(
+                    Symbol("matchReduce"),
+                    expression.atoms[1],
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(template)
+                )
+            )
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -711,6 +728,28 @@ class FunctionRewriter(
                 quoteAtom(expression.atoms[3])
             )
         )
+    }
+
+    /** Grounded binary operators whose surface/Predefined spellings a match template may use. */
+    private val groundedOpNames = setOf(
+        "+", "-", "*", "/", "div", "%", "mod", "<", ">", "<=", ">=", "==",
+    )
+
+    /**
+     * Is [atom] a grounded-operator application `(op a b)` — head a Special (`+`/`-`/…) or a
+     * grounded-op Symbol (`div`/`mod`)? Such a match template must be evaluated after binding
+     * substitution (routed to `matchReduce`), unlike inert data templates. Special-headed
+     * arithmetic is invisible to [templateHasReducibleCall] (which only sees Symbol heads), so
+     * this is the sole path that reduces them.
+     */
+    private fun templateIsGroundedOp(atom: Atom): Boolean {
+        if (atom !is Expression || atom.atoms.size != 3) return false
+        val op = when (val h = atom.atoms[0]) {
+            is Special -> h.value
+            is Symbol -> h.name
+            else -> return false
+        }
+        return op in groundedOpNames
     }
 
     /**

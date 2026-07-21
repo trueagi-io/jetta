@@ -78,6 +78,21 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `matchReduce` — same shape as `match`, but each result is run through the runtime
+    // grounded-op reducer (see JettaProgram.matchReduce). The rewriter routes a `match` whose
+    // TEMPLATE is a grounded-operator expression (`(- $y $x)`) here so the substituted
+    // template is evaluated (→ 0.8) rather than returned inert.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchReduce",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(

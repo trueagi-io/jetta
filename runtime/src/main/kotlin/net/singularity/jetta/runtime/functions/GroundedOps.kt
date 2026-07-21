@@ -73,4 +73,30 @@ object GroundedOps {
         "+" to "plus", "-" to "minus", "*" to "times", "/" to "div", "%" to "mod",
         "<" to "lt", ">" to "gt", "<=" to "le", ">=" to "ge", "==" to "eq",
     )
+
+    /**
+     * Dispatch a binary grounded operator by its surface symbol. Returns the computed
+     * `Grounded`/`True`/`False`, or null when [op] is not a grounded operator or an operand
+     * is not a number ("not computable" — leave the application inert). Used by the runtime
+     * template reducer ([net.singularity.jetta.runtime.JettaProgram] `reduceGrounded`) so a
+     * match template like `(- $y $x)` evaluates over its match-bound operands regardless of
+     * their static type (the values arrive as `Grounded` numbers at runtime).
+     */
+    @JvmStatic
+    fun apply(op: String, a: Any?, b: Any?): Atom? = when (op) {
+        "+" -> plus(a, b)
+        "-" -> minus(a, b)
+        "*" -> times(a, b)
+        // Both surface spellings and their canonical Predefined names (`/`/`div`, `%`/`mod`)
+        // reach here — the lexer emits `%`/`/` while `div`/`mod`/the `%`→mod alias resolve to
+        // the Predefined value. `div` auto-selects int vs double from the operand types.
+        "/", "div" -> div(a, b)
+        "%", "mod" -> mod(a, b)
+        "<" -> lt(a, b)
+        ">" -> gt(a, b)
+        "<=" -> le(a, b)
+        ">=" -> ge(a, b)
+        "==" -> eq(a, b)
+        else -> null
+    }
 }
