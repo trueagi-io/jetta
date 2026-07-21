@@ -169,6 +169,23 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `import!` — runtime, order-sensitive module import (hyperon semantics; see
+    // JettaProgram.import!). The space arg is Object so `&self`/`&kb` bake to a name String
+    // at the call site exactly like `match`; the module arg is ATOM so the bare module
+    // Symbol is NOT reduced (it names a module, not a value). Returns the unit atom `()`;
+    // single-valued. Frontend keeps the `(import! …)` Run (ImportResolutionPass no longer
+    // strips it) so it reaches codegen as an ordinary system call.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "import!",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // `is-var` — variable predicate. Argument is ATOM (unreduced) so a variable reaches the
     // builtin as a Variable, not as its binding.
     context.addSystemFunction(

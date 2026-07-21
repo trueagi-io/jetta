@@ -6,7 +6,6 @@ import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.rewrite.ImportResolutionPass
 import net.singularity.jetta.compiler.frontend.rewrite.ModuleCompilationCache
 import net.singularity.jetta.compiler.frontend.rewrite.messages.CyclicImportMessage
-import net.singularity.jetta.compiler.frontend.rewrite.messages.ImportAsNotImplementedMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.InvalidModuleNameMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.MissingModuleMessage
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
@@ -47,8 +46,12 @@ class ImportResolutionPassTest {
         val messages: MessageCollector,
     )
 
+    /** True when [atom] is a surviving `(import! …)` directive Run. */
+    private fun isImportRun(atom: Any?): Boolean =
+        atom is Run && (atom.expression.atoms.firstOrNull() as? Symbol)?.name == "import!"
+
     @Test
-    fun `linear import — utils ends up in cache, importer has no import! Run`(@TempDir tmp: Path) {
+    fun `linear import — utils ends up in cache, import! Run kept for runtime`(@TempDir tmp: Path) {
         write(tmp, "utils.metta", "(= (foo) 5)")
         write(tmp, "main.metta", """
             !(import! &self utils)
@@ -58,9 +61,11 @@ class ImportResolutionPassTest {
         val r = runPass(tmp, "main.metta")
         assertTrue(r.messages.list().isEmpty(), "no messages: ${r.messages.list()}")
         assertEquals(1, r.cache.resolved.size)
-        // import! Run gone, only (Fact a) remains
-        assertEquals(1, r.transformed.code.size)
-        assertTrue(r.transformed.code[0] is Expression)
+        // Runtime-ordered import: the import! Run survives (executes at runtime) alongside
+        // the (Fact a) atom — it is no longer stripped at compile time.
+        assertEquals(2, r.transformed.code.size)
+        assertTrue(r.transformed.code.any { isImportRun(it) }, "import! Run should be kept")
+        assertTrue(r.transformed.code.any { it is Expression }, "(Fact a) should survive")
     }
 
     @Test
@@ -75,9 +80,9 @@ class ImportResolutionPassTest {
         val r = runPass(tmp, "main.metta")
         assertTrue(r.messages.list().isEmpty(), r.messages.list().toString())
         assertEquals(2, r.cache.resolved.size)
-        // A's resolved ParsedSource should have its import! Run gone.
+        // A's resolved ParsedSource keeps its own import! Run (runtime-ordered import).
         val aResolved = r.cache.resolved.values.first { it.filename.endsWith("A.metta") }
-        assertTrue(aResolved.code.none { it is Run })
+        assertTrue(aResolved.code.any { isImportRun(it) }, "A should keep its import! Run")
     }
 
     @Test
@@ -127,18 +132,24 @@ class ImportResolutionPassTest {
 
         val r = runPass(tmp, "main.metta")
         assertTrue(r.messages.list().any { it is MissingModuleMessage })
-        // Surviving atoms: just (Fact b) — import! is dropped even on error.
-        assertEquals(1, r.transformed.code.size)
+        // Surviving atoms: the import! Run (kept uniformly, even on error — it is a runtime
+        // no-op when the module is absent) plus (Fact b).
+        assertEquals(2, r.transformed.code.size)
+        assertTrue(r.transformed.code.any { it is Expression })
     }
 
     @Test
-    fun `non-self target produces ImportAsNotImplementedMessage`(@TempDir tmp: Path) {
+    fun `non-self target is accepted — module imported into a named space`(@TempDir tmp: Path) {
+        // A named target space (`&kb`) is now supported: the module is compiled and its
+        // import edge recorded, and the runtime `import!` loads it into that space. No
+        // ImportAsNotImplemented error; the space name is carried by the surviving Run.
+        write(tmp, "something.metta", "(Fact x)")
         write(tmp, "main.metta", "!(import! &kb something)")
 
         val r = runPass(tmp, "main.metta")
-        val errs = r.messages.list().filterIsInstance<ImportAsNotImplementedMessage>()
-        assertEquals(1, errs.size)
-        assertEquals("&kb", errs[0].targetName)
+        assertTrue(r.messages.list().isEmpty(), "no messages: ${r.messages.list()}")
+        assertEquals(1, r.cache.resolved.size)
+        assertTrue(r.transformed.code.any { isImportRun(it) }, "import! &kb Run should be kept")
     }
 
     @Test
@@ -165,10 +176,11 @@ class ImportResolutionPassTest {
 
         val r = runPass(tmp, "main.metta")
         assertTrue(r.messages.list().isEmpty(), r.messages.list().toString())
-        // Three Runs in order: before, from-utils (spliced), after.
-        val runs = r.transformed.code.filterIsInstance<Run>()
-        assertEquals(3, runs.size)
-        val texts = runs.map { (it.expression.atoms[1] as Symbol).name }
+        // Effect Runs in order: before, from-utils (spliced), after. The surviving
+        // `import!` directive Run sits between `before` and `from-utils`; filter it out to
+        // check the load-time-effect order.
+        val effectRuns = r.transformed.code.filterIsInstance<Run>().filterNot { isImportRun(it) }
+        val texts = effectRuns.map { (it.expression.atoms[1] as Symbol).name }
         assertEquals(listOf("before", "from-utils", "after"), texts)
     }
 
@@ -188,9 +200,11 @@ class ImportResolutionPassTest {
 
         val r = runPass(tmp, "main.metta")
         assertTrue(r.messages.list().isEmpty(), r.messages.list().toString())
-        val runs = r.transformed.code.filterIsInstance<Run>()
-        assertEquals(1, runs.size, "expected C's run exactly once, got: $runs")
-        assertEquals("from-C", (runs[0].expression.atoms[1] as Symbol).name)
+        // Ignore the surviving `import!` directive Runs (there is one per import site, all
+        // idempotent at runtime); C's load-time effect run must appear exactly once.
+        val effectRuns = r.transformed.code.filterIsInstance<Run>().filterNot { isImportRun(it) }
+        assertEquals(1, effectRuns.size, "expected C's run exactly once, got: $effectRuns")
+        assertEquals("from-C", (effectRuns[0].expression.atoms[1] as Symbol).name)
     }
 
     @Test

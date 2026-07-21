@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
 class DeepCopyStrategyTest {
 
     @Test
-    fun `main importing utils — utils' fact lands in main's effective space, only main lists it as load`(@TempDir src: Path, @TempDir out: Path) {
+    fun `main importing utils — each space holds only its own atoms, main lists utils as load`(@TempDir src: Path, @TempDir out: Path) {
         File(src.toFile(), "main.metta").writeText(
             """
             (Fact apple)
@@ -35,15 +35,19 @@ class DeepCopyStrategyTest {
         val mainSpace = SpaceDirectorySerializer.load(out, "main")
         val utilsSpace = SpaceDirectorySerializer.load(out, "utils")
 
-        // main's effective space sees both its own (apple) and the deep-cloned utils (banana).
-        assertTrue(mainSpace.containsFact("apple"), "main should hold apple")
-        assertTrue(mainSpace.containsFact("banana"), "main should hold banana (cloned from utils)")
-        assertEquals(2, mainSpace.factCount(), "main has exactly own ∪ utils")
+        // Runtime-ordered import: each serialized space holds ONLY its own atoms. main's
+        // space is not statically merged — the runtime `import!` copies banana into main's
+        // live &self at execution time, which the serialized artifact does not capture.
+        assertTrue(mainSpace.containsFact("apple"), "main should hold its own apple")
+        assertTrue(!mainSpace.containsFact("banana"), "main must NOT statically hold banana")
+        assertEquals(1, mainSpace.factCount(), "main has exactly its own atoms")
 
-        // utils' effective space holds only its own atoms.
+        // utils' space holds only its own atoms.
         assertTrue(utilsSpace.containsFact("banana"))
         assertEquals(1, utilsSpace.factCount())
 
+        // The manifest still lists utils so init loads it under SpaceId.FromModule("utils"),
+        // ready for the runtime `import!` to copy from.
         val mainManifest = ManifestSerializer.load(out.resolve("main.manifest.json"))
         val utilsManifest = ManifestSerializer.load(out.resolve("utils.manifest.json"))
 
@@ -56,6 +60,33 @@ class DeepCopyStrategyTest {
 
         val utilsExt = utilsManifest.extension as ManifestExtension.DeepCopy
         assertEquals(emptyList(), utilsExt.loadModules)
+    }
+
+    @Test
+    fun `runtime import copies utils' fact into main's live space in order`(@TempDir src: Path, @TempDir out: Path) {
+        // End-to-end order check: a `match &self` BEFORE the import sees nothing; AFTER the
+        // import it sees utils' fact. This is the behaviour the static merge could not model.
+        File(src.toFile(), "mainord.metta").writeText(
+            """
+            !(println (collapse (match &self (Fact ${'$'}x) ${'$'}x)))
+            !(import! &self utilord)
+            !(println (collapse (match &self (Fact ${'$'}x) ${'$'}x)))
+            """.trimIndent()
+        )
+        File(src.toFile(), "utilord.metta").writeText("(Fact banana)")
+
+        compileSilently(listOf(File(src.toFile(), "mainord.metta").absolutePath), out)
+
+        val classpath = "${out.toAbsolutePath()}${File.pathSeparator}${System.getProperty("java.class.path")}"
+        val proc = ProcessBuilder("java", "-Djetta.dataDir=${out.toAbsolutePath()}", "-cp", classpath, "mainord")
+            .redirectErrorStream(true)
+            .start()
+        val output = proc.inputStream.bufferedReader().readText()
+        val rc = proc.waitFor()
+        assertEquals(0, rc, "java exited non-zero. output:\n$output")
+        val lines = output.trim().lines()
+        assertEquals("()", lines.first(), "before import: &self has no Fact; got:\n$output")
+        assertTrue(lines.last().contains("banana"), "after import: &self should hold banana; got:\n$output")
     }
 
     @Test
@@ -87,36 +118,32 @@ class DeepCopyStrategyTest {
 
         compileSilently(listOf(File(src.toFile(), "main.metta").absolutePath), out)
 
+        // Own-only serialized spaces: main has no own facts; each module holds only its own.
         val mainSpace = SpaceDirectorySerializer.load(out, "main")
-        // Diamond dedup at the module level — `shared` contributes once even though
-        // both a and b reach c.
-        assertEquals(1, mainSpace.countFact("shared"), "shared should appear exactly once in main")
-        assertTrue(mainSpace.containsFact("a-own"))
-        assertTrue(mainSpace.containsFact("b-own"))
-        assertTrue(mainSpace.containsFact("shared"))
+        assertEquals(0, mainSpace.factCount(), "main has no own facts (only imports)")
 
-        // a's effective space contains a-own + shared (not b-own).
         val aSpace = SpaceDirectorySerializer.load(out, "a")
         assertTrue(aSpace.containsFact("a-own"))
-        assertTrue(aSpace.containsFact("shared"))
+        assertTrue(!aSpace.containsFact("shared"))
         assertTrue(!aSpace.containsFact("b-own"))
 
-        // b's effective space contains b-own + shared (not a-own).
         val bSpace = SpaceDirectorySerializer.load(out, "b")
         assertTrue(bSpace.containsFact("b-own"))
-        assertTrue(bSpace.containsFact("shared"))
+        assertTrue(!bSpace.containsFact("shared"))
         assertTrue(!bSpace.containsFact("a-own"))
 
-        // c's effective space holds only shared.
+        // c's space holds only shared.
         val cSpace = SpaceDirectorySerializer.load(out, "c")
         assertEquals(1, cSpace.factCount())
         assertTrue(cSpace.containsFact("shared"))
 
-        // main.manifest.json lists every transitively-reached module — order is BFS from
-        // main so `a` and `b` come before `c`.
+        // main.manifest.json lists every transitively-reached module (loaded at init under
+        // their own ids, ready for the runtime import). Diamond dedup at the module level —
+        // `c` is listed once even though both a and b reach it.
         val ext = ManifestSerializer.load(out.resolve("main.manifest.json")).extension as ManifestExtension.DeepCopy
-        val ids = ext.loadModules.map { it.spaceId }.toSet()
-        assertEquals(setOf("a", "b", "c"), ids)
+        val ids = ext.loadModules.map { it.spaceId }
+        assertEquals(setOf("a", "b", "c"), ids.toSet())
+        assertEquals(ids.size, ids.toSet().size, "each module listed exactly once")
     }
 
     @Test

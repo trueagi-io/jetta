@@ -40,6 +40,13 @@ open class JettaProgram {
          */
         private val tokens = java.util.concurrent.ConcurrentHashMap<String, Atom>()
 
+        /**
+         * Per-target-space set of module names already imported into it, so a repeated
+         * `(import! &space M)` is idempotent (hyperon loads each module into a given space
+         * once). Keyed by the resolved space name; reset per program in [init].
+         */
+        private val importedModules = java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
+
         @JvmStatic
         fun setDataDir(path: Path) {
             dataDir = path
@@ -80,6 +87,7 @@ open class JettaProgram {
             SpaceRegistry.reset()
             Matcher.clearTop()
             tokens.clear()
+            importedModules.clear()
             currentSpaceName = programName
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
@@ -260,6 +268,47 @@ open class JettaProgram {
         @JvmStatic
         fun `get-atoms`(spaceName: String): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
+
+        /**
+         * `import!` — runtime, order-sensitive module import (hyperon semantics).
+         *
+         * `(import! &space M)` copies every atom of module `M`'s space into the space named
+         * `&space`, AT THE POINT OF EXECUTION. Unlike a compile-time merge this respects
+         * program order: `(match &self …)` before an `(import! &self M)` does not see M's
+         * atoms, and after it does — which is exactly what c2_spaces asserts.
+         *
+         * The module's space is loaded at [init] (from the manifest's `loadModules`) under
+         * `SpaceId.FromModule(M)`; if it is missing there (e.g. it was reached only through a
+         * non-`&self` import), it is loaded on demand from `<M>.jtsf`. Import is idempotent
+         * per (space, module): re-importing the same module into the same space is a no-op,
+         * matching hyperon's load-once-per-space rule (`c2_spaces` / `f1_imports` re-imports).
+         *
+         * [space] is `Object` (a baked name String for `&self`/`&kb`, or a Symbol reaching
+         * here indirectly), [module] an `Atom` (the bare module Symbol, unreduced). Returns
+         * the unit atom `()`.
+         */
+        @JvmStatic
+        fun `import!`(space: Any?, module: Atom): Atom {
+            val spaceName = resolveSpaceName(space)
+            val moduleName = when (val m = if (module is BoundAtom) module.atom else module) {
+                is Symbol -> m.name
+                is Grounded<*> -> m.value.toString()
+                else -> m.toString()
+            }
+            val done = importedModules.getOrPut(spaceName) { java.util.concurrent.ConcurrentHashMap.newKeySet() }
+            if (!done.add(moduleName)) return UNIT_ATOM
+
+            val source = SpaceRegistry.get(SpaceId.FromModule(moduleName))
+                ?: runCatching { SpaceDirectorySerializer.load(dataDir, moduleName) }.getOrNull()
+                ?: return UNIT_ATOM
+            SpaceRegistry.register(SpaceId.FromModule(moduleName), source)
+
+            val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            source.getAtoms().forEach { atom ->
+                target.add(atom as? Expression ?: Expression(listOf(atom)))
+            }
+            return UNIT_ATOM
+        }
 
         /**
          * `is-var` — True when [atom] is syntactically a variable (an unbound `$x`). Its
