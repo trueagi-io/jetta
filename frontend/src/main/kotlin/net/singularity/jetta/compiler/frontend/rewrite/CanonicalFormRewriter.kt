@@ -360,7 +360,14 @@ class CanonicalFormRewriter(
                 // authoritative element type is pinned when the enclosing `if` is re-resolved
                 // (resolveExpression's IF case homogenizes the two arms' element types), so
                 // generateSeq coerces this scalar to match the other arm's List elements.
-                return Expression(Special(Predefined.SEQ), inner, type = SeqType(inner.type!!))
+                // The element type may be genuinely unknown when the scalar arm is an untyped
+                // constructor symbol (e.g. `nil` opposite a `(:: (bin) …)` arm) that never
+                // homogenized against the non-det arm — fall back to the generic ATOM element
+                // type so the seq-wrap still fires; re-resolution pins the real type later.
+                return Expression(
+                    Special(Predefined.SEQ), inner,
+                    type = SeqType(inner.type ?: GroundedType.ATOM)
+                )
             } else {
                 return rewriteAtom(expression.atoms[ind])
             }

@@ -508,6 +508,14 @@ class FunctionRewriter(
             }
         })
 
+    // Head symbols that arrive as ordinary IDENTs (not dedicated operator tokens like
+    // `+`/`*`) and must be promoted to their Special form. Aliases map an alternate
+    // surface spelling to a canonical Predefined name — hyperon writes modulo as `%`,
+    // which the lexer sees as an IDENT rather than a token.
+    private val specialAliases = mapOf(
+        "%" to Predefined.MOD
+    )
+
     private val specials = listOf(
         Predefined.DIV,
         Predefined.MOD,
@@ -515,7 +523,7 @@ class FunctionRewriter(
         Predefined.AND,
         Predefined.OR,
         Predefined.XOR
-    )
+    ) + specialAliases.keys
 
     private fun quoteAtom(atom: Atom): Atom =
         Expression(PredefinedAtoms.QUOTE, atom)
@@ -868,7 +876,8 @@ class FunctionRewriter(
     private fun mkSpecialFromSymbol(expression: Expression): Expression {
         val atoms = expression.atoms.mapIndexed { index, atom ->
             if (index == 0) {
-                Special((atom as Symbol).name)
+                val name = (atom as Symbol).name
+                Special(specialAliases[name] ?: name)
             } else {
                 atom
             }

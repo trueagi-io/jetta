@@ -1666,8 +1666,22 @@ open class FunctionGenerator(
                     else -> TODO()
                 }
 
-                Predefined.TIMES -> mv.visitInsn(Opcodes.IMUL)
-                Predefined.MINUS -> mv.visitInsn(Opcodes.ISUB)
+                // `*` and `-` must honour the operand type just like `+`: when the inferred
+                // result type is DOUBLE (e.g. `(* 3 5.5)`, `(- 8 …)` with a float operand) the
+                // operands were promoted to double by castIfNeeded, so an integer IMUL/ISUB
+                // would read a double off the stack → VerifyError. Dispatch on `type`.
+                Predefined.TIMES -> when (type) {
+                    GroundedType.INT -> mv.visitInsn(Opcodes.IMUL)
+                    GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DMUL)
+                    else -> TODO()
+                }
+
+                Predefined.MINUS -> when (type) {
+                    GroundedType.INT -> mv.visitInsn(Opcodes.ISUB)
+                    GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DSUB)
+                    else -> TODO()
+                }
+
                 else -> TODO("Not implemented $op")
             }
         }

@@ -1493,9 +1493,12 @@ class Context private constructor(
         var elementType: Atom? = null
         expression.arguments().forEach {
             resolveAtom(it, scope)
-            elementType = unifyType(elementType, it.type!! /* FIXME */)
+            // An element may be an untyped constructor symbol (e.g. a seq-wrapped `nil`
+            // arm of a multivalued `if`) whose type resolveAtom leaves null; treat it as
+            // the generic ATOM element rather than crashing.
+            elementType = unifyType(elementType, it.type ?: GroundedType.ATOM)
         }
-        return SeqType(elementType!!, expression.position)
+        return SeqType(elementType ?: GroundedType.ATOM, expression.position)
     }
 
     private fun unifyType(lhsType: Atom?, rhsType: Atom): Atom {
