@@ -355,6 +355,29 @@ open class JettaProgram {
             if ((if (atom is BoundAtom) atom.atom else atom) is Variable) Symbol("True") else Symbol("False")
 
         /**
+         * `car-atom` — the first element of a non-empty expression, e.g.
+         * `(car-atom (a b c))` → `a`. An empty expression or a non-expression argument is an
+         * error (hyperon returns an `(Error … )` atom), which we surface the same way.
+         */
+        @JvmStatic
+        fun `car-atom`(atom: Atom): Atom {
+            val e = if (atom is BoundAtom) atom.atom else atom
+            return if (e is Expression && e.atoms.isNotEmpty()) e.atoms[0]
+            else Expression(Symbol("Error"), atom, Symbol("car-atom expects a non-empty expression"))
+        }
+
+        /**
+         * `cdr-atom` — the tail (all but the first element) of a non-empty expression, e.g.
+         * `(cdr-atom (a b c))` → `(b c)`. Empty / non-expression argument is an error, as above.
+         */
+        @JvmStatic
+        fun `cdr-atom`(atom: Atom): Atom {
+            val e = if (atom is BoundAtom) atom.atom else atom
+            return if (e is Expression && e.atoms.isNotEmpty()) Expression(atoms = e.atoms.drop(1))
+            else Expression(Symbol("Error"), atom, Symbol("cdr-atom expects a non-empty expression"))
+        }
+
+        /**
          * Truthiness of a reduced condition value used where a boolean is required — a
          * predicate call or nested `if` in a condition position (`(if (is-var $x) …)`).
          * hyperon's booleans are the symbols `True`/`False`; a grounded `Boolean` is also

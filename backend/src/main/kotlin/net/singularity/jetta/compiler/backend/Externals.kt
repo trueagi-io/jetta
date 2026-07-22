@@ -214,6 +214,32 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `car-atom` / `cdr-atom` — head and tail of an expression (`(car-atom (a b c))` → `a`,
+    // `(cdr-atom (a b c))` → `(b c)`). Argument is ATOM so a bound list variable arrives as
+    // its Expression value; result is an Atom (an element, or a tail Expression). Pure and
+    // single-valued.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "car-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "cdr-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // Mutable state: new-state creates a cell, bind! names it via a token, get-state reads,
     // change-state! writes. Value/token args are ATOM (stored/looked-up as data, unreduced);
     // bind!'s value arg is ANY so `(bind! s (new-state x))` reduces the new-state first.
