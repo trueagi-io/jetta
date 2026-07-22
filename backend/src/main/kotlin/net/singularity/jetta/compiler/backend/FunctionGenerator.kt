@@ -1274,6 +1274,20 @@ open class FunctionGenerator(
         else -> null
     }
 
+    /**
+     * Whether an ORDERING comparison (`<`/`>`/`<=`/`>=`) should emit DOUBLE opcodes.
+     * True when either operand is statically DOUBLE, OR when NEITHER is a statically-known
+     * primitive (both `Atom`, e.g. `min`'s `$a`/`$b` bound to destructured `Grounded`
+     * numbers): at runtime the values are grounded numbers, and `Number.doubleValue()` reads
+     * an `Int` or a `Double` alike, so comparing as `double` is exact for both. Comparing
+     * such operands as `int` (the old fall-through) truncated a `Double` to 0 — `(< 0.8 0.9)`
+     * became `0 < 0` = false, so `min` always returned its second argument (c3). Statically
+     * INT/BOOLEAN operands keep integer opcodes. Only for ordering: `==`/`!=` on two `Atom`s
+     * is a STRUCTURAL comparison, handled separately.
+     */
+    private fun orderingUsesDouble(left: Atom, right: Atom): Boolean =
+        numericCompareType(left, right).let { it == null || it == GroundedType.DOUBLE }
+
     /** If [actual] is a reference (Atom/Any) but a primitive [target] is required for the
      *  comparison, coerce it. For a BOOLEAN target the reference may be the *symbol* True/False
      *  (a MeTTa boolean is a Symbol, not a Grounded<Boolean>) — e.g. `(== (croaks $x) True)`
@@ -1490,7 +1504,7 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_GT -> {
-                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                        if (orderingUsesDouble(left, right!!)) {
                             generateDoubleGt(left, right, Opcodes.IFGT)
                         } else {
                             generateIntComparison(left, right, Opcodes.IF_ICMPLE)
@@ -1498,7 +1512,7 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_LT -> {
-                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                        if (orderingUsesDouble(left, right!!)) {
                             generateDoubleGt(left, right, Opcodes.IFLT)
                         } else {
                             generateIntComparison(left, right, Opcodes.IF_ICMPGE)
@@ -1506,7 +1520,7 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_GE -> {
-                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                        if (orderingUsesDouble(left, right!!)) {
                             generateDoubleGt(left, right, Opcodes.IFGE)
                         } else {
                             generateIntComparison(left, right, Opcodes.IF_ICMPLT)
@@ -1514,7 +1528,7 @@ open class FunctionGenerator(
                     }
 
                     Predefined.COND_LE -> {
-                        if (numericCompareType(left, right!!) == GroundedType.DOUBLE) {
+                        if (orderingUsesDouble(left, right!!)) {
                             generateDoubleGt(left, right, Opcodes.IFLE)
                         } else {
                             generateIntComparison(left, right, Opcodes.IF_ICMPGT)
