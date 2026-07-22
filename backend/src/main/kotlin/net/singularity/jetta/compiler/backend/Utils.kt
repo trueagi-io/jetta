@@ -83,12 +83,23 @@ fun generateLoadVar(
     // and unwrap+unbox it instead.
     val slotType = if (index >= 0) params.firstOrNull { it.name == variable.name }?.type else null
     val usage = variable.type
-    if (index >= 0 && (slotType == GroundedType.ATOM || slotType == GroundedType.ANY) &&
+    val slotIsBroadRef = slotType == GroundedType.ATOM || slotType == GroundedType.ANY
+    if (index >= 0 && slotIsBroadRef &&
         (usage == GroundedType.INT || usage == GroundedType.LONG ||
             usage == GroundedType.DOUBLE || usage == GroundedType.BOOLEAN)
     ) {
         mv.visitVarInsn(Opcodes.ALOAD, index + offset)
         unwrapGroundedToPrimitive(mv, usage as GroundedType)
+        return
+    }
+    // Same slot-vs-usage reconciliation, reference side: the slot holds the broad top `Atom`/
+    // `Any`, but this use site was resolved to the narrower `Expression` subtype (e.g. `$tail`
+    // bound from `cdr-atom : (-> Atom Atom)` then passed to a `(-> Expression …)` parameter).
+    // A bare ALOAD leaves an `Atom`, which the verifier rejects where `Expression` is required
+    // (Atom is a supertype, not a subtype) — downcast to the usage type.
+    if (index >= 0 && slotIsBroadRef && usage == GroundedType.EXPRESSION) {
+        mv.visitVarInsn(Opcodes.ALOAD, index + offset)
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Expression")
         return
     }
 

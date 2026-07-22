@@ -1034,17 +1034,34 @@ open class FunctionGenerator(
         val bt = atom.type ?: return
         val rtIsValue = rt is GroundedType && rt.isGroundedValue()
         val btIsValue = bt is GroundedType && bt.isGroundedValue()
+        // Whether the body actually left a REFERENCE on the stack — the real JVM shape, not the
+        // node's resolved type. A lambda-call typed Any/Atom is unboxed to its arrow-return
+        // primitive by generateLambdaCall, so the node type can lie (see [stackShapeType]).
+        val stackIsRef = stackShapeType(atom)?.isGroundedValue() != true
         when {
             // BOX: a grounded VALUE on the stack where a reference (Atom) is returned — wrap
             // it in a Grounded. Safe generally (`bt` being a value implies a primitive is on
             // the stack): a scalar call's `int` result flowing into an Atom-returning map?/
             // flat-map? lambda, e.g. `(\dv. (ev dv))` over a multivalued `(d …)`.
             !rtIsValue && btIsValue -> wrapValueOnStackInGrounded(bt as GroundedType)
-            // UNWRAP / numeric-widen — only inside a scalar-Match body, where the branch
-            // bodies are known and the stack matches `bt`. Doing it elsewhere would
-            // double-unwrap an already-primitive result (e.g. a typed lambda call whose node
-            // type is Atom but which leaves a raw int).
-            scalarReturnCoercion && rtIsValue && !btIsValue -> unwrapGroundedToPrimitive(mv, rt as GroundedType)
+            // UNWRAP: a value is returned but the body left a reference on the stack (e.g.
+            // `contains`'s else arm is a `let`-lambda typed Any → an Object). Coerce down to the
+            // primitive: BOOLEAN through isTruthy — the reference may be the symbol True/False, a
+            // Grounded<Boolean>, or a boxed Boolean — numeric types through a Grounded unwrap.
+            // Gated on the REAL stack shape, not scalarReturnCoercion/node type, so it fires for
+            // any function (not just scalar-Match bodies) yet never double-unwraps a call that
+            // already left a raw primitive.
+            rtIsValue && stackIsRef ->
+                if (rt == GroundedType.BOOLEAN) {
+                    mv.visitMethodInsn(
+                        Opcodes.INVOKESTATIC, RuntimeNames.JETTA_PROGRAM,
+                        "isTruthy", "(Ljava/lang/Object;)Z", false
+                    )
+                } else {
+                    unwrapGroundedToPrimitive(mv, rt as GroundedType)
+                }
+            // Numeric widen: both are primitives on the stack (int→double). Only meaningful in
+            // a scalar-Match body, where the branch bodies are known to leave a raw primitive.
             scalarReturnCoercion && rtIsValue && btIsValue ->
                 if (bt == GroundedType.INT && rt == GroundedType.DOUBLE) mv.visitInsn(Opcodes.I2D)
             else -> { /* representations already match — return as-is */ }
@@ -1309,6 +1326,30 @@ open class FunctionGenerator(
         }
     }
 
+    /**
+     * The [GroundedType] `generateAtom(operand, doReturn=false)` actually leaves on the JVM
+     * stack — which is NOT always `operand.type`. A call whose head is a Variable carrying an
+     * `ArrowType` is emitted by [generateLambdaCall], which unboxes the result to the arrow's
+     * *return* type; an inline `((\ …) …)` is emitted by [generateInlineLambdaCall], which
+     * unboxes to the Lambda's `returnType`. In both cases the call *node's* own resolved type
+     * can be `Any`/`Atom` (a reference) while the value on the stack is a raw primitive.
+     *
+     * The condition/comparison sites need this to decide re-boxing: guessing the stack shape
+     * from `operand.type` (the node type) disagrees with what the producer emitted, so a
+     * `Bool`-returning `($cond $x)` under an `Any` node was unboxed to `int` and then handed to
+     * `isTruthy(Object)` unboxed → VerifyError. This is the single authoritative mirror of the
+     * value-shaping in [generateAtom]'s Expression dispatch (see :237-327).
+     */
+    private fun stackShapeType(operand: Atom): GroundedType? {
+        if (operand is Expression) {
+            val head = operand.atoms.firstOrNull()
+            if (head is Variable && head.type is ArrowType)
+                return (head.type as ArrowType).types.last() as? GroundedType
+            if (head is Lambda) return head.returnType as? GroundedType
+        }
+        return operand.type as? GroundedType
+    }
+
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
         emitLineNumber(expr)
         // Push one operand of a primitive comparison onto the stack. A MeTTa boolean is the
@@ -1328,7 +1369,7 @@ open class FunctionGenerator(
             val label = Label()
             generateAtom(mv, operand, label, false)
             mv.visitLabel(label)
-            coerceComparisonOperand(mv, operand.type, elemType)
+            coerceComparisonOperand(mv, stackShapeType(operand), elemType)
         }
 
         // Reduce a VALUE operand (a Variable/Symbol/Grounded/call — anything that is not a
@@ -1342,7 +1383,10 @@ open class FunctionGenerator(
         // paths' explicit GOTO exit).
         fun pushValueAsCondition(operand: Atom) {
             generateAtom(mv, operand, null, false)
-            (operand.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+            // Re-box off the shape actually left on the stack, not the node type: a
+            // Bool-returning `($cond $x)` is unboxed to a primitive by generateLambdaCall
+            // even when its node resolved to Any — isTruthy(Object) needs the reference.
+            stackShapeType(operand)?.takeIf { it.isGroundedValue() }
                 ?.let { generateBoxingIfNeeded(it) }
             mv.visitMethodInsn(
                 Opcodes.INVOKESTATIC,
@@ -1370,9 +1414,9 @@ open class FunctionGenerator(
 
             // Push operands: left, then right
             generateAtom(mv, left, null, false)
-            coerceComparisonOperand(mv, left.type, GroundedType.DOUBLE)
+            coerceComparisonOperand(mv, stackShapeType(left), GroundedType.DOUBLE)
             generateAtom(mv, right, null, false)
-            coerceComparisonOperand(mv, right.type, GroundedType.DOUBLE)
+            coerceComparisonOperand(mv, stackShapeType(right), GroundedType.DOUBLE)
 
             // Compare the two doubles (result is int)
             mv.visitInsn(Opcodes.DCMPG)
