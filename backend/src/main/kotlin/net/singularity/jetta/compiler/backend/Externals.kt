@@ -78,6 +78,21 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `matchReduce` — same shape as `match`, but each result is run through the runtime
+    // grounded-op reducer (see JettaProgram.matchReduce). The rewriter routes a `match` whose
+    // TEMPLATE is a grounded-operator expression (`(- $y $x)`) here so the substituted
+    // template is evaluated (→ 0.8) rather than returned inert.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchReduce",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
@@ -87,6 +102,46 @@ fun registerExternals(context: Context) {
             ),
             ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true
+        )
+    )
+    // `empty` — the empty non-deterministic bag (zero results); prunes a branch. No args,
+    // multivalued (returns a List).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "empty",
+                descriptor = "()Ljava/util/List;"
+            ),
+            ArrowType(SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `unique` — non-determinism barrier that dedupes the bag (see BARRIER_FUNCTIONS). Consumes
+    // the whole bag (an Object) and returns the distinct results (multivalued → List).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "unique",
+                descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
+    // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`).
+    // Param is ANY so the argument (e.g. `(render $e)`) IS reduced before the quote is stripped.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = "unquote",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
         )
     )
     // Space mutation built-ins. First arg is the space (an ATOM in the arrow type; `&self`
@@ -127,6 +182,23 @@ fun registerExternals(context: Context) {
             ),
             ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true
+        )
+    )
+    // `import!` — runtime, order-sensitive module import (hyperon semantics; see
+    // JettaProgram.import!). The space arg is Object so `&self`/`&kb` bake to a name String
+    // at the call site exactly like `match`; the module arg is ATOM so the bare module
+    // Symbol is NOT reduced (it names a module, not a value). Returns the unit atom `()`;
+    // single-valued. Frontend keeps the `(import! …)` Run (ImportResolutionPass no longer
+    // strips it) so it reaches codegen as an ordinary system call.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "import!",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
+            false
         )
     )
     // `is-var` — variable predicate. Argument is ATOM (unreduced) so a variable reaches the

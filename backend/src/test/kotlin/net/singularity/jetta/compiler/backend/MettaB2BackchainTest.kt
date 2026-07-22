@@ -302,4 +302,114 @@ class MettaB2BackchainTest : GeneratorTestBase() {
             classes["DeepDeduction"]!!.getMethod("__main").invoke(null)
         }
     }
+
+    @Test
+    fun `free-var backward chaining binds through a multi-hop call chain (b3_direct)`() {
+        compile(
+            "TransitiveBackchain.metta",
+            $$"""
+                ; b3_direct's core: a free variable in a top-level query must reduce by
+                ; backward chaining THROUGH the call chain green → frog → croaks/eat_flies,
+                ; even though none of those functions is called with a free var in its own
+                ; body (each passes its bound parameter down). The interprocedural relational
+                ; analysis must propagate relational-ness: green is relational (top-level free
+                ; $x), so its param is possibly-free, so frog is relational, so croaks/eat_flies
+                ; are — and croaks/eat_flies then take the space-unification (reduceOrInert)
+                ; fallback that binds $x = Fritz against `(= (croaks Fritz) T)`.
+                (= (croaks Fritz) T)
+                (= (eat_flies Fritz) T)
+                (= (And T T) T)
+                (= (frog $x) (And (croaks $x) (eat_flies $x)))
+                (= (green $x) (frog $x))
+                (= (ift T $then) $then)
+
+                ; ground query still reduces via applicative compiled dispatch
+                !(assertEqual (green Fritz) T)
+                ; free-var query reduces by backward chaining, binding $x = Fritz
+                !(assertEqual (ift (green $x) $x) Fritz)
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("TransitiveBackchain")
+            // Both asserts in __main; a failure throws, so completing means both held.
+            classes["TransitiveBackchain"]!!.getMethod("__main").invoke(null)
+        }
+    }
+
+    @Test
+    fun `multi-fact free-var backchaining foliates per-branch bindings`() {
+        compile(
+            "MultiFactBackchain.metta",
+            $$"""
+                ; e1_kb_write's core mechanism (without the &kb/new-space bits): the same
+                ; free-var query now has TWO solutions (Fritz and Sam). Enumerating them
+                ; exercises per-branch binding foliation: `(And (croaks $x) (eat_flies $x))`
+                ; binds $x in the left conjunct, and that binding must (a) constrain the right
+                ; conjunct within a branch and (b) NOT leak across sibling branches. Before
+                ; foliation the branches shared one binding frame (pop's last-wins upward
+                ; merge), collapsing the result to [Sam, Sam]; with foliation each branch
+                ; carries its own $x, giving the correct bag {Fritz, Sam}.
+                (= (croaks Fritz) T)
+                (= (eat_flies Fritz) T)
+                (= (croaks Sam) T)
+                (= (eat_flies Sam) T)
+                (= (And T T) T)
+                (= (frog $x) (And (croaks $x) (eat_flies $x)))
+                (= (green $x) (frog $x))
+                (= (ift T $then) $then)
+
+                !(assertEqualToResult (ift (green $x) $x) (Fritz Sam))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("MultiFactBackchain")
+            classes["MultiFactBackchain"]!!.getMethod("__main").invoke(null)
+        }
+    }
+
+    @Test
+    fun `foliation survives a boolean and and an extra relational hop (e1_kb_write core)`() {
+        compile(
+            "AndFoliation.metta",
+            $$"""
+                ; e1_kb_write's exact shape: the conjunction is the grounded boolean `and`
+                ; (not the data ctor `And`), the truth value is the symbol `True`, and `ift`
+                ; is typed `(-> Bool …)` so its dispatch coerces via isTruthy. `green` adds an
+                ; extra relational hop over `frog` — an identity `map?` whose Bool-typed lambda
+                ; returns a raw java.lang.Boolean, a NON-Atom. foliate could not attach that
+                ; branch's $x to a non-Atom, so the binding was lost and pop's last-wins merge
+                ; collapsed the two solutions to [Sam, Sam]. With the non-Atom value wrapped in
+                ; a Grounded before foliation, each branch keeps its own $x → {Fritz, Sam}.
+                (= (croaks Fritz) True)
+                (= (eat_flies Fritz) True)
+                (= (croaks Sam) True)
+                (= (eat_flies Sam) True)
+                (= (frog $x) (and (croaks $x) (eat_flies $x)))
+                (= (green $x) (frog $x))
+                (: ift (-> Bool Atom Atom))
+                (= (ift True $then) $then)
+
+                !(assertEqualToResult (ift (green $x) $x) (Fritz Sam))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("AndFoliation")
+            classes["AndFoliation"]!!.getMethod("__main").invoke(null)
+        }
+    }
 }

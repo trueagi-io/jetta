@@ -24,5 +24,11 @@ class Grounded<T>(val value: T, override val position: SourcePosition? = null) :
 
     override fun hashCode(): Int = value.hashCode()
 
-    override fun toString(): String = value.toString()
+    // A grounded Bool renders as the MeTTa boolean True/False (matching hyperon, where True/
+    // False ARE the grounded-Bool values), not Kotlin's lowercase true/false. Every other
+    // grounded value prints its own toString.
+    override fun toString(): String = when (value) {
+        is Boolean -> if (value) "True" else "False"
+        else -> value.toString()
+    }
 }

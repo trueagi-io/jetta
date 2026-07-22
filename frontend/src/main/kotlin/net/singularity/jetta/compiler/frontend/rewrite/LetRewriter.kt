@@ -84,8 +84,28 @@ class LetRewriter : Rewriter {
                     position = expression.position,
                 )
             }
-            // Form 2: pattern-LHS. Fall through to generic rewrite — handled
-            // by a future pass.
+            // Form 2 — a `(quote $v)` pattern LHS: `(let (quote $v) VAL BODY)` binds `$v` to the
+            // CONTENT of VAL's quote (VAL evaluates to `(quote X)` ⇒ `$v = X`). Lower to Form-1
+            // over the runtime `unquote` helper: `(let $v (unquote VAL) BODY)`, then let the
+            // variable-LHS branch above build the lambda. This is what `render` relies on to
+            // peel and recompose quoted sub-programs. (General structural patterns still fall
+            // through — a unify-based follow-up shared with `case`.)
+            if (lhs is Expression && lhs.atoms.size == 2 && isQuoteHead(lhs.atoms[0]) &&
+                lhs.atoms[1] is Variable
+            ) {
+                val v = lhs.atoms[1] as Variable
+                val unquoted = Expression(
+                    listOf(Symbol(UNQUOTE_KEYWORD), rawValue),
+                    position = rawValue.position,
+                )
+                return rewriteAtom(
+                    Expression(
+                        listOf(Symbol(LET_KEYWORD), v, unquoted, rawBody),
+                        position = expression.position,
+                    )
+                )
+            }
+            // Other pattern-LHS forms: fall through to generic rewrite — a unify-based follow-up.
         }
 
         return Expression(
@@ -94,8 +114,12 @@ class LetRewriter : Rewriter {
         )
     }
 
+    private fun isQuoteHead(head: Atom): Boolean =
+        (head as? Symbol)?.name == "quote" || (head as? Special)?.value == "quote"
+
     companion object {
         const val LET_KEYWORD = "let"
         const val LETSTAR_KEYWORD = "let*"
+        const val UNQUOTE_KEYWORD = "unquote"
     }
 }

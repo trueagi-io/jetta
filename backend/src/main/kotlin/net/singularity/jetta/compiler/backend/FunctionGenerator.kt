@@ -138,6 +138,20 @@ open class FunctionGenerator(
 
             is Symbol -> {
                 when {
+                    // A MeTTa boolean literal is a grounded Bool, not a plain symbol. hyperon
+                    // registers `True`/`False` as grounded-Bool tokens, and every comparison /
+                    // `and` / `or` yields that same grounded Bool — so `(assertEqual (> 2 1)
+                    // True)` holds and `(get-type True)` is Bool. Emit `Grounded<Boolean>` here
+                    // (a value position) so a `True`/`False` VALUE has the same representation as
+                    // a boolean-op result and structurally equals it. Pattern, condition and
+                    // Bool-return positions never reach generateLoad: they intercept the symbol
+                    // earlier (pushComparisonOperand, generateBooleanExpr, the Bool-return case)
+                    // and use the primitive. (A user's own truth token like b3's `T` is NOT a
+                    // boolean — `(get-type T)` is %Undefined% in hyperon — so it stays a Symbol.)
+                    atom.name == "True" || atom.name == "False" -> {
+                        generateLoadBoolean(atom.name == "True")
+                        wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+                    }
                     // &self materialises as the owner module's space name. The runtime's
                     // match/matchEval take this string as their leading argument and
                     // look up the corresponding Space via SpaceRegistry.
@@ -195,6 +209,21 @@ open class FunctionGenerator(
         needBoxing: Boolean = false
     ) {
         emitLineNumber(atom)
+        // A bare `True`/`False` symbol RETURNED from a `Bool`-typed function must materialize as
+        // the primitive boolean constant the descriptor's trailing `Z` expects — not the Symbol
+        // object the generic atom path (generateLoad) would push, which the verifier rejects at
+        // `ireturn` (a Symbol is not assignable to int). A MeTTa boolean is the bare symbol
+        // True/False, and only a Bool RETURN slot demands the primitive — elsewhere True/False
+        // stay Symbols (e.g. flowing into an Atom-typed sink like `(add-atom &kb (Green $x))`).
+        // Multivalued Bool functions return a `List`, so exclude them (they take the ARETURN path).
+        if (doReturn && atom is Symbol && (atom.name == "True" || atom.name == "False") &&
+            function.returnType == GroundedType.BOOLEAN &&
+            !((function as? FunctionDefinition)?.isMultivalued() ?: false)
+        ) {
+            generateLoadBoolean(atom.name == "True")
+            generateReturn(mv)
+            return
+        }
         when (atom) {
             is Expression -> {
                 // The empty tuple `()` is a value, not a call — it has no head to dispatch
@@ -210,13 +239,15 @@ open class FunctionGenerator(
 
                 when (func) {
                     is Special -> when (func.value) {
-                        Predefined.PLUS, Predefined.TIMES, Predefined.MINUS -> generateArithmetics(
-                            mv,
-                            func,
-                            arguments,
-                            atom.type as GroundedType,
-                            doReturn
-                        )
+                        Predefined.PLUS, Predefined.TIMES, Predefined.MINUS ->
+                            // operator-as-data: when the resolver stamped this arithmetic
+                            // form inert ATOM (an operator tuple inside a data container like
+                            // `(superpose (+ - *))`), it is DATA, not a computation — quote it
+                            // like the other Special-headed data forms below. Genuine
+                            // arithmetic always carries an INT/DOUBLE type, so this never
+                            // suppresses a real `(+ …)`/`(* …)`/`(- …)` computation.
+                            if (atom.type == GroundedType.ATOM) generateQuote(mv, atom)
+                            else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
 
                         Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
                         Predefined.DIV -> generateDiv(mv, arguments, doReturn)
@@ -393,7 +424,15 @@ open class FunctionGenerator(
         // returns List). Boxing it as that primitive would emit `Integer.valueOf(I)` over a
         // reference → VerifyError. Skip boxing for such calls — the List is already an Object.
         val isMultivaluedCall = (atom as? Expression)?.resolved?.isMultiValued == true
-        if (needBoxing && !isMultivaluedCall) generateBoxingIfNeeded(atom.type!!)
+        if (needBoxing && !isMultivaluedCall) {
+            // A Bool value boxed into an Object/Atom slot (a `println`/data argument, a lambda
+            // arg) becomes a Grounded<Boolean> — the canonical MeTTa boolean that renders as
+            // True/False and IS an Atom — not a raw java.lang.Boolean (lowercase, not an Atom).
+            // Other primitives box to their wrapper as before. A `True`/`False` literal reaches
+            // here already as a Grounded<Boolean> (type ATOM), so it is not double-wrapped.
+            if (atom.type == GroundedType.BOOLEAN) wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+            else generateBoxingIfNeeded(atom.type!!)
+        }
         if (doReturn) {
             coerceForReturn(atom)
             generateReturn(mv)
@@ -1052,7 +1091,15 @@ open class FunctionGenerator(
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
         arguments.forEachIndexed { index, arg ->
             val argType = arg.type
-            if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
+            if (jvmSymbol.isParameterBooleanType(index) && arg is Symbol &&
+                (arg.name == "True" || arg.name == "False")
+            ) {
+                // A MeTTa boolean literal (`True`/`False`) passed to a `Bool` (primitive `Z`)
+                // parameter — push the primitive constant, not the Symbol object, which the
+                // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
+                // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
+                generateLoadBoolean(arg.name == "True")
+            } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 // A grounded VALUE (Int/Double/String/…) passed to an Atom-typed parameter
                 // must be wrapped in a Grounded: a bare box (Integer) is not an Atom subtype,
                 // so the verifier rejects `Integer` where `Atom` is expected. Routine in
@@ -1228,22 +1275,73 @@ open class FunctionGenerator(
     }
 
     /** If [actual] is a reference (Atom/Any) but a primitive [target] is required for the
-     *  comparison, unwrap the Grounded and unbox. */
+     *  comparison, coerce it. For a BOOLEAN target the reference may be the *symbol* True/False
+     *  (a MeTTa boolean is a Symbol, not a Grounded<Boolean>) — e.g. `(== (croaks $x) True)`
+     *  where croaks yields the symbol True — so route through the runtime isTruthy, which
+     *  accepts a Symbol or a Grounded. Numeric targets unwrap the Grounded and unbox. */
     private fun coerceComparisonOperand(mv: MethodVisitor, actual: Atom?, target: GroundedType) {
-        if (actual == GroundedType.ATOM || actual == GroundedType.ANY) unwrapGroundedToPrimitive(mv, target)
+        if (actual == GroundedType.ATOM || actual == GroundedType.ANY) {
+            if (target == GroundedType.BOOLEAN) {
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESTATIC,
+                    RuntimeNames.JETTA_PROGRAM,
+                    "isTruthy",
+                    "(Ljava/lang/Object;)Z",
+                    false
+                )
+            } else {
+                unwrapGroundedToPrimitive(mv, target)
+            }
+        }
     }
 
     private fun generateBooleanExpr(mv: LocalVariablesSorter, expr: Atom, exit: Label) {
         emitLineNumber(expr)
+        // Push one operand of a primitive comparison onto the stack. A MeTTa boolean is the
+        // bare symbol `True`/`False` (not a `Grounded<Boolean>`), so when it appears as a
+        // literal operand of a BOOLEAN comparison — e.g. the `True` in a rule LHS
+        // `(= (ift True $then) …)`, lowered to `(== $param True)` — load the primitive
+        // constant directly. Otherwise it would go through generateAtom (pushing a Symbol)
+        // + coerceComparisonOperand, which unwraps it as a Grounded and CHECKCASTs on a
+        // Symbol at runtime (ClassCastException).
+        fun pushComparisonOperand(operand: Atom, elemType: GroundedType) {
+            if (elemType == GroundedType.BOOLEAN && operand is Symbol &&
+                (operand.name == "True" || operand.name == "False")
+            ) {
+                generateLoadBoolean(operand.name == "True")
+                return
+            }
+            val label = Label()
+            generateAtom(mv, operand, label, false)
+            mv.visitLabel(label)
+            coerceComparisonOperand(mv, operand.type, elemType)
+        }
+
+        // Reduce a VALUE operand (a Variable/Symbol/Grounded/call — anything that is not a
+        // comparison or logical sub-expression) to the primitive boolean the surrounding
+        // IF_ICMP expects. A MeTTa boolean is the bare symbol True/False (an Atom), most often
+        // produced by a user function — e.g. `(and $__var0 $__var1)` in a rewritten
+        // conjunction, where each var holds the *symbol* True a multivalued croaks/eat_flies
+        // returned. Route through the runtime isTruthy, which accepts the True/False symbol, a
+        // Grounded<Boolean>, or a boxed primitive. Leaves the int 0/1 on the stack and falls
+        // through to the caller's `exit` label (placed immediately after, like the comparison
+        // paths' explicit GOTO exit).
+        fun pushValueAsCondition(operand: Atom) {
+            generateAtom(mv, operand, null, false)
+            (operand.type as? GroundedType)?.takeIf { it.isGroundedValue() }
+                ?.let { generateBoxingIfNeeded(it) }
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                RuntimeNames.JETTA_PROGRAM,
+                "isTruthy",
+                "(Ljava/lang/Object;)Z",
+                false
+            )
+        }
+
         fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int, elemType: GroundedType = GroundedType.INT) {
-            val label1 = Label()
-            generateAtom(mv, left, label1, false)
-            mv.visitLabel(label1)
-            coerceComparisonOperand(mv, left.type, elemType)
-            val label2 = Label()
-            generateAtom(mv, right, label2, false)
-            mv.visitLabel(label2)
-            coerceComparisonOperand(mv, right.type, elemType)
+            pushComparisonOperand(left, elemType)
+            pushComparisonOperand(right, elemType)
             val jumpIfFalse = Label()
             mv.visitJumpInsn(inverseOp, jumpIfFalse)
             mv.visitInsn(Opcodes.ICONST_1)
@@ -1428,18 +1526,7 @@ open class FunctionGenerator(
                     // it to a value and test truthiness at runtime (hyperon booleans are the
                     // symbols True/False; a grounded Boolean also counts). Leaves the int 0/1
                     // the caller's branch test expects.
-                    else -> {
-                        generateAtom(mv, expr, null, false)
-                        (expr.type as? GroundedType)?.takeIf { it.isGroundedValue() }
-                            ?.let { generateBoxingIfNeeded(it) }
-                        mv.visitMethodInsn(
-                            Opcodes.INVOKESTATIC,
-                            "net/singularity/jetta/runtime/JettaProgram",
-                            "isTruthy",
-                            "(Ljava/lang/Object;)Z",
-                            false
-                        )
-                    }
+                    else -> pushValueAsCondition(expr)
                 }
             }
 
@@ -1451,16 +1538,19 @@ open class FunctionGenerator(
             is Symbol -> when (expr.name) {
                 "True" -> mv.visitInsn(Opcodes.ICONST_1)
                 "False" -> mv.visitInsn(Opcodes.ICONST_0)
-                else -> generateAtom(mv, expr, exit, false)
+                // Any other symbol used as a condition is a value — test its truthiness.
+                else -> pushValueAsCondition(expr)
             }
 
             is Grounded<*> -> if (expr.value is Boolean) {
                 generateLoadBoolean(expr.value as Boolean)
             } else {
-                generateAtom(mv, expr, exit, false)
+                pushValueAsCondition(expr)
             }
 
-            else -> generateAtom(mv, expr, exit, false)
+            // A bare value operand (most often a Variable that is a boxed Atom at runtime —
+            // e.g. an `(and $a $b)` conjunct holding the symbol True) reduced to a primitive.
+            else -> pushValueAsCondition(expr)
         }
     }
 
@@ -1576,8 +1666,22 @@ open class FunctionGenerator(
                     else -> TODO()
                 }
 
-                Predefined.TIMES -> mv.visitInsn(Opcodes.IMUL)
-                Predefined.MINUS -> mv.visitInsn(Opcodes.ISUB)
+                // `*` and `-` must honour the operand type just like `+`: when the inferred
+                // result type is DOUBLE (e.g. `(* 3 5.5)`, `(- 8 …)` with a float operand) the
+                // operands were promoted to double by castIfNeeded, so an integer IMUL/ISUB
+                // would read a double off the stack → VerifyError. Dispatch on `type`.
+                Predefined.TIMES -> when (type) {
+                    GroundedType.INT -> mv.visitInsn(Opcodes.IMUL)
+                    GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DMUL)
+                    else -> TODO()
+                }
+
+                Predefined.MINUS -> when (type) {
+                    GroundedType.INT -> mv.visitInsn(Opcodes.ISUB)
+                    GroundedType.DOUBLE -> mv.visitInsn(Opcodes.DSUB)
+                    else -> TODO()
+                }
+
                 else -> TODO("Not implemented $op")
             }
         }

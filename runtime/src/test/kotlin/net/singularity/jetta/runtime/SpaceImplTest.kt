@@ -16,6 +16,29 @@ import kotlin.test.assertTrue
 class SpaceImplTest {
     fun createSpace(): Space = SpaceImpl().apply { enablePerCallBindings = false }
 
+    private fun indexerCount(space: SpaceImpl): Int {
+        val f = SpaceImpl::class.java.getDeclaredField("indexers").apply { isAccessible = true }
+        return (f.get(space) as Map<*, *>).size
+    }
+
+    @Test
+    fun `structurally-identical variable patterns reuse one cached indexer`() {
+        // `Variable` has identity equality, so an Expression-keyed cache used to MISS on every
+        // variable-bearing pattern and rebuild its index per query. The canonical key fixes
+        // that: matching the same `(rel $x b)` shape twice must create exactly one indexer,
+        // and a different shape must create a second.
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        space.add(Expression(Symbol("rel"), Symbol("a"), Symbol("b")))
+        space.add(Expression(Symbol("other"), Symbol("a"), Symbol("b")))
+
+        space.match(Expression(Symbol("rel"), Variable("x"), Symbol("b")), Variable("x"))
+        space.match(Expression(Symbol("rel"), Variable("x"), Symbol("b")), Variable("x"))
+        assertEquals(1, indexerCount(space), "same variable pattern must reuse its indexer")
+
+        space.match(Expression(Symbol("other"), Variable("x"), Symbol("b")), Variable("x"))
+        assertEquals(2, indexerCount(space), "a distinct pattern gets its own indexer")
+    }
+
     @Test
     fun `chunks with empty space`() {
         val space = createSpace()

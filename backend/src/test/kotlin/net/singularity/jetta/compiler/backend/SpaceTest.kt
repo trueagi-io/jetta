@@ -120,7 +120,12 @@ class SpaceTest : GeneratorTestBase() {
                 Variable("x")
             )
             assertEquals(1, results.size)
-            assertEquals("world", ((results[0] as BoundAtom).atom as Symbol).name)
+            // A single match result is returned unwrapped (foliation-elision): the per-branch
+            // BoundAtom wrapper exists only to keep divergent bindings apart across MULTIPLE
+            // non-deterministic branches, so a lone result needs none. Accept either form.
+            val r0 = results[0]
+            val atom = if (r0 is BoundAtom) r0.atom else r0
+            assertEquals("world", (atom as Symbol).name)
         } finally {
             tempDir.deleteRecursively()
         }

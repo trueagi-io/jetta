@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.backend
 
 internal object RuntimeNames {
     const val MATCHER = "net/singularity/jetta/runtime/Matcher"
+    const val JETTA_PROGRAM = "net/singularity/jetta/runtime/JettaProgram"
     const val JETTA_FUNCTION = "net/singularity/jetta/runtime/functions/JettaFunction"
     const val RANDOM = "net/singularity/jetta/runtime/Random"
     const val IO = "net/singularity/jetta/runtime/IO"

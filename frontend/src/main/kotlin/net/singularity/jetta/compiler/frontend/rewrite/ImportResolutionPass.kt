@@ -6,12 +6,10 @@ import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
-import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.Run
 import net.singularity.jetta.compiler.frontend.ir.SourcePosition
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.rewrite.messages.CyclicImportMessage
-import net.singularity.jetta.compiler.frontend.rewrite.messages.ImportAsNotImplementedMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.InvalidModuleNameMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.MissingModuleMessage
 import java.nio.file.Files
@@ -58,7 +56,16 @@ class ImportResolutionPass(
                 survivors.add(atom)
                 continue
             }
-            val splicedRuns = handleImport(request, sourcePath)
+            // Runtime-ordered import (hyperon semantics): compile the target module and
+            // record the import edge so its `.jtsf` is listed in the manifest and loaded
+            // at `init`, then KEEP the `(import! …)` Run so it reaches codegen and executes
+            // in program order (JettaProgram.import! copies the module's atoms into the
+            // target space at that point). This replaces the old compile-time static merge,
+            // which could not honour the order-sensitive `match &self` asserts in c2_spaces.
+            // The imported module's own `!`-Runs are still spliced AFTER the import directive,
+            // so a module's load-time effects run once, in order, after its atoms are in place.
+            val splicedRuns = ensureModuleCompiled(request, sourcePath)
+            survivors.add(atom)
             survivors.addAll(splicedRuns)
         }
         return ParsedSource(source.filename, survivors)
@@ -80,22 +87,18 @@ class ImportResolutionPass(
     }
 
     /**
-     * Process one `(import! &self <name>)` request. Returns the list of `!`-Runs that
-     * should be spliced into the importer at the position of this directive — non-empty
-     * on the first successful load of the target, empty on cache hit (idempotent: load-
-     * time effects fire once), empty on error. The error itself is reported via
-     * [messageCollector]; the caller continues so multiple problems surface together.
+     * Ensure the module named by one `(import! <space> <name>)` request is compiled and its
+     * import edge recorded, and return the module's own `!`-Runs to splice after the import
+     * directive (empty on a diamond cache hit or error — load-time effects fire once). The
+     * edge drives two things: the module is listed in the importer's manifest and loaded at
+     * `init` under `SpaceId.FromModule(name)`, ready for the runtime `import!` to copy its
+     * atoms into the target space. The `<space>` reference itself is NOT inspected here — it
+     * is carried by the surviving `(import! …)` Run and resolved at runtime — so `&self`,
+     * `&kb`, `&m`, … are all handled uniformly. Errors are reported via [messageCollector];
+     * the caller continues so multiple problems surface together.
      */
-    private fun handleImport(req: ImportRequest, importerPath: Path): List<Run> {
-        // 1. Validate space-ref. Only &self is supported in v1.
-        val spaceSym = req.spaceRef as? Symbol
-        if (spaceSym == null || spaceSym.name != Predefined.SELF) {
-            val targetName = (req.spaceRef as? Symbol)?.name ?: req.spaceRef.toString()
-            messageCollector.add(ImportAsNotImplementedMessage(targetName, req.position))
-            return emptyList()
-        }
-
-        // 2. Validate module name.
+    private fun ensureModuleCompiled(req: ImportRequest, importerPath: Path): List<Run> {
+        // 1. Validate module name.
         val moduleSym = req.moduleAtom as? Symbol
         if (moduleSym == null) {
             messageCollector.add(InvalidModuleNameMessage(req.moduleAtom.toString(), req.position))
@@ -107,12 +110,12 @@ class ImportResolutionPass(
             return emptyList()
         }
 
-        // 3. Resolve to a canonical sibling path.
+        // 2. Resolve to a canonical sibling path.
         val parent = importerPath.toAbsolutePath().normalize().parent ?: Paths.get(".").toAbsolutePath()
         val targetPath = parent.resolve("$moduleName.metta").toAbsolutePath().normalize()
         val canonicalImporter = importerPath.toAbsolutePath().normalize()
 
-        // 4. Cycle?
+        // 3. Cycle?
         if (targetPath in cache.resolving) {
             messageCollector.add(
                 CyclicImportMessage(importerPath.toString(), targetPath.toString(), req.position)
@@ -120,15 +123,14 @@ class ImportResolutionPass(
             return emptyList()
         }
 
-        // 5. Already resolved? Idempotent: load-time effects fired on first import,
-        //    subsequent imports are no-ops for `!`-Runs. Edge is still recorded so the
-        //    storage strategy sees this importer's diamond view.
+        // 4. Already resolved (diamond)? Record the edge and stop — the module is compiled
+        //    exactly once and its load-time runs fired on first import.
         if (targetPath in cache.resolved) {
             cache.imports.getOrPut(canonicalImporter) { mutableSetOf() }.add(targetPath)
             return emptyList()
         }
 
-        // 6. Read + parse + recurse.
+        // 5. Read + parse + recurse.
         if (!Files.isRegularFile(targetPath)) {
             messageCollector.add(MissingModuleMessage(moduleName, targetPath.toString(), req.position))
             return emptyList()
@@ -146,15 +148,9 @@ class ImportResolutionPass(
             val resolved = resolve(parsed, targetPath)
             cache.resolved[targetPath] = resolved
             cache.imports.getOrPut(canonicalImporter) { mutableSetOf() }.add(targetPath)
-            // First load: splice the imported module's `!`-Runs (which already include
-            // any of its own transitively-imported Runs at the right positions, because
-            // the recursive resolve above performed the same splicing inside it).
-            //
             // Clone each Run so the importer and the imported module's own __main hold
-            // distinct instances. Without the clone they share `id` and mutable IR
-            // fields populated by later rewriters/resolvers, which causes the second
-            // pass over the shared instance to skip work it should redo for its new
-            // owner — effectively dropping the spliced Run from main's output.
+            // distinct instances (they otherwise share `id` and mutable IR fields that
+            // later passes populate per-owner).
             return resolved.code.filterIsInstance<Run>().map { Run(it.expression, it.position) }
         } finally {
             cache.resolving.remove(targetPath)

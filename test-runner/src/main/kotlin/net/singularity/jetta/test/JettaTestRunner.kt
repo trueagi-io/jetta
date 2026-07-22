@@ -175,6 +175,12 @@ class JettaTestRunner {
         // <className>.manifest.json in dataDir; point it at our temp output dir.
         JettaProgram.setDataDir(outputDir.toPath())
 
+        // Make the program's own ClassLoader the thread context loader so JettaProgram.init
+        // can resolve the compiled classes named in `<program>.jctx` for variable-head
+        // dispatch (`findStatic`). Under the CLI everything is on one `-cp`, but here the
+        // program lives in a per-run URLClassLoader that the app loader can't see.
+        val savedContextLoader = Thread.currentThread().contextClassLoader
+        Thread.currentThread().contextClassLoader = classLoader
         return try {
             if (method.parameterCount == 0) method.invoke(null) else method.invoke(null, emptyArray<String>())
             TestStatus.PASS to "OK"
@@ -189,6 +195,8 @@ class JettaTestRunner {
             // Class-loading or reflection-setup failures land here — e.g. JVM verifier
             // rejecting the bytecode of a buggy compile that returned exit 0.
             TestStatus.RUN_EXCEPTION to "${t::class.qualifiedName}: ${t.message ?: ""}"
+        } finally {
+            Thread.currentThread().contextClassLoader = savedContextLoader
         }
     }
 }

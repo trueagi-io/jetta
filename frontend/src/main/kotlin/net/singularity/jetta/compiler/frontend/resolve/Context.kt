@@ -41,6 +41,9 @@ class Context private constructor(
     )
 
     private val logger = Logger.getLogger(Context::class.java)
+
+    /** System function whose argument is a data tuple to enumerate (operator-as-data boundary). */
+    private val SUPERPOSE = "superpose"
     // TRANSIENT working state — what "comes out of a resolve/match pass". Always fresh
     // (never shared by [fork]): each eval gets its own.
     private val unresolvedElements = mutableMapOf<Int, AtomWithTypeInfo>()
@@ -93,6 +96,39 @@ class Context private constructor(
     }
 
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
+
+    /**
+     * One entry of the cross-JVM linker table (the P1 `.jctx` artifact): a user
+     * function's MeTTa name plus everything a runtime `findStatic` needs to LINK
+     * against its already-compiled JVM method — [owner] (the internal class name),
+     * [descriptor] (its JVM signature), and whether it returns a non-determinism bag.
+     */
+    data class LinkerSymbol(
+        val name: String,
+        val owner: String,
+        val descriptor: String,
+        val multivalued: Boolean,
+    )
+
+    /**
+     * The linker table for variable-head dispatch in a COMPILED binary. Serialized to
+     * `<program>.jctx` at compile time and loaded by `JettaProgram.init`; `JettaCallSite`
+     * uses it to resolve `($f x)` when `$f` names a user function, so an AOT run links
+     * against the compiled method instead of leaving the application inert. The resolved
+     * table is the AOT-computed linker symbol table — recomputing it at runtime is exactly
+     * the redundant work the partial-eval architecture exists to kill.
+     *
+     * Skips synthetic entries (`__eval*`, `__main*`) and `main`, and any function that never
+     * got an arrow type (no JVM descriptor to link against).
+     */
+    fun linkerTable(): List<LinkerSymbol> =
+        resolvedFunctions.entries
+            .filter { (name, def) ->
+                !name.startsWith("__") && name != "main" && def.func.arrowType != null
+            }
+            .map { (name, def) ->
+                LinkerSymbol(name, def.owner, def.func.getJvmDescriptor(), def.func.isMultivalued())
+            }
 
     private data class AtomWithTypeInfo(val atom: Atom, val info: Scope)
 
@@ -1118,6 +1154,17 @@ class Context private constructor(
                 atom.type = atom.type ?: GroundedType.ATOM
             }
 
+            is Special -> {
+                // A bare Special in a VALUE position — an operator used as data, e.g. an
+                // element of a data tuple like `(superpose (+ - *))` where `+`/`-`/`*` are
+                // selected as symbols and later applied via variable-head dispatch
+                // (`(ev (Bin $op …)) → ($op …)`). A Special can only reach resolveAtom as an
+                // operand/element (an operator that HEADS an expression is handled by the
+                // Expression case), so stamping it inert ATOM here is narrow: it rescues a
+                // case that previously crashed and never touches operator-as-head reduction.
+                atom.type = atom.type ?: GroundedType.ATOM
+            }
+
             else -> TODO("atom=$atom -> $scope -> ${atom.javaClass}")
         }
     }
@@ -1174,7 +1221,21 @@ class Context private constructor(
                 } else if (resolved != null) {
                     val arrowType = resolved.arrowType()
                     expression.arguments().mapIndexed { index, arg ->
-                        resolveAtom(arg, scope, arrowType.types[index])
+                        if (atom.name == SUPERPOSE && arg is Expression) {
+                            // operator-as-data: `superpose` enumerates its argument tuple as
+                            // DATA, so a Special/operator head inside it — `(superpose (+ - *))`
+                            // — is NOT executed as arithmetic; the operators pass through as
+                            // symbols to be applied later by variable-head dispatch
+                            // (`(ev (Bin $op …)) → ($op …)`). This is keyed on the CALLEE
+                            // (superpose), never on `suggestedType == ATOM`: an untyped
+                            // function's ATOM-defaulted param still reduces its arguments as
+                            // before. Genuine Symbol-headed nested calls inside the tuple are
+                            // still reduced (applicative order) by resolveNestedCallsInData.
+                            arg.type = GroundedType.ATOM
+                            arg.atoms.forEach { resolveNestedCallsInData(it, scope) }
+                        } else {
+                            resolveAtom(arg, scope, arrowType.types[index])
+                        }
                     }
                     expression.resolved = resolved
                     expression.type = resolved.arrowType().types.last()
@@ -1335,7 +1396,15 @@ class Context private constructor(
                     resolveAtom(lambda, scope)
                     expression.arguments().drop(1).forEach { resolveAtom(it, scope) }
                     val bodyType = lambda.body.type ?: GroundedType.ATOM
-                    expression.type = SeqType(bodyType, lambda.body.position)
+                    // flat-map? FLATTENS: its lambda returns a List<B> and the result is
+                    // List<B>, not List<List<B>> (runtime `simpleFlatMap` splices each
+                    // sub-list's elements into one flat list). So when the body is already a
+                    // Seq, that IS the result type — wrapping it again over-nests the SeqType
+                    // (`Atom**`/`Atom***` for chained flat-maps like `gen`), which drives
+                    // codegen to build a `List[]` and then ArrayStore a bare element into it.
+                    // A non-Seq body (defensive / degenerate) still gets one Seq layer.
+                    expression.type =
+                        if (bodyType is SeqType) bodyType else SeqType(bodyType, lambda.body.position)
                     expression.resolved = flatMapSymbol
                 }
 
@@ -1383,7 +1452,14 @@ class Context private constructor(
                 args.forEach { resolveAtom(it, scope) }
                 if (atom.params.size == args.size) {
                     val paramTypes = atom.params.mapIndexed { index, param ->
-                        param.type ?: args[index].type ?: GroundedType.ATOM
+                        param.type ?: args[index].type?.let { argType ->
+                            // A multivalued argument (SeqType) is ITERATED: the map?/flat-map?
+                            // lift feeds the lambda one element at a time, so the param is
+                            // element-typed — e.g. `(let $e (gen $d) …)` binds $e to each of
+                            // gen's results, not to the whole bag. Typing it as the SeqType
+                            // makes the body treat the element as a List (Symbol→List CCE).
+                            if (argType is SeqType) argType.elementType else argType
+                        } ?: GroundedType.ATOM
                     }
                     // Provisional arrowType so resolveAtom(lambda) stamps the params;
                     // the return slot is refined from the resolved body below.
@@ -1417,9 +1493,12 @@ class Context private constructor(
         var elementType: Atom? = null
         expression.arguments().forEach {
             resolveAtom(it, scope)
-            elementType = unifyType(elementType, it.type!! /* FIXME */)
+            // An element may be an untyped constructor symbol (e.g. a seq-wrapped `nil`
+            // arm of a multivalued `if`) whose type resolveAtom leaves null; treat it as
+            // the generic ATOM element rather than crashing.
+            elementType = unifyType(elementType, it.type ?: GroundedType.ATOM)
         }
-        return SeqType(elementType!!, expression.position)
+        return SeqType(elementType ?: GroundedType.ATOM, expression.position)
     }
 
     private fun unifyType(lhsType: Atom?, rhsType: Atom): Atom {

@@ -28,6 +28,16 @@ object Assertions {
         when (value) {
             is BoundAtom -> normalize(value.atom)
             is Grounded<*> -> value.value
+            // A MeTTa boolean has several surface representations that must compare equal:
+            // a `Grounded<Boolean>` (from a comparison / `and` / `or`), a raw java.lang.Boolean,
+            // and the bare symbols `True`/`False` (e.g. a quoted expected `(True)`, or a symbol
+            // a rule returned). Grounded already collapses to its raw Boolean above; collapse the
+            // symbols the same way so `(assertEqualToResult (< …) (True))` and friends hold.
+            is net.singularity.jetta.compiler.frontend.ir.Symbol -> when (value.name) {
+                "True" -> true
+                "False" -> false
+                else -> value
+            }
             is net.singularity.jetta.compiler.frontend.ir.Variable -> VarKey(value.name)
             // Recurse so nested variables inside an expression are compared by name too
             // (e.g. `(S $n)` vs `(S $n)`). Symbols already compare by name; grounded

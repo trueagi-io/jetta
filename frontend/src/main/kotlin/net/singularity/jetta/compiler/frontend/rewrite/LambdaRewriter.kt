@@ -19,6 +19,21 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {
             is Expression -> rewriteExpression(atom)
+            // Descend into Match branches — a multi-clause function is lowered to a Match, and a
+            // `let` (→ `(\ …)`) inside a clause body lives in a branch. Without this the `\`
+            // survives to the resolver (TODO "atom=\") for any multi-clause / recursive function
+            // that uses `let`. Mirrors LetRewriter, which already recurses through Match.
+            is Match -> Match(
+                branches = atom.branches.map { branch ->
+                    MatchBranch(
+                        cond = branch.cond?.let { rewriteAtom(it) as Expression },
+                        body = rewriteAtom(branch.body),
+                        destructuredBindings = branch.destructuredBindings,
+                    )
+                },
+                returnType = atom.returnType,
+                position = atom.position,
+            )
             else -> atom
         }
 

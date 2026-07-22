@@ -216,7 +216,19 @@ object JettaLambdaMetafactory {
             Long::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Number", "longValue", "()J")
             Double::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Number", "doubleValue", "()D")
             Float::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Number", "floatValue", "()F")
-            Boolean::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Boolean", "booleanValue", "()Z")
+            // A MeTTa boolean flowing into a `Bool`-typed lambda parameter is represented
+            // heterogeneously: the bare symbol True/False, a Grounded<Boolean>, or a raw
+            // java.lang.Boolean (which one depends on which producer stage it came through —
+            // e.g. an `(and …)` conjunct wraps its result in Grounded to fit an Atom-typed
+            // map? stage). A hard CHECKCAST to java/lang/Boolean rejects the first two. Route
+            // through JettaProgram.isTruthy, which accepts all three and yields the primitive Z.
+            Boolean::class.javaPrimitiveType -> mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                "net/singularity/jetta/runtime/JettaProgram",
+                "isTruthy",
+                "(Ljava/lang/Object;)Z",
+                false,
+            )
             Byte::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Number", "byteValue", "()B")
             Short::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Number", "shortValue", "()S")
             Char::class.javaPrimitiveType -> unboxPrimitive(mv, "java/lang/Character", "charValue", "()C")

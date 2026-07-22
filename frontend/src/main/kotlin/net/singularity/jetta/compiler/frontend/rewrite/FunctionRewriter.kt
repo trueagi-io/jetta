@@ -342,19 +342,62 @@ class FunctionRewriter(
 
         fun walk(atom: Atom, bound: Set<String>) {
             if (atom !is Expression) return
-            (atom.atoms.firstOrNull() as? Symbol)?.let { head ->
+            val head = atom.atoms.firstOrNull()
+            // `let`/`let*` introduce variables that are NOT pattern parameters but ARE bound in
+            // the body. Extend `bound` for the appropriate sub-walk so a callee applied to a
+            // let-bound variable — `(let $e (gen $d) … (render $e) …)` — is not falsely seen as
+            // relational (which would wrongly mark it @multivalued). Handles the `(quote $v)`
+            // pattern LHS too (its variable is bound in the body). Runs before LetRewriter, so
+            // `let`/`let*` are still literal here.
+            if (head is Symbol && head.name == "let" && atom.atoms.size == 4) {
+                walk(atom.atoms[2], bound)
+                walk(atom.atoms[3], bound + collectVariableNames(atom.atoms[1]))
+                return
+            }
+            if (head is Symbol && head.name == "let*" && atom.atoms.size == 3) {
+                var b = bound
+                (atom.atoms[1] as? Expression)?.atoms?.forEach { pair ->
+                    if (pair is Expression && pair.atoms.size == 2) {
+                        walk(pair.atoms[1], b)
+                        b = b + collectVariableNames(pair.atoms[0])
+                    }
+                }
+                walk(atom.atoms[2], b)
+                return
+            }
+            (head as? Symbol)?.let { h ->
                 val argsHaveFreeVar = atom.atoms.drop(1).any { arg ->
                     collectVariableNames(arg).any { it !in bound }
                 }
-                if (argsHaveFreeVar) relational.add(head.name)
+                if (argsHaveFreeVar) relational.add(h.name)
             }
             atom.atoms.forEach { walk(it, bound) }
         }
 
-        patterns.forEach { (_, list) ->
-            list.forEach { p -> walk(p.value, collectVariableNames(p.pattern)) }
-        }
-        runs.forEach { walk(it, emptySet()) }
+        // Interprocedural fixpoint. A call site passing a FREE variable seeds its callee
+        // relational (the base case). But relational-ness must then PROPAGATE down the call
+        // chain: once F is known relational, a caller can pass a free var into any of F's
+        // clause-pattern parameters, so those params are themselves possibly-free — walking
+        // F's body with them treated as free flags every callee F applies to a term
+        // containing one. This is what reaches `(croaks $x)` three calls below a top-level
+        // `(green $x)`: green → frog → croaks, each hop widening the free set. Iterate until
+        // the set stops growing (monotone, so it terminates in ≤ |functions| passes).
+        //
+        // Still an over-approximation toward relational (the safe direction — see the doc
+        // above): a relational F's params are ALL treated as free even when some are always
+        // ground, and a function is freed to scalar only when NO caller can pass any of its
+        // args a free var (d/ev/lookup/fib stay scalar — never seeded).
+        do {
+            val before = relational.size
+            patterns.forEach { (name, list) ->
+                list.forEach { p ->
+                    val bound =
+                        if (name in relational) emptySet() else collectVariableNames(p.pattern)
+                    walk(p.value, bound)
+                }
+            }
+            runs.forEach { walk(it, emptySet()) }
+        } while (relational.size > before)
         return relational
     }
 
@@ -465,6 +508,14 @@ class FunctionRewriter(
             }
         })
 
+    // Head symbols that arrive as ordinary IDENTs (not dedicated operator tokens like
+    // `+`/`*`) and must be promoted to their Special form. Aliases map an alternate
+    // surface spelling to a canonical Predefined name — hyperon writes modulo as `%`,
+    // which the lexer sees as an IDENT rather than a token.
+    private val specialAliases = mapOf(
+        "%" to Predefined.MOD
+    )
+
     private val specials = listOf(
         Predefined.DIV,
         Predefined.MOD,
@@ -472,7 +523,7 @@ class FunctionRewriter(
         Predefined.AND,
         Predefined.OR,
         Predefined.XOR
-    )
+    ) + specialAliases.keys
 
     private fun quoteAtom(atom: Atom): Atom =
         Expression(PredefinedAtoms.QUOTE, atom)
@@ -652,6 +703,23 @@ class FunctionRewriter(
             return Expression(Special(Predefined.MAP_), lambda, matchCall)
         }
 
+        // Grounded-operator template, e.g. `(match &kb (, …) (- $y $x))`. `match` substitutes
+        // the bindings into the template — `(- 1.5 0.7)` — but returns it inert; hyperon
+        // evaluates it (→ 0.8). Route to `matchReduce`, which runs each substituted result
+        // through the runtime grounded-op reducer. Quoting is identical to the inert fall-
+        // through below: the `quote` is a compile-time "treat as data" marker, so at runtime
+        // matchReduce's inner `match` still substitutes into `(- $y $x)` before reducing.
+        if (templateIsGroundedOp(template)) {
+            return expression.copy(
+                listOf(
+                    Symbol("matchReduce"),
+                    expression.atoms[1],
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(template)
+                )
+            )
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -660,6 +728,28 @@ class FunctionRewriter(
                 quoteAtom(expression.atoms[3])
             )
         )
+    }
+
+    /** Grounded binary operators whose surface/Predefined spellings a match template may use. */
+    private val groundedOpNames = setOf(
+        "+", "-", "*", "/", "div", "%", "mod", "<", ">", "<=", ">=", "==",
+    )
+
+    /**
+     * Is [atom] a grounded-operator application `(op a b)` — head a Special (`+`/`-`/…) or a
+     * grounded-op Symbol (`div`/`mod`)? Such a match template must be evaluated after binding
+     * substitution (routed to `matchReduce`), unlike inert data templates. Special-headed
+     * arithmetic is invisible to [templateHasReducibleCall] (which only sees Symbol heads), so
+     * this is the sole path that reduces them.
+     */
+    private fun templateIsGroundedOp(atom: Atom): Boolean {
+        if (atom !is Expression || atom.atoms.size != 3) return false
+        val op = when (val h = atom.atoms[0]) {
+            is Special -> h.value
+            is Symbol -> h.name
+            else -> return false
+        }
+        return op in groundedOpNames
     }
 
     /**
@@ -825,7 +915,8 @@ class FunctionRewriter(
     private fun mkSpecialFromSymbol(expression: Expression): Expression {
         val atoms = expression.atoms.mapIndexed { index, atom ->
             if (index == 0) {
-                Special((atom as Symbol).name)
+                val name = (atom as Symbol).name
+                Special(specialAliases[name] ?: name)
             } else {
                 atom
             }

@@ -10,18 +10,30 @@ import net.singularity.jetta.compiler.logger.Logger
 import net.singularity.jetta.runtime.space.Space
 
 object Matcher {
-    private val bindingStack = ThreadLocal.withInitial {
-        ArrayDeque<MutableMap<String, Atom>>().also { it.addLast(mutableMapOf()) }
+    /**
+     * Per-thread binding state, bundled in one holder so the hot path pays a single
+     * `ThreadLocal.get()`. [bound] is the running total of entries across *all* frames,
+     * maintained at every mutation site; `bound == 0` is therefore an O(1) test for
+     * "nothing is bound anywhere" — see [allFramesEmpty]. (It replaces an O(depth) scan
+     * that profiled at ~19% of the synth benchmark: there the binding stack is ~48 frames
+     * deep on average and almost always entirely empty, so the scan walked ~48 empty maps
+     * on every map?/flat-map? materialisation only to conclude "nothing to substitute".)
+     * The frame maps are plain [HashMap]s (not insertion-ordered LinkedHashMaps): no code
+     * depends on frame iteration order, and putAll/alloc are cheaper.
+     */
+    private class Frames {
+        @JvmField val stack = ArrayDeque<MutableMap<String, Atom>>().also { it.addLast(HashMap()) }
+        @JvmField var bound = 0
     }
-    private val depth = ThreadLocal.withInitial { 0 }
+    private val frames = ThreadLocal.withInitial { Frames() }
     private val log = Logger.getLogger(Matcher::class.java)
 
     @JvmStatic
     fun push() {
-        val d = depth.get()
-        depth.set(d + 1)
-        bindingStack.get().addLast(mutableMapOf())
-        log.trace {
+        val f = frames.get()
+        val d = f.stack.size - 1
+        f.stack.addLast(HashMap())
+        if (log.isTraceEnabled) log.trace {
             val caller = try {
                 throw Exception()
             } catch (e: Exception) {
@@ -34,25 +46,31 @@ object Matcher {
 
     @JvmStatic
     fun pop() {
-        val d = depth.get() - 1
-        depth.set(d)
-        val stack = bindingStack.get()
+        val f = frames.get()
+        val stack = f.stack
         val childFrame = stack.removeLast()
-        // Propagate bindings from child to parent so callers can see
-        // bindings produced by callees (e.g., match results).
-        // This is still needed for cases where a captured Variable in a lambda
-        // must resolve to a value bound deep in a callee chain.
-        if (stack.isNotEmpty()) {
-            stack.last().putAll(childFrame)
+        // Propagate bindings from child to parent so callers can see bindings produced by
+        // callees (e.g. match results) — a captured Variable in a lambda must resolve to a
+        // value bound deep in a callee chain. (Never fires in the tracked benchmarks, where
+        // child frames are always empty, but it is load-bearing for BackchainWho-style deep
+        // binding propagation, so it stays.) Keep [bound] in sync: colliding keys merged
+        // into the parent shrink the total, and the discarded child removes its own entries.
+        val childSize = childFrame.size
+        if (childSize != 0 && stack.isNotEmpty()) {
+            val parent = stack.last()
+            val before = parent.size
+            parent.putAll(childFrame)
+            f.bound += parent.size - before
         }
-        log.trace {
+        f.bound -= childSize
+        if (log.isTraceEnabled) log.trace {
             val caller = try {
                 throw Exception()
             } catch (e: Exception) {
                 e.stackTrace.getOrNull(3)
             }
-            val indent = "  ".repeat(d)
-            "|call| ${indent}pop  #$d <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})"
+            val indent = "  ".repeat(stack.size - 1)
+            "|call| ${indent}pop  #${stack.size - 1} <- ${caller ?: "unknown"} (propagated: ${childFrame.keys})"
         }
     }
 
@@ -66,16 +84,88 @@ object Matcher {
      */
     @JvmStatic
     fun clearAll() {
-        bindingStack.get().forEach { it.clear() }
+        val f = frames.get()
+        f.stack.forEach { it.clear() }
+        f.bound = 0
     }
 
+    /**
+     * The current (top) frame. Read-only for callers: every *write* must go through
+     * [setBinding] / [installBindings] / [clearTop] (or [pop]) so the [Frames.bound]
+     * counter stays exact — mutating the returned map directly would desync it and make
+     * [allFramesEmpty] lie.
+     */
     @JvmStatic
-    fun getBindings(): MutableMap<String, Atom> = bindingStack.get().last()
+    fun getBindings(): MutableMap<String, Atom> = frames.get().stack.last()
 
     @JvmStatic
     fun setBinding(name: String, value: Atom) {
-        log.trace { "|bind| $name = $value" }
-        bindingStack.get().last()[name] = value
+        if (log.isTraceEnabled) log.trace { "|bind| $name = $value" }
+        val f = frames.get()
+        if (f.stack.last().put(name, value) == null) f.bound++
+    }
+
+    /** Bulk-install [bindings] into the current (top) frame, keeping [Frames.bound] in sync. */
+    @JvmStatic
+    fun installBindings(bindings: Map<String, Atom>) {
+        if (bindings.isEmpty()) return
+        val f = frames.get()
+        val top = f.stack.last()
+        val before = top.size
+        top.putAll(bindings)
+        f.bound += top.size - before
+    }
+
+    /**
+     * Materialise AND foliate a non-deterministic branch result in a single ThreadLocal read
+     * (the non-det combinators call this once per branch result — a hot path). Two jobs:
+     *  1. Substitute the branch's bound variables into the result (as [resolveDeep] does): a
+     *     plain Atom like `(stop $z)` with `$z` bound becomes `(stop ventilation)`.
+     *  2. FOLIATE the branch's bindings onto the result so they survive to downstream
+     *     map?/flat-map? stages. Each branch runs under its own pushed frame, so the TOP frame
+     *     holds exactly the vars this branch bound (its source [BoundAtom]'s bindings, installed
+     *     at entry, plus anything its callees propagated up into it). Wrapping the result in a
+     *     [BoundAtom] carrying that frame keeps sibling branches isolated: the alternative,
+     *     [pop]'s upward merge, is last-wins and cannot tell two sibling branches apart, so a
+     *     free var shared across a non-deterministic conjunction (e.g. `(And (croaks $x)
+     *     (eat_flies $x))` matching several facts) would collapse to the last branch's binding.
+     *
+     * When nothing is bound anywhere (`bound == 0`, the common case) the value is returned
+     * untouched — identical to the old resolve fast path, so the hot loop pays nothing. A
+     * result that is ALREADY a [BoundAtom] keeps its own bindings, merged OVER the branch
+     * frame so the more specific match bindings win.
+     */
+    @JvmStatic
+    fun foliate(value: Any?): Any? {
+        val f = frames.get()
+        if (value is BoundAtom) {
+            val top = f.stack.last()
+            if (top.isEmpty()) return value
+            val merged = HashMap<String, Atom>(top)
+            merged.putAll(value.bindings)
+            return BoundAtom(value.atom, merged)
+        }
+        if (f.bound == 0) return value // nothing to resolve or foliate (hot path)
+        val top = f.stack.last()
+        if (top.isEmpty()) return if (value is Atom) resolveDeepRec(value) else value
+        // A branch result that is NOT an Atom — a raw boxed primitive (java.lang.Boolean /
+        // Integer / …) produced by a VALUE-typed multivalued branch, e.g. green's identity
+        // `map?` over a Bool, whose lambda returns a java.lang.Boolean. foliate cannot wrap a
+        // non-Atom in a BoundAtom, so this branch's bindings (its own $x) would be lost and
+        // pop's last-wins upward merge would then collapse sibling branches to the last one's
+        // binding ([Sam, Sam] instead of [Fritz, Sam]). Wrap it in a Grounded (an Atom) first
+        // so its bindings foliate like any structural (Symbol/Expression) branch result.
+        val resolved: Atom = if (value is Atom) resolveDeepRec(value) else Grounded(value)
+        return BoundAtom(resolved, HashMap(top))
+    }
+
+    /** Clear only the current (top) frame, keeping [Frames.bound] in sync. */
+    @JvmStatic
+    fun clearTop() {
+        val f = frames.get()
+        val top = f.stack.last()
+        f.bound -= top.size
+        top.clear()
     }
 
     // called only from JeTTa programs
@@ -83,13 +173,13 @@ object Matcher {
     @JvmStatic
     fun resolveBinding(atom: Atom): Atom {
         val target = if (atom is BoundAtom) {
-            getBindings().putAll(atom.bindings)
+            installBindings(atom.bindings)
             atom.atom
         } else atom
 
         if (target is Variable) {
             // Search from top of stack downward
-            val stack = bindingStack.get()
+            val stack = frames.get().stack
             for (i in stack.indices.reversed()) {
                 val bound = stack.elementAt(i)[target.name]
                 if (bound != null) return bound
@@ -105,10 +195,25 @@ object Matcher {
      * materialise a non-deterministic branch's result against the bindings its branch
      * installed — [resolveBinding] alone only handles a top-level variable.
      */
-    fun resolveDeep(atom: Atom): Atom = when (val resolved = resolveBinding(atom)) {
-        is Expression -> Expression(resolved.atoms.map { resolveDeep(it) }, position = resolved.position)
+    fun resolveDeep(atom: Atom): Atom {
+        // Fast path: if nothing is bound anywhere on the stack, no Variable can
+        // resolve and there is nothing to substitute, so the full recursive tree
+        // rebuild below is pure waste (it reallocates an identical Expression at
+        // every node). This is the dominant cost of map?/flat-map? materialisation
+        // when branches carry no bindings. A top-level BoundAtom still installs its
+        // own bindings via resolveBinding, so exclude it from the shortcut; nested
+        // BoundAtoms do not occur (they only ever wrap a top-level match result).
+        if (atom !is BoundAtom && allFramesEmpty()) return atom
+        return resolveDeepRec(atom)
+    }
+
+    private fun resolveDeepRec(atom: Atom): Atom = when (val resolved = resolveBinding(atom)) {
+        is Expression -> Expression(resolved.atoms.map { resolveDeepRec(it) }, position = resolved.position)
         else -> resolved
     }
+
+    // O(1): the invariant `bound == 0` means every frame on the stack is empty. See [Frames].
+    private fun allFramesEmpty(): Boolean = frames.get().bound == 0
 
     fun match(space: Space, src: Expression, dst: Atom): List<Atom> =
         space.match(src, dst)
@@ -134,7 +239,13 @@ object Matcher {
             is Expression -> {
                 if (candidate !is Expression) return false
                 if (candidate.atoms.size != pattern.atoms.size) return false
-                pattern.atoms.zip(candidate.atoms).all { (p, c) -> structuralMatch(c, p) }
+                // Indexed loop, not `zip().all{}`: this is a hot recursive equality check
+                // (deduce's dispatch guards call it per node), and zip allocates a List<Pair>
+                // + iterator at every expression level. Profiled at ~17% of a backchain query.
+                for (i in pattern.atoms.indices) {
+                    if (!structuralMatch(candidate.atoms[i], pattern.atoms[i])) return false
+                }
+                true
             }
             else -> candidate == pattern
         }

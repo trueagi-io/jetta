@@ -6,7 +6,9 @@ import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.runtime.functions.GroundedOps
 import net.singularity.jetta.runtime.functions.JettaFunction
+import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
@@ -38,6 +40,13 @@ open class JettaProgram {
          * pipeline runs a single program per JVM.
          */
         private val tokens = java.util.concurrent.ConcurrentHashMap<String, Atom>()
+
+        /**
+         * Per-target-space set of module names already imported into it, so a repeated
+         * `(import! &space M)` is idempotent (hyperon loads each module into a given space
+         * once). Keyed by the resolved space name; reset per program in [init].
+         */
+        private val importedModules = java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
 
         @JvmStatic
         fun setDataDir(path: Path) {
@@ -77,8 +86,9 @@ open class JettaProgram {
 
         private fun initInternal(programName: String, expectedAtomCount: Int?, expectedContentHash: String?) {
             SpaceRegistry.reset()
-            Matcher.getBindings().clear()
+            Matcher.clearTop()
             tokens.clear()
+            importedModules.clear()
             currentSpaceName = programName
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
@@ -96,6 +106,18 @@ open class JettaProgram {
                 SpaceRegistry.register(SpaceId.FromModule(programName), env.space)
                 return
             }
+
+            // Cross-JVM (AOT) variable-head dispatch: load this program's linker table so
+            // JettaCallSite can resolve `($f x)` (with `$f` naming a user function) by linking
+            // against the compiled method. Missing `.jctx` is a no-op — a program with no
+            // linkable functions dispatches nothing dynamically. Done here (not gated on the
+            // manifest) because a program's `=` rules live as compiled functions regardless of
+            // whether it also has space facts.
+            JettaLinkRegistry.load(
+                dataDir,
+                programName,
+                Thread.currentThread().contextClassLoader ?: JettaProgram::class.java.classLoader,
+            )
 
             val manifestFile = dataDir.resolve("$programName.manifest.json")
             if (!manifestFile.exists()) {
@@ -249,6 +271,81 @@ open class JettaProgram {
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
 
         /**
+         * `import!` — runtime, order-sensitive module import (hyperon semantics).
+         *
+         * `(import! &space M)` copies every atom of module `M`'s space into the space named
+         * `&space`, AT THE POINT OF EXECUTION. Unlike a compile-time merge this respects
+         * program order: `(match &self …)` before an `(import! &self M)` does not see M's
+         * atoms, and after it does — which is exactly what c2_spaces asserts.
+         *
+         * The module's space is loaded at [init] (from the manifest's `loadModules`) under
+         * `SpaceId.FromModule(M)`; if it is missing there (e.g. it was reached only through a
+         * non-`&self` import), it is loaded on demand from `<M>.jtsf`. Import is idempotent
+         * per (space, module): re-importing the same module into the same space is a no-op,
+         * matching hyperon's load-once-per-space rule (`c2_spaces` / `f1_imports` re-imports).
+         *
+         * [space] is `Object` (a baked name String for `&self`/`&kb`, or a Symbol reaching
+         * here indirectly), [module] an `Atom` (the bare module Symbol, unreduced). Returns
+         * the unit atom `()`.
+         */
+        @JvmStatic
+        fun `import!`(space: Any?, module: Atom): Atom {
+            val spaceName = resolveSpaceName(space)
+            val moduleName = when (val m = if (module is BoundAtom) module.atom else module) {
+                is Symbol -> m.name
+                is Grounded<*> -> m.value.toString()
+                else -> m.toString()
+            }
+            val done = importedModules.getOrPut(spaceName) { java.util.concurrent.ConcurrentHashMap.newKeySet() }
+            if (!done.add(moduleName)) return UNIT_ATOM
+
+            val source = SpaceRegistry.get(SpaceId.FromModule(moduleName))
+                ?: runCatching { SpaceDirectorySerializer.load(dataDir, moduleName) }.getOrNull()
+                ?: return UNIT_ATOM
+            SpaceRegistry.register(SpaceId.FromModule(moduleName), source)
+
+            val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            source.getAtoms().forEach { atom ->
+                target.add(atom as? Expression ?: Expression(listOf(atom)))
+            }
+            return UNIT_ATOM
+        }
+
+        /**
+         * `matchReduce` — like [match], but each result is passed through [reduceGrounded].
+         * Used when the match TEMPLATE is a grounded-operator expression, e.g.
+         * `(match &kb (, (Venus orbit $x au) (Mars orbit $y au)) (- $y $x))`: match substitutes
+         * the bindings to `(- 1.5 0.7)` but returns it inert; hyperon evaluates it (→ 0.8). The
+         * rewriter routes such templates here instead of to plain `match`.
+         */
+        @JvmStatic
+        fun matchReduce(space: Any?, src: Atom, dst: Atom): List<Atom> =
+            match(space, src, dst).map { reduceGrounded(it) }
+
+        /**
+         * Reduce a fully-substituted grounded-operator expression to its value. Recursively
+         * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
+         * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —
+         * so no static numeric type is needed (the values arrive as `Grounded` from the match
+         * bindings). A non-grounded-op head, wrong arity, or a non-numeric operand leaves the
+         * atom unchanged (inert), matching hyperon's "unreduced unless computable" rule.
+         */
+        private fun reduceGrounded(atom: Atom): Atom {
+            val inner = if (atom is BoundAtom) atom.atom else atom
+            if (inner !is Expression || inner.atoms.size != 3) return atom
+            val op = when (val h = inner.atoms[0]) {
+                is Symbol -> h.name
+                is net.singularity.jetta.compiler.frontend.ir.Special -> h.value
+                else -> return atom
+            }
+            val x = reduceGrounded(inner.atoms[1])
+            val y = reduceGrounded(inner.atoms[2])
+            // apply returns null when [op] is not a grounded operator OR an operand is not a
+            // number — both mean "leave inert" here, so a single null check covers both.
+            return GroundedOps.apply(op, x, y) ?: atom
+        }
+
+        /**
          * `is-var` — True when [atom] is syntactically a variable (an unbound `$x`). Its
          * argument is unreduced (Atom param), so a variable arrives as a [Variable] rather
          * than its binding. Returns the boolean symbols hyperon uses.
@@ -335,7 +432,7 @@ open class JettaProgram {
         ): List<Atom> =
             SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).match(src, dst).flatMap { substituted ->
                 val unwrapped = if (substituted is BoundAtom) {
-                    Matcher.getBindings().putAll(substituted.bindings)
+                    Matcher.installBindings(substituted.bindings)
                     substituted.atom
                 } else substituted
                 @Suppress("UNCHECKED_CAST")

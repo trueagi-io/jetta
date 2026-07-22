@@ -3,6 +3,8 @@ package net.singularity.jetta.runtime
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Special
+import net.singularity.jetta.compiler.frontend.ir.Symbol
 
 /**
  * Runtime support for MeTTa's non-determinism primitives `superpose` and `collapse`
@@ -22,6 +24,48 @@ object Convert {
             is Expression -> t.atoms
             else -> listOf(t)
         }
+
+    /**
+     * `empty` — the empty non-deterministic result (hyperon stdlib): zero branches, i.e. an
+     * empty bag. Used to PRUNE a branch — `(if (> $d 0) … (empty))` contributes nothing at the
+     * base case, so a `flat-map?`/`map?` over it drops that alternative entirely (rather than
+     * carrying an inert `(empty)` datum forward). Equivalent to `(superpose ())`.
+     */
+    @JvmStatic
+    fun empty(): List<Atom> = emptyList()
+
+    /**
+     * `unique` — a non-determinism barrier that removes DUPLICATE results, keeping the distinct
+     * ones (still a multivalued bag). Consumes the whole bag of its argument (like [collapse] /
+     * [once]) — arriving as a [List] when the argument is multivalued, a bare [Atom] otherwise —
+     * and dedupes by structural [Atom] equality, preserving first-seen order.
+     */
+    /**
+     * `unquote` — strip ONE `quote` layer: `(quote X) → X`. The runtime half of a Form-2
+     * pattern-`let` `(let (quote $v) VAL BODY)`, which binds `$v` to the CONTENT of VAL's quote
+     * (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`). A value that is not a
+     * `(quote X)` is returned unchanged — the pattern simply didn't match a quote wrapper.
+     */
+    @JvmStatic
+    fun unquote(value: Any?): Atom {
+        val a = (if (value is BoundAtom) value.atom else value) as Atom
+        return if (a is Expression && a.atoms.size == 2 && isQuoteHead(a.atoms[0])) a.atoms[1] else a
+    }
+
+    private fun isQuoteHead(head: Atom): Boolean =
+        (head as? Symbol)?.name == "quote" || (head as? Special)?.value == "quote"
+
+    @JvmStatic
+    fun unique(value: Any?): List<Atom> {
+        val bag = when (value) {
+            null -> return emptyList()
+            is List<*> -> value
+            else -> listOf(value)
+        }
+        val distinct = LinkedHashSet<Atom>()
+        bag.forEach { distinct.add((if (it is BoundAtom) it.atom else it) as Atom) }
+        return distinct.toList()
+    }
 
     /**
      * `collapse` — convert a nondeterministic result into a tuple.
