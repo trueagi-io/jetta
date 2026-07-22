@@ -154,7 +154,7 @@ class Generator(
         "match", "matchEval", "println", "print", "random", "seed", "generate",
         "superpose", "collapse", "eval", "assertEqual", "assertEqualToResult",
         "add-atom!", "remove-atom!", "new-space", "bind!", "get-state", "new-state",
-        "change-state!", "get-type", "import!", "pragma!", "get-doc", "help!",
+        "change-state!", "get-type", "import!", "pragma!", "get-doc", "help!", "letMatch",
     )
 
     // Types we can use as a hashable memo key / box as a cached value.

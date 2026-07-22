@@ -240,6 +240,23 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `get-type` — infer the MeTTa type of its argument. The argument is ATOM (unreduced) so an
+    // application `(+ 5 "4")` reaches the engine as an inert Expression and is TYPE-checked rather
+    // than evaluated. Returns a bag (`List`): a singleton with the type, or EMPTY when ill-typed
+    // (the `()` empty-set result the suite asserts). Modelled on `get-atoms` — `SeqType(ATOM)`
+    // return + multivalued so the List composes as a result bag. Impure (reads the `:` facts in
+    // the space), so excluded from memoization in Generator.impureGrounded.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-type",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     // `get-doc` / `help!` — documentation. The argument is ATOM (unreduced) so a documented
     // symbol arrives as its Symbol and an application `(f a b)` as an inert Expression; get-doc
     // queries the `@doc`/`:` facts in `&self` and returns a `@doc-formal` structure (or `Empty`),
@@ -374,6 +391,22 @@ fun registerExternals(context: Context) {
                 descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Expression;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;"
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)), SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `letMatch` — the runtime of MeTTa's Form-2 pattern-`let` (`(let (List $t) VALUE BODY)`),
+    // emitted by LetRewriter. The pattern (arg 0) is ATOM so it arrives as unreduced data
+    // (`$t` a Variable); the value (arg 1) is ANY so its RHS is evaluated (e.g. `get-type`); the
+    // body (arg 2) is a lambda over the pattern's variables. Multivalued (`SeqType`) so it
+    // composes with the surrounding result-bag semantics. See JettaProgram.letMatch.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "letMatch",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ANY, ArrowType(GroundedType.ATOM, GroundedType.ATOM), SeqType(GroundedType.ATOM)),
             true
         )
     )

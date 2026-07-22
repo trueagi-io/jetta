@@ -12,6 +12,7 @@ import net.singularity.jetta.runtime.functions.GroundedOps
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
+import net.singularity.jetta.runtime.functions.TypeEngine
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceId
@@ -508,6 +509,69 @@ open class JettaProgram {
                 if (ret != null) kotlin.io.println("Return: ${ret.atoms.getOrNull(2)} ${(ret.atoms.getOrNull(3) as? Expression)?.atoms?.getOrNull(2)}")
             }
             return UNIT_ATOM
+        }
+
+        /**
+         * `get-type <atom>` — the inferred MeTTa type(s) of [atom]. Returns a bag (`List`): a
+         * singleton holding the type when well-typed, EMPTY when ill-typed (the `()` empty-set
+         * the reference suite asserts via `assertEqualToResult … ()`). The argument is unreduced
+         * (ATOM meta-type) so `(+ 5 "4")` is type-checked as an inert expression rather than
+         * evaluated. Single-valued for now — a symbol carrying several `:` types (non-deterministic
+         * get-type) is a later phase; this takes the first declaration. See [TypeEngine].
+         */
+        @JvmStatic
+        fun `get-type`(atom: Atom): List<Atom> {
+            val t = TypeEngine.inferType(atom, selfAtoms())
+            return if (t == null) emptyList() else listOf(t)
+        }
+
+        /**
+         * `letMatch <pattern> <value> <body>` — the runtime of MeTTa's Form-2 pattern-`let`
+         * (`(let (List $t) VALUE BODY)`), lowered by `LetRewriter`. [pattern] is the LHS
+         * unreduced data (`(List $t)`), [value] the evaluated RHS (a result bag `List`, or a
+         * single result), and [body] a lambda over the pattern's variables in document order.
+         *
+         * For each result, the pattern is unified against it ([TypeEngine.unify]); on success the
+         * pattern variables' bindings are read back ([TypeEngine.resolve]) and passed positionally
+         * to [body], whose results are spliced into the output bag. A result that fails to unify
+         * contributes nothing (an empty branch, as in `match`). Multivalued (returns a `List`) so
+         * it composes with `assertEqual`'s bag semantics.
+         */
+        @JvmStatic
+        fun letMatch(pattern: Atom, value: Any?, body: JettaFunction): List<Atom> {
+            val pat = if (pattern is BoundAtom) pattern.atom else pattern
+            val varNames = LinkedHashSet<String>()
+            collectVarNames(pat, varNames)
+            val vars = varNames.toList()
+
+            val results: List<Any?> = when (val v = if (value is BoundAtom) value.atom else value) {
+                is List<*> -> v
+                null -> emptyList()
+                else -> listOf(v)
+            }
+            val out = ArrayList<Atom>()
+            for (raw in results) {
+                val elem = (if (raw is BoundAtom) raw.atom else raw) as? Atom ?: continue
+                val s = HashMap<String, Atom>()
+                if (!TypeEngine.unify(pat, elem, s)) continue
+                val args = Array<Any?>(vars.size) { i -> TypeEngine.resolve(Variable(vars[i]), s) }
+                when (val res = body.apply(args)) {
+                    is List<*> -> res.forEach { it?.let { a -> out.add(a as Atom) } }
+                    is Atom -> out.add(res)
+                    null -> {}
+                    else -> out.add(Grounded(res))
+                }
+            }
+            return out
+        }
+
+        /** Collect the variable names in [a] in document order (deduplicated by [out]'s type). */
+        private fun collectVarNames(a: Atom, out: MutableSet<String>) {
+            when (a) {
+                is Variable -> out.add(a.name)
+                is Expression -> a.atoms.forEach { collectVarNames(it, out) }
+                else -> {}
+            }
         }
 
         /**

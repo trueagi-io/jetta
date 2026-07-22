@@ -180,6 +180,25 @@ open class FunctionGenerator(
                 }
             }
 
+            // A bare `Special` operator reaching a value/data position — e.g. `+` as the ATOM
+            // argument of `(get-type +)`, quoted as data rather than applied. Materialize the
+            // runtime `Special` object, mirroring the `Special` case in `generateQuote`.
+            is Special -> {
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Special::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                mv.visitLdcInsn(atom.value)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                generateLoadInt(mv, 2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Special::class.java),
+                    "<init>",
+                    "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
+            }
+
             is ArrowType -> {
                 // Same surface-form reification as in `generateQuote` — an arrow
                 // type appearing as a direct value (e.g. RHS of `assertEqual`)
@@ -1117,12 +1136,24 @@ open class FunctionGenerator(
                 // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
                 generateLoadBoolean(arg.name == "True")
             } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
-                // A grounded VALUE (Int/Double/String/…) passed to an Atom-typed parameter
-                // must be wrapped in a Grounded: a bare box (Integer) is not an Atom subtype,
-                // so the verifier rejects `Integer` where `Atom` is expected. Routine in
-                // higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load the
-                // raw value, box it, wrap in Grounded (which IS an Atom).
-                generateGroundedValueArg(mv, arg, argType)
+                if (arg is Expression) {
+                    // An arithmetic/grounded APPLICATION reaching an Atom-typed parameter is
+                    // DATA, not a computation — the ATOM meta-type suppresses reduction (hyperon).
+                    // Quote it inert rather than evaluating it, even though its resolved type is a
+                    // grounded value. This is what lets `(get-type (+ 5 "4"))` type-check the
+                    // ill-typed expression (→ `()`) instead of evaluating `5 + "4"` and crashing.
+                    // (A reducible user-function application — e.g. `(get-type (drop …))` — is not
+                    // grounded-value-typed and so still reduces here; suppressing THAT needs a
+                    // per-builtin meta-type distinction, out of scope for get-type's D0/D1.)
+                    generateQuote(mv, arg)
+                } else {
+                    // A grounded VALUE LITERAL (Int/Double/String/…) passed to an Atom-typed
+                    // parameter must be wrapped in a Grounded: a bare box (Integer) is not an Atom
+                    // subtype, so the verifier rejects `Integer` where `Atom` is expected. Routine
+                    // in higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load
+                    // the raw value, box it, wrap in Grounded (which IS an Atom).
+                    generateGroundedValueArg(mv, arg, argType)
+                }
             } else {
                 generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
             }
