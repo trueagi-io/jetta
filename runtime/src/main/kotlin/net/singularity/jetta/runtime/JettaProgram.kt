@@ -4,6 +4,8 @@ import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
+import net.singularity.jetta.compiler.frontend.ir.Predefined
+import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.GroundedOps
@@ -355,6 +357,160 @@ open class JettaProgram {
             if ((if (atom is BoundAtom) atom.atom else atom) is Variable) Symbol("True") else Symbol("False")
 
         /**
+         * `car-atom` — the first element of a non-empty expression, e.g.
+         * `(car-atom (a b c))` → `a`. An empty expression or a non-expression argument is an
+         * error (hyperon returns an `(Error … )` atom), which we surface the same way.
+         */
+        @JvmStatic
+        fun `car-atom`(atom: Atom): Atom {
+            val e = if (atom is BoundAtom) atom.atom else atom
+            return if (e is Expression && e.atoms.isNotEmpty()) e.atoms[0]
+            else Expression(Symbol("Error"), atom, Symbol("car-atom expects a non-empty expression"))
+        }
+
+        /**
+         * `cdr-atom` — the tail (all but the first element) of a non-empty expression, e.g.
+         * `(cdr-atom (a b c))` → `(b c)`. Empty / non-expression argument is an error, as above.
+         */
+        @JvmStatic
+        fun `cdr-atom`(atom: Atom): Atom {
+            val e = if (atom is BoundAtom) atom.atom else atom
+            return if (e is Expression && e.atoms.isNotEmpty()) Expression(atoms = e.atoms.drop(1))
+            else Expression(Symbol("Error"), atom, Symbol("cdr-atom expects a non-empty expression"))
+        }
+
+        // ---- Documentation: get-doc / help! ------------------------------------------------
+        // `@doc` and `:` forms reach the running "self" space as ordinary facts (see
+        // FunctionRewriter's TYPE/ANNOTATION branches). get-doc queries them and assembles the
+        // `@doc-formal` structure hyperon's reference suite expects; help! prints it.
+
+        private val UNDEF = Symbol("%Undefined%")
+        private val EMPTY = Symbol("Empty")
+
+        /** The atoms of the currently-running program's own space (`&self`). */
+        private fun selfAtoms(): List<Atom> =
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+
+        /** `(@ tag …)` — an annotation Expression whose tag Symbol is [tag]. */
+        private fun isAnn(a: Atom, tag: String): Boolean =
+            a is Expression && a.atoms.size >= 2 &&
+                (a.atoms[0] as? Special)?.value == Predefined.ANNOTATION &&
+                (a.atoms[1] as? Symbol)?.name == tag
+
+        /** `(: subject T)` — a type fact declaring the type of [subject]. */
+        private fun isTypeFact(a: Atom, subject: Atom): Boolean =
+            a is Expression && a.atoms.size >= 3 &&
+                (a.atoms[0] as? Special)?.value == Predefined.TYPE &&
+                a.atoms[1] == subject
+
+        /** Build `(@ tag rest…)`. */
+        private fun ann(tag: String, vararg rest: Atom): Expression =
+            Expression(atoms = listOf(Special(Predefined.ANNOTATION), Symbol(tag)) + rest)
+
+        /**
+         * `get-doc <atom>` — return the `@doc-formal` documentation structure for [atom], or the
+         * symbol `Empty` if it is undocumented. The argument is unreduced (ATOM meta-type) so a
+         * documented symbol arrives as its Symbol and an application `(f a b)` as an inert
+         * Expression (which never has a matching `@doc`, hence `Empty`).
+         *
+         * `@kind` is `function` when the `@doc` body carries an `@params` clause, else `atom`.
+         * Type slots come from the `:` fact for the subject; when there is none they are the
+         * symbol `%Undefined%`.
+         */
+        @JvmStatic
+        fun `get-doc`(atom: Atom): Atom {
+            val subject = if (atom is BoundAtom) atom.atom else atom
+            val atoms = selfAtoms()
+            val doc = atoms.firstOrNull {
+                isAnn(it, "doc") && (it as Expression).atoms.getOrNull(2) == subject
+            } as? Expression ?: return EMPTY
+            val body = doc.atoms.drop(3)
+            val declType: Atom? = (atoms.firstOrNull { isTypeFact(it, subject) } as? Expression)
+                ?.atoms?.getOrNull(2)
+            return if (body.any { isAnn(it, "params") }) buildFunctionDoc(subject, declType, body)
+            else buildAtomDoc(subject, declType, body)
+        }
+
+        /**
+         * Function-kind doc. Splits an arrow `(-> A … R)` from the `:` fact into per-parameter
+         * arg types + a return type; when no arrow type is known every slot is `%Undefined%`.
+         * The `@desc` clause and each `@param`/`@return` description string are reused verbatim
+         * from the input so structural (`Grounded<String>`) equality holds.
+         */
+        private fun buildFunctionDoc(item: Atom, declType: Atom?, body: List<Atom>): Atom {
+            val arrow = declType as? Expression
+            val isArrow = arrow != null && (arrow.atoms.getOrNull(0) as? Special)?.value == Predefined.ARROW
+            val argTypes: List<Atom> = if (isArrow) arrow!!.atoms.subList(1, arrow.atoms.size - 1) else emptyList()
+            val retType: Atom = if (isArrow) arrow!!.atoms.last() else UNDEF
+
+            val descClause = body.firstOrNull { isAnn(it, "desc") }
+            val inputParams = ((body.firstOrNull { isAnn(it, "params") } as? Expression)
+                ?.atoms?.getOrNull(2) as? Expression)?.atoms ?: emptyList()
+            val outParams = inputParams.mapIndexed { i, p ->
+                val pdesc = (p as? Expression)?.atoms?.getOrNull(2) ?: UNDEF
+                ann("param", ann("type", if (isArrow) (argTypes.getOrNull(i) ?: UNDEF) else UNDEF), ann("desc", pdesc))
+            }
+            val rd = (body.firstOrNull { isAnn(it, "return") } as? Expression)?.atoms?.getOrNull(2) ?: UNDEF
+
+            val slots = mutableListOf<Atom>()
+            slots += ann("item", item)
+            slots += ann("kind", Symbol("function"))
+            slots += ann("type", declType ?: UNDEF)
+            if (descClause != null) slots += descClause
+            slots += ann("params", Expression(atoms = outParams))
+            slots += ann("return", ann("type", retType), ann("desc", rd))
+            return Expression(atoms = listOf(Special(Predefined.ANNOTATION), Symbol("doc-formal")) + slots)
+        }
+
+        /** Atom-kind doc: `(@ doc-formal (@ item X) (@ kind atom) (@ type T) <@desc from body>)`. */
+        private fun buildAtomDoc(item: Atom, declType: Atom?, body: List<Atom>): Atom {
+            val slots = mutableListOf<Atom>()
+            slots += ann("item", item)
+            slots += ann("kind", Symbol("atom"))
+            slots += ann("type", declType ?: UNDEF)
+            body.firstOrNull { isAnn(it, "desc") }?.let { slots += it }
+            return Expression(atoms = listOf(Special(Predefined.ANNOTATION), Symbol("doc-formal")) + slots)
+        }
+
+        /**
+         * `help! <atom>` — print [atom]'s documentation in a human-readable form. The output is
+         * not asserted by the reference suite, so a minimal formatter suffices; it must simply
+         * run without crashing (including on undocumented atoms). Returns the unit atom.
+         */
+        @JvmStatic
+        fun `help!`(atom: Atom): Atom {
+            val subject = if (atom is BoundAtom) atom.atom else atom
+            val doc = `get-doc`(subject)
+            if (doc == EMPTY) {
+                kotlin.io.println("Atom $subject: %Undefined% No documentation")
+                return UNIT_ATOM
+            }
+            val slots = (doc as Expression).atoms.drop(2)
+            fun slot(tag: String): Atom? =
+                (slots.firstOrNull { isAnn(it, tag) } as? Expression)?.atoms?.getOrNull(2)
+            val kind = (slot("kind") as? Symbol)?.name ?: "atom"
+            val type = slot("type")
+            val desc = slot("desc")
+            val header = if (kind == "function") "Function" else "Atom"
+            kotlin.io.println("$header $subject: $type $desc")
+            if (kind == "function") {
+                val params = (slot("params") as? Expression)?.atoms ?: emptyList()
+                if (params.isNotEmpty()) {
+                    kotlin.io.println("Parameters:")
+                    params.forEach { p ->
+                        val pe = p as? Expression
+                        val pType = (pe?.atoms?.getOrNull(2) as? Expression)?.atoms?.getOrNull(2)
+                        val pDesc = (pe?.atoms?.getOrNull(3) as? Expression)?.atoms?.getOrNull(2)
+                        kotlin.io.println("  $pType $pDesc")
+                    }
+                }
+                val ret = slots.firstOrNull { isAnn(it, "return") } as? Expression
+                if (ret != null) kotlin.io.println("Return: ${ret.atoms.getOrNull(2)} ${(ret.atoms.getOrNull(3) as? Expression)?.atoms?.getOrNull(2)}")
+            }
+            return UNIT_ATOM
+        }
+
+        /**
          * Truthiness of a reduced condition value used where a boolean is required — a
          * predicate call or nested `if` in a condition position (`(if (is-var $x) …)`).
          * hyperon's booleans are the symbols `True`/`False`; a grounded `Boolean` is also
@@ -408,15 +564,33 @@ open class JettaProgram {
 
         /** Resolve a state token/atom to its [StateCell]: a bound Symbol via [tokens], or a state atom directly. */
         private fun cellOf(token: Atom): StateCell? {
-            val resolved = when (token) {
-                is Symbol -> tokens[token.name] ?: token
-                is BoundAtom -> token.atom
-                else -> token
+            // Widen to Any: a `&`-prefixed token is lowered to its bare String name (the
+            // space-reference convention in codegen), so the runtime value can be a String even
+            // though the parameter is typed Atom — and `is String` is not expressible against a
+            // statically-Atom subject.
+            val resolved: Any? = when (val t: Any = token) {
+                is Symbol -> tokens[t.name] ?: t
+                is BoundAtom -> t.atom
+                // A state token bound via `bind!` is registered under that same String name
+                // (bind! keys by `token.toString()`), so resolve it through the registry rather
+                // than failing to a non-reduced state.
+                is String -> tokens[t]
+                else -> t
             }
             return ((resolved as? Grounded<*>)?.value as? StateCell)
         }
 
-        private fun nonReducedState(op: String, token: Atom): Atom = Expression(listOf(Symbol(op), token))
+        private fun nonReducedState(op: String, token: Any?): Atom {
+            // `token` may be a bare String (a `&`-name that resolved to no state cell). Storing a
+            // non-Atom into the Expression's Atom[] throws ArrayStoreException, so make it an
+            // Atom: a String is a symbol name, anything else is wrapped grounded.
+            val tokenAtom: Atom = when (token) {
+                is Atom -> token
+                is String -> Symbol(token)
+                else -> Grounded(token)
+            }
+            return Expression(listOf(Symbol(op), tokenAtom))
+        }
 
         /**
          * Like [match], but each result is fed through [templateFn] for nested evaluation.

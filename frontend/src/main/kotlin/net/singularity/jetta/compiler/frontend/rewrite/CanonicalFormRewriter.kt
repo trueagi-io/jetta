@@ -238,12 +238,22 @@ class CanonicalFormRewriter(
         val compoundLifts = mutableListOf<Triple<Int, Atom, Atom?>>()
         fun rewriteOrLift(atom: Atom): Atom {
             multivaluedCalls[atom.id]?.let { return mkVariable(it, expression.position) }
+            // Lift a non-deterministic ARGUMENT out of this call and apply the call per
+            // element of the argument's result bag. Two shapes qualify:
+            //  • a multivalued-head COMPOUND, e.g. `(And (prevents …) (makes …))` — the head
+            //    is itself multivalued; the parent must run over each result (b4).
+            //  • a SCALAR-headed argument that is multivalued by COMPOSITION, e.g.
+            //    `(s-tv (TV $a))` where `TV` is multivalued — rewriteAtom turns it into a
+            //    `map?`/bag, so a scalar consumer like `(min …)`/`(* …)` must map over it
+            //    instead of receiving the whole List as one argument (c3's ArrayList→Grounded
+            //    ClassCastException). Both are already flagged in `multivaluedAtoms`
+            //    (isNonDeterministic); a registered leaf call is handled above via
+            //    `multivaluedCalls`, so it never reaches here — no double lift.
             if (!isBarrierParent
                 && atom is Expression
                 && atom.isNonDeterministic()
                 && atom.atoms.isNotEmpty()
                 && atom.atoms[0] is Symbol
-                && isMultivaluedHead((atom.atoms[0] as Symbol).name)
             ) {
                 val v = variableCount++
                 compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
@@ -270,6 +280,20 @@ class CanonicalFormRewriter(
             atoms = expression.atoms.map { rewriteOrLift(it) },
             position = expression.position
         )
+        // Whether the (substituted) body itself yields a bag — a call to a multivalued user
+        // function, or an applied lambda (a `let` body) whose own body is non-deterministic.
+        // When it does, even the innermost lift must FLAT_MAP_ (flatten List<List>); when the
+        // body is a single value (a scalar op like `min`/`*`/`s-tv`), the innermost lift is
+        // MAP_ (collect one value per element). Consumed both by the compound-lift loop below
+        // and by the `replacement`/createMaps path further down.
+        val bodyCallsMultivalued = body is Expression && body.atoms.isNotEmpty() && when (val h = body.atoms[0]) {
+            // The body is a call to a multivalued user function …
+            is Symbol -> context.definedFunctions[h.name]?.func?.isMultivalued() == true
+            // … or an APPLIED lambda (a `let` body) whose own body yields a bag — the
+            // application returns a List, so the wrap must flatten, not nest (List<List>).
+            is Lambda -> h.body.isNonDeterministic()
+            else -> false
+        }
         // Apply compound-argument lifts INNERMOST: the compound (e.g. `(And $v1 $v2)`)
         // and the enclosing call over it must sit where the compound's leaf-call
         // variables are bound, so a variable bound inside the compound (`$z` from the
@@ -278,12 +302,17 @@ class CanonicalFormRewriter(
         // (prevents, makes) — bubbled to THIS scope in collection — then wrap OUTSIDE
         // via createMaps, binding $v1/$v2 the compound source references.
         var inner: Atom = body
-        for ((v, source, type) in compoundLifts) {
+        compoundLifts.forEachIndexed { idx, (v, source, type) ->
+            // The innermost wrap (idx == 0) MAP_s when the body is a single value and
+            // FLAT_MAP_s when it is a bag; every outer wrap flat-maps (`inner` is now a
+            // List). A scalar consumer over multiple multivalued args thus becomes a
+            // cartesian product: `flat-map?(\$b. map?(\$a. (min $a $b), A), B)`.
+            val op = if (idx == 0 && !bodyCallsMultivalued) PredefinedAtoms.MAP_ else PredefinedAtoms.FLAT_MAP_
             inner = Expression(
-                PredefinedAtoms.FLAT_MAP_,
+                op,
                 Lambda(
                     listOf(mkVariable(v, expression.position)),
-                    flatMapLambdaTypeFor(type),
+                    liftLambdaType(op, type),
                     inner,
                     position = expression.position
                 ),
@@ -303,14 +332,6 @@ class CanonicalFormRewriter(
             // Innermost op: if `inner` yields a List (a compound lift, or the body
             // calls a multivalued function), the innermost wrap must FLAT_MAP_ so its
             // results are flattened rather than nested.
-            val bodyCallsMultivalued = body is Expression && body.atoms.isNotEmpty() && when (val h = body.atoms[0]) {
-                // The body is a call to a multivalued user function …
-                is Symbol -> context.definedFunctions[h.name]?.func?.isMultivalued() == true
-                // … or an APPLIED lambda (a `let` body) whose own body yields a bag — the
-                // application returns a List, so the wrap must flatten, not nest (List<List>).
-                is Lambda -> h.body.isNonDeterministic()
-                else -> false
-            }
             val innermostOp = if (compoundLifts.isNotEmpty() || bodyCallsMultivalued)
                 PredefinedAtoms.FLAT_MAP_ else PredefinedAtoms.MAP_
             // Reversed so the FIRST-registered (left-most) multivalued call is the
@@ -326,12 +347,14 @@ class CanonicalFormRewriter(
         return result
     }
 
-    // Lambda arrow type for the flat-map? that lifts a multivalued compound argument:
-    // the lambda receives one element of the argument's result bag and returns a bag.
-    private fun flatMapLambdaTypeFor(type: Atom?): ArrowType {
+    // Lambda arrow type for a map?/flat-map? that lifts a multivalued argument: the lambda
+    // receives ONE element of the argument's result bag (its element type). A FLAT_MAP_
+    // lambda returns a bag (SeqType); a MAP_ lambda returns a single element. (Provisional —
+    // the post-rewrite resolveSource re-types these lambdas from their bodies.)
+    private fun liftLambdaType(op: Atom, type: Atom?): ArrowType {
         val t = type ?: GroundedType.ATOM
         val elementType = if (t is SeqType) t.elementType else t
-        return ArrowType(elementType, SeqType(elementType))
+        return ArrowType(elementType, if (op == PredefinedAtoms.FLAT_MAP_) SeqType(elementType) else elementType)
     }
 
     /*
