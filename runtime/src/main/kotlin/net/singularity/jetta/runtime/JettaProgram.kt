@@ -431,15 +431,33 @@ open class JettaProgram {
 
         /** Resolve a state token/atom to its [StateCell]: a bound Symbol via [tokens], or a state atom directly. */
         private fun cellOf(token: Atom): StateCell? {
-            val resolved = when (token) {
-                is Symbol -> tokens[token.name] ?: token
-                is BoundAtom -> token.atom
-                else -> token
+            // Widen to Any: a `&`-prefixed token is lowered to its bare String name (the
+            // space-reference convention in codegen), so the runtime value can be a String even
+            // though the parameter is typed Atom — and `is String` is not expressible against a
+            // statically-Atom subject.
+            val resolved: Any? = when (val t: Any = token) {
+                is Symbol -> tokens[t.name] ?: t
+                is BoundAtom -> t.atom
+                // A state token bound via `bind!` is registered under that same String name
+                // (bind! keys by `token.toString()`), so resolve it through the registry rather
+                // than failing to a non-reduced state.
+                is String -> tokens[t]
+                else -> t
             }
             return ((resolved as? Grounded<*>)?.value as? StateCell)
         }
 
-        private fun nonReducedState(op: String, token: Atom): Atom = Expression(listOf(Symbol(op), token))
+        private fun nonReducedState(op: String, token: Any?): Atom {
+            // `token` may be a bare String (a `&`-name that resolved to no state cell). Storing a
+            // non-Atom into the Expression's Atom[] throws ArrayStoreException, so make it an
+            // Atom: a String is a symbol name, anything else is wrapped grounded.
+            val tokenAtom: Atom = when (token) {
+                is Atom -> token
+                is String -> Symbol(token)
+                else -> Grounded(token)
+            }
+            return Expression(listOf(Symbol(op), tokenAtom))
+        }
 
         /**
          * Like [match], but each result is fed through [templateFn] for nested evaluation.
