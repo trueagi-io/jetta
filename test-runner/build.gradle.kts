@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "metta"
-version = "0.5.0-dev.1"
+version = "0.6.1"
 
 repositories {
     mavenCentral()
