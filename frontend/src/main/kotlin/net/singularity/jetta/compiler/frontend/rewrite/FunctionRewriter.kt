@@ -948,6 +948,12 @@ class FunctionRewriter(
                 val symbol = expression.atoms[1] as? Symbol
                 if (symbol != null) {
                     typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
+                    // ALSO keep the type as a space fact so it is visible at runtime
+                    // (`get-doc` / future `get-type` query `&self`). This is additive: the
+                    // compile-time `typeInfo` inference above is unchanged. The RAW expression
+                    // is stored, so the arrow stays a readable `(-> …)` Expression rather than
+                    // the type-erased ATOM `rewriteAtom` would produce.
+                    addAsFact(expression)
                 } else {
                     // Type for a non-Symbol form, e.g. `(: (A B) PairAB)`. Keep it in
                     // the space as a typed fact; the resolver's per-symbol typeInfo
@@ -960,6 +966,9 @@ class FunctionRewriter(
                 val symbol = expression.atoms[1] as? Symbol
                 if (symbol != null) {
                     annotations[symbol.name] = expression.atoms.drop(2)
+                    // ALSO reach the space so `get-doc` can query documentation at runtime
+                    // (the compile-time `annotations` map keys by tag and is never read back).
+                    addAsFact(expression)
                 } else {
                     addAsFact(expression)
                 }
