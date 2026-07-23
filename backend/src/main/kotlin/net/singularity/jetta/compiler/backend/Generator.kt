@@ -160,6 +160,7 @@ class Generator(
         "superpose", "collapse", "eval", "assertEqual", "assertEqualToResult",
         "add-atom!", "remove-atom!", "new-space", "bind!", "get-state", "new-state",
         "change-state!", "get-type", "import!", "pragma!", "get-doc", "help!", "letMatch",
+        "set-watermark!",
     )
 
     // Types we can use as a hashable memo key / box as a cached value.

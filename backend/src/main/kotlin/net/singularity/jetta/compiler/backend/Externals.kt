@@ -288,6 +288,22 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `set-watermark!` — ordered-top-level-semantics per-run prologue (compiler-internal; emitted
+    // only by FunctionRewriter.mkMain, never by users). Takes a `Grounded<Int>` fact-count (ATOM
+    // param so the literal passes through un-reduced) and sets JettaProgram.currentWatermark, so a
+    // run's `get-type`/`get-doc`/`typeCheckError` see only facts declared above it. Impure (side
+    // effect), so listed in Generator.impureGrounded.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "set-watermark!",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // Mutable state: new-state creates a cell, bind! names it via a token, get-state reads,
     // change-state! writes. Value/token args are ATOM (stored/looked-up as data, unreduced);
     // bind!'s value arg is ANY so `(bind! s (new-state x))` reduces the new-state first.

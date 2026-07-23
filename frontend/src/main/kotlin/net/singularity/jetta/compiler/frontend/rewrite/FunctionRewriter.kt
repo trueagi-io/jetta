@@ -40,6 +40,15 @@ class FunctionRewriter(
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val runs = mutableListOf<Atom>()
 
+    // Ordered top-level semantics (Approach 2, "space-query watermark"). Facts are added to the
+    // space in source order (one [addAsFact] per top-level form), so [factCount] at the moment a
+    // `!`-run is seen is exactly the count of facts declared ABOVE it. [runWatermarks] records that
+    // per run (parallel to [runs]); [mkMain] emits a `set-watermark!` step before each run whose
+    // watermark is short of the total, so at runtime `get-type`/`get-doc`/`typeCheckError` see only
+    // the visible prefix. See `docs/specs/ordered_top_level_semantics_plan.md`.
+    private var factCount = 0
+    private val runWatermarks = mutableListOf<Int>()
+
     private data class Pattern(val pattern: Expression, val value: Atom)
 
     override fun rewrite(source: ParsedSource): ParsedSource {
@@ -474,7 +483,23 @@ class FunctionRewriter(
 
     private fun mkMain(): List<Atom> {
         val result = mutableListOf<Atom>()
-        val mainBody = runs
+        // Ordered top-level semantics: interleave a `set-watermark!` step before each run whose
+        // visible-fact prefix is short of the total. A run seeing every fact needs no cutoff
+        // (`-1` = "no filtering"), and we only emit when the cutoff CHANGES from the previous run
+        // (init state is -1), so the common facts-then-runs shape emits nothing and `__main` stays
+        // byte-identical to before. See `docs/specs/ordered_top_level_semantics_plan.md`.
+        val total = factCount
+        val mainBody = mutableListOf<Atom>()
+        var lastEmitted = -1
+        runs.forEachIndexed { i, run ->
+            val wm = runWatermarks[i]
+            val effWm = if (wm >= total) -1 else wm
+            if (effWm != lastEmitted) {
+                mainBody.add(Expression(listOf(Symbol(SET_WATERMARK), Grounded(effWm))))
+                lastEmitted = effWm
+            }
+            mainBody.add(run)
+        }
         result.add(
             FunctionDefinition(
                 MAIN,
@@ -981,9 +1006,13 @@ class FunctionRewriter(
     private fun addAsFact(expression: Expression) {
         space.add(expression)
         ownAtomsCollector?.add(expression)
+        factCount++
     }
 
     private fun rewriteTopLevelRun(run: Run) {
+        // Snapshot the facts-declared-above count BEFORE rewriting the run body (rewriting never
+        // adds facts, but keep the read at the source-order point for clarity).
+        runWatermarks.add(factCount)
         runs.add(rewriteAtom(run.expression))
     }
 
@@ -1020,5 +1049,9 @@ class FunctionRewriter(
 
     companion object {
         const val MAIN = "__main"
+
+        /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)
+         *  that sets the ordered-top-level per-run visibility cutoff. */
+        const val SET_WATERMARK = "set-watermark!"
     }
 }

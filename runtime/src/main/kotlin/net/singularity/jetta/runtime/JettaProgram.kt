@@ -38,6 +38,32 @@ open class JettaProgram {
         fun currentSpaceName(): String? = currentSpaceName
 
         /**
+         * Ordered-top-level-semantics watermark (Approach 2, "space-query watermark"). The number
+         * of `&self` facts declared ABOVE the currently-running top-level `!`-run in source order;
+         * `< 0` means "no filtering" (the run sees every fact). Set by the generated
+         * `set-watermark!` step that `FunctionRewriter.mkMain` interleaves before each run, reset
+         * per program in [init]. Read by [selfAtoms] so `get-type`/`get-doc`/`typeCheckError`
+         * observe only the facts/`:`-decls/`=`-rules visible at the run's position — hyperon's
+         * interleaved model. See `docs/specs/ordered_top_level_semantics_plan.md`.
+         *
+         * `@Volatile` is visibility only (single running program per JVM in this slice).
+         */
+        @Volatile
+        private var currentWatermark: Int = -1
+
+        /**
+         * The `set-watermark!` builtin — the generated per-run prologue for ordered top-level
+         * semantics. [w] is a `Grounded<Int>` fact-count; store it as the visibility cutoff and
+         * return unit. Compiler-internal (emitted only by [net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter],
+         * never written by users); impure, so excluded from memoization in `Generator.impureGrounded`.
+         */
+        @JvmStatic
+        fun `set-watermark!`(w: Atom): Atom {
+            currentWatermark = ((w as? Grounded<*>)?.value as? Number)?.toInt() ?: -1
+            return UNIT_ATOM
+        }
+
+        /**
          * Tokens bound by `bind!` (token name → bound atom, typically a state cell). Reset per
          * program in [init]. Concurrent map for parity with SpaceRegistry, though the current
          * pipeline runs a single program per JVM.
@@ -93,6 +119,7 @@ open class JettaProgram {
             tokens.clear()
             importedModules.clear()
             currentSpaceName = programName
+            currentWatermark = -1
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
             // directory regardless of cwd. The intended way to run a compiled program from
@@ -388,9 +415,19 @@ open class JettaProgram {
         private val UNDEF = Symbol("%Undefined%")
         private val EMPTY = Symbol("Empty")
 
-        /** The atoms of the currently-running program's own space (`&self`). */
-        private fun selfAtoms(): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+        /**
+         * The atoms of the currently-running program's own space (`&self`), clipped to the current
+         * ordered-top-level [currentWatermark]: a run sees only the facts declared above it in
+         * source order. `getAtoms()` returns the store in insertion == source-fact order, and the
+         * `.jtsf` round-trip preserves that order, so `subList(0, wm)` is exactly the visible prefix.
+         * A negative watermark (or one past the end) means "see everything" — the common
+         * facts-then-runs shape, where no filtering is emitted at all (perf-neutral).
+         */
+        private fun selfAtoms(): List<Atom> {
+            val all = SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+            val wm = currentWatermark
+            return if (wm < 0 || wm >= all.size) all else all.subList(0, wm)
+        }
 
         /** `(@ tag …)` — an annotation Expression whose tag Symbol is [tag]. */
         private fun isAnn(a: Atom, tag: String): Boolean =
