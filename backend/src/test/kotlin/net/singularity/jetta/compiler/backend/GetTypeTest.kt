@@ -84,6 +84,31 @@ class GetTypeTest : GeneratorTestBase() {
         """.trimIndent()
     )
 
+    /**
+     * Dependent `Vec` types (d3): the argument must reach the engine FULLY INERT. Here `Cons`
+     * appears in the `(= (drop (Cons $x $xs)) $xs)` rule, so it is a `resolved` sub-application;
+     * without the `get-type` inert-ATOM flag (D2.1) the arg-delivery quote path evaluates it and
+     * the term collapses to `Nil` (→ wrong `(Vec $t Z)`). With the flag it stays inert and the
+     * type is inferred correctly. Also exercises a reducible-function argument `(drop …)`.
+     */
+    @Test
+    fun `dependent Vec types with inert reducible arguments`() = runLenient(
+        "GetTypeVec",
+        $$"""
+            (: Nat Type)
+            (: Z Nat)
+            (: S (-> Nat Nat))
+            (: Vec (-> $t Nat Type))
+            (: Cons (-> $t (Vec $t $x) (Vec $t (S $x))))
+            (: Nil (Vec $t Z))
+            (: drop (-> (Vec $t (S $x)) (Vec $t $x)))
+            (= (drop (Cons $x $xs)) $xs)
+            !(assertEqual (get-type (Cons 0 (Cons 1 Nil))) (Vec Number (S (S Z))))
+            !(assertEqual (get-type (drop (Cons 1 Nil))) (Vec Number Z))
+            !(assertEqualToResult (get-type (drop Nil)) ())
+        """.trimIndent()
+    )
+
     /** Form-2 pattern-`let` over a `get-type` result binds the type variable and returns it. */
     @Test
     fun `pattern-let extracts a type variable from a get-type result`() = runLenient(

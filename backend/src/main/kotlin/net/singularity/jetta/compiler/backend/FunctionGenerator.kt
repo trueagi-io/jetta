@@ -1135,6 +1135,15 @@ open class FunctionGenerator(
                 // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
                 // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
                 generateLoadBoolean(arg.name == "True")
+            } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression) {
+                // A FULLY-INERT Atom parameter (e.g. `get-type`): the argument must reach the
+                // method un-reduced, so quote the whole term structurally (evalCalls=false ⇒ no
+                // nested sub-call is evaluated). This is what makes `(get-type (Cons 0 (Cons 1
+                // Nil)))` and `(get-type (drop (Cons 1 Nil)))` type-check the un-reduced
+                // application; the plain-`generateAtom` path below would instead take the
+                // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
+                // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
+                generateQuote(mv, arg)
             } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 if (arg is Expression) {
                     // An arithmetic/grounded APPLICATION reaching an Atom-typed parameter is

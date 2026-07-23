@@ -251,7 +251,12 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "get-type",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;",
+                // The argument must reach the type engine FULLY inert: a reducible application like
+                // `(drop (Cons 1 Nil))` or a constructor `(Cons 0 (Cons 1 Nil))` is type-checked as
+                // the un-reduced term, not evaluated first. Only `get-type` opts in — assertEqual /
+                // add-atom / match NEED their args reduced, so they keep the default behavior.
+                inertAtomParams = setOf(0)
             ),
             ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true

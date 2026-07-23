@@ -165,4 +165,55 @@ class TypeEngineTest {
         assertTrue(TypeEngine.unify(expr(sym("List"), v("t")), expr(sym("List"), NUMBER), s))
         assertEquals(NUMBER, TypeEngine.resolve(v("t"), s))
     }
+
+    // --- eval-time type checking (D2.0): checkApp + errorExpr ----------------------------
+
+    @Test
+    fun `checkApp returns null when well-typed`() {
+        assertNull(TypeEngine.checkApp(expr(Special("+"), num(2), num(3)), emptyList()))
+    }
+
+    @Test
+    fun `checkApp reports a grounded-operand mismatch`() {
+        // (+ 2 "String") — arg 2 is String where Number is required.
+        val e = TypeEngine.checkApp(expr(Special("+"), num(2), str("String")), emptyList())
+        assertEquals(TypeEngine.TypeError(2, NUMBER, STRING), e)
+        // errorExpr wraps it in the exact `(Error <expr> (BadArgType 2 Number String))` shape.
+        val call = expr(Special("+"), num(2), str("String"))
+        assertEquals(
+            expr(sym("Error"), call, expr(sym("BadArgType"), num(2), NUMBER, STRING)),
+            TypeEngine.errorExpr(call, e!!),
+        )
+    }
+
+    @Test
+    fun `checkApp reports a user-function argument mismatch`() {
+        // (: Z Nat)(: S (-> Nat Nat))(: Add (-> Nat Nat Nat)); (Add S Z) — arg 1 is (-> Nat Nat).
+        val atoms = listOf(
+            typeFact(sym("Z"), sym("Nat")),
+            typeFact(sym("S"), arrow(sym("Nat"), sym("Nat"))),
+            typeFact(sym("Add"), arrow(sym("Nat"), sym("Nat"), sym("Nat"))),
+        )
+        assertEquals(
+            TypeEngine.TypeError(1, sym("Nat"), arrow(sym("Nat"), sym("Nat"))),
+            TypeEngine.checkApp(expr(sym("Add"), sym("S"), sym("Z")), atoms),
+        )
+    }
+
+    @Test
+    fun `checkApp reports the expected type with substitution applied`() {
+        // (: Nil (List $t))(: Cons (-> $t (List $t) (List $t)))(: S (-> Nat Nat))(: Z Nat)
+        // (Cons S (Cons Z Nil)) — arg 2 expected (List (-> Nat Nat)) [$t := S's type], actual (List Nat).
+        val atoms = listOf(
+            typeFact(sym("Nil"), expr(sym("List"), v("t"))),
+            typeFact(sym("Cons"), arrow(v("t"), expr(sym("List"), v("t")), expr(sym("List"), v("t")))),
+            typeFact(sym("S"), arrow(sym("Nat"), sym("Nat"))),
+            typeFact(sym("Z"), sym("Nat")),
+        )
+        val badList = expr(sym("Cons"), sym("S"), expr(sym("Cons"), sym("Z"), sym("Nil")))
+        assertEquals(
+            TypeEngine.TypeError(2, expr(sym("List"), arrow(sym("Nat"), sym("Nat"))), expr(sym("List"), sym("Nat"))),
+            TypeEngine.checkApp(badList, atoms),
+        )
+    }
 }

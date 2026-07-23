@@ -221,4 +221,53 @@ object TypeEngine {
         }
         return applySubst(ret, s)
     }
+
+    // --- eval-time type checking (D2) ------------------------------------------------------
+
+    /**
+     * A positional argument type-mismatch in an application, in the shape the reference suite
+     * asserts: `(Error <expr> (BadArgType <pos> <expected> <actual>))`. [pos] is 1-based;
+     * [expected] is the parameter type with the accumulated substitution applied at the point of
+     * failure (e.g. `(List (-> Nat Nat))` when the tvar bound to `(-> Nat Nat)` earlier);
+     * [actual] is the argument's inferred type.
+     */
+    data class TypeError(val pos: Int, val expected: Atom, val actual: Atom)
+
+    /**
+     * Type-check an application `(f a…)` against the `:` facts in [atoms], returning the FIRST
+     * argument mismatch as a [TypeError], or `null` when it is well-typed / not a checkable
+     * application. Mirrors [inferApp]'s arrow-apply loop but reports *where* unification fails
+     * instead of collapsing to `null`. Used by the eval-time `BadArgType` paths (D2.2+).
+     *
+     * Non-applications, a non-arrow head, an arity mismatch, or an argument that is itself
+     * ill-typed all yield `null` — none of those is a positional [TypeError] (arity/ill-typed
+     * are handled as plain "unreduced/`()`" elsewhere; a deeper error propagates from that arg's
+     * own check).
+     */
+    fun checkApp(atom: Atom, atoms: List<Atom>): TypeError? {
+        val a = if (atom is BoundAtom) atom.atom else atom
+        if (a !is Expression || a.atoms.isEmpty()) return null
+        val head = a.atoms[0]
+        val args = a.atoms.drop(1)
+        val headType = inferType(head, atoms) ?: return null
+        if (!isArrow(headType)) return null
+        val params = arrowParams(headType)
+        if (params.size != args.size) return null
+        val s = HashMap<String, Atom>()
+        for (i in args.indices) {
+            val at = inferType(args[i], atoms) ?: return null
+            if (!unify(params[i], at, s)) {
+                return TypeError(i + 1, applySubst(params[i], s), at)
+            }
+        }
+        return null
+    }
+
+    /** Build the inert `(Error <callExpr> (BadArgType <pos> <expected> <actual>))` atom for [e]. */
+    fun errorExpr(callExpr: Atom, e: TypeError): Atom =
+        Expression(
+            Symbol("Error"),
+            callExpr,
+            Expression(Symbol("BadArgType"), Grounded(e.pos), e.expected, e.actual),
+        )
 }
