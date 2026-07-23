@@ -122,4 +122,24 @@ class GetTypeTest : GeneratorTestBase() {
                Number)
         """.trimIndent()
     )
+
+    /**
+     * A `get-type` argument whose head is a MULTIVALUED resolved function must still reach the
+     * engine INERT. `Mortal` has `=` rules, so `(Mortal Plato)` is nondeterministic; without the
+     * inert-ATOM guard in CanonicalFormRewriter it would be lifted into a `map?` and EVALUATED, so
+     * `get-type` infers the type of the reduced result (`%Undefined%`) instead of `(Mortal Plato)`
+     * → `Type`. This was the d4 line-18 blocker; complements the scalar inert case above.
+     */
+    @Test
+    fun `get-type keeps a multivalued-headed argument inert`() = runLenient(
+        "GetTypeMultivaluedArg",
+        $$"""
+            (: Entity Type)
+            (: Plato Entity)
+            (: Mortal (-> Entity Type))
+            (= (Mortal $x) (Human $x))
+            (= (Mortal Plato) T)
+            !(assertEqual (get-type (Mortal Plato)) Type)
+        """.trimIndent()
+    )
 }
