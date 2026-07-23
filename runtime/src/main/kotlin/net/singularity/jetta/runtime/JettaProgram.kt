@@ -526,6 +526,23 @@ open class JettaProgram {
         }
 
         /**
+         * Eval-time type check for a user-function application (phase D2.3). [callExpr] is the
+         * reconstructed `(f arg…)` (built by the generated function's prologue via
+         * [net.singularity.jetta.runtime.functions.JettaCallSite.nonReduced]). Returns the inert
+         * `(Error <callExpr> (BadArgType pos expected actual))` atom when an argument's type does
+         * not match `f`'s declared `(: f (-> …))` arrow (the reference's BadArgType), or `null`
+         * when it is well-typed OR gradually typed (an undeclared/`%Undefined%` argument unifies
+         * with anything) — in which case the caller proceeds to normal clause reduction.
+         * [TypeEngine.checkApp] reads the `:` facts in `&self`, so a head without an arrow `:`
+         * fact yields `null` too.
+         */
+        @JvmStatic
+        fun typeCheckError(callExpr: Atom): Atom? {
+            val err = TypeEngine.checkApp(callExpr, selfAtoms()) ?: return null
+            return TypeEngine.errorExpr(callExpr, err)
+        }
+
+        /**
          * `letMatch <pattern> <value> <body>` — the runtime of MeTTa's Form-2 pattern-`let`
          * (`(let (List $t) VALUE BODY)`), lowered by `LetRewriter`. [pattern] is the LHS
          * unreduced data (`(List $t)`), [value] the evaluated RHS (a result bag `List`, or a

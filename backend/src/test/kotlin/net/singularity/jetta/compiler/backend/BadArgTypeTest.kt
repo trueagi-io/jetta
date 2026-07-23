@@ -18,16 +18,18 @@ import kotlin.test.assertTrue
  */
 class BadArgTypeTest : GeneratorTestBase() {
 
-    private fun run(name: String, code: String) {
+    private fun run(name: String, code: String, allowWarnings: Boolean = false) {
         compile("$name.metta", code, mapImpl, flatMapImpl) { registerExternals(it) }
             .let { (result, messageCollector) ->
                 messageCollector.list().forEach(::println)
-                assertTrue(messageCollector.list().isEmpty())
+                if (!allowWarnings) assertTrue(messageCollector.list().isEmpty())
                 val classes = result.toMap().toClasses()
                 JettaProgram.init(name)
                 classes[name]!!.getMethod("__main").invoke(null)
             }
     }
+
+    private fun runLenient(name: String, code: String) = run(name, code, allowWarnings = true)
 
     /** A String operand to `+`/`*` yields `(Error … (BadArgType pos Number String))`. */
     @Test
@@ -64,6 +66,39 @@ class BadArgTypeTest : GeneratorTestBase() {
         """
             !(assertEqual (+ 2 3) 5)
             !(assertEqual (* 2 (- 7 3)) 8)
+        """.trimIndent()
+    )
+
+    /**
+     * D2.3: a `(: f (-> …))`-declared user function type-checks its args before reducing. `(Add S
+     * Z)` errors (S : (-> Nat Nat), param 1 wants Nat) instead of matching `(= (Add $x Z) $x)`;
+     * a well-typed call reduces normally; a gradual/undeclared argument (`Something`) is allowed.
+     * Types are declared before the runs (JeTTa loads all facts up front; b5's run-before-declare
+     * ordering is a separate top-level-semantics concern).
+     */
+    @Test
+    fun `declared user function errors on a mistyped argument`() = runLenient(
+        "BadArgUserFn",
+        $$"""
+            (: Z Nat)
+            (: S (-> Nat Nat))
+            (: Add (-> Nat Nat Nat))
+            (= (Add $x Z) $x)
+            (= (Add $x (S $y)) (Add (S $x) $y))
+            !(assertEqualToResult (Add S Z) ((Error (Add S Z) (BadArgType 1 Nat (-> Nat Nat)))))
+            !(assertEqual (Add (S Z) Z) (S Z))
+            !(assertEqual (Add Z (S Z)) (S Z))
+            !(assertEqual (Add Something Z) Something)
+        """.trimIndent()
+    )
+
+    /** An undeclared (untyped) function is NOT instrumented — reduces without a type check. */
+    @Test
+    fun `undeclared function is not type-checked`() = runLenient(
+        "BadArgUntyped",
+        $$"""
+            (= (pick $x $y) $x)
+            !(assertEqual (pick A B) A)
         """.trimIndent()
     )
 }

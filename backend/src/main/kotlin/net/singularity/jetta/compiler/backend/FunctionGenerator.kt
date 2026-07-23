@@ -26,6 +26,13 @@ open class FunctionGenerator(
      * methods. Used at indy lambda creation sites to reference the static lambda body.
      */
     private val enclosingClassInternalName: String,
+    /**
+     * Names of top-level functions that carry an explicit `(: f (-> …))` type declaration in
+     * this module's space (phase D2.3). Such a function gets an eval-time type-check prologue
+     * ([maybeEmitTypeCheckPrologue]); undeclared functions are left untouched so hot untyped code
+     * (backchaining, symbolic interpreters) pays no per-call type-check cost.
+     */
+    private val declaredTypeNames: Set<String> = emptySet(),
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
@@ -672,7 +679,55 @@ open class FunctionGenerator(
         }
     }
 
+    /**
+     * D2.3 eval-time `BadArgType` prologue for a `(: f (-> …))`-declared user function. Before any
+     * clause is matched, reconstruct `(f arg…)` from the parameter slots (Atom args resolved to
+     * their caller bindings — the same reconstruction the non-reduction fallback uses) and ask
+     * [net.singularity.jetta.runtime.JettaProgram.typeCheckError]; if it returns a non-null
+     * `(Error … (BadArgType …))` atom, return that immediately, so an ill-typed call errors instead
+     * of reducing (`(Add S Z)` → error, not `S`). A null (well-typed, or a gradual/undeclared
+     * argument) falls through to normal reduction.
+     *
+     * Gated to names in [declaredTypeNames] with all-`Atom` params and a scalar `Atom` return:
+     *  - undeclared functions are skipped so hot untyped code (backchaining, symbolic interpreters)
+     *    pays no per-call type-check cost;
+     *  - a primitive/List return cannot hold an Error atom in its return slot, so those are skipped
+     *    too (their eval-time errors are a later phase — multivalued needs a singleton-List wrap).
+     */
+    private fun maybeEmitTypeCheckPrologue(mv: LocalVariablesSorter) {
+        val fn = function as? FunctionDefinition ?: return
+        if (fn.name !in declaredTypeNames) return
+        if (fn.isMultivalued() || fn.returnType != GroundedType.ATOM) return
+        if (!fn.params.all { it.type == GroundedType.ATOM }) return
+
+        mv.visitLdcInsn(fn.name)
+        emitParamArgsArray(mv)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/functions/JettaCallSite",
+            "nonReduced",
+            "(Ljava/lang/String;[Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            false,
+        )
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/JettaProgram",
+            "typeCheckError",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+            false,
+        )
+        val cont = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, cont)
+        // Non-null: the `(Error …)` atom is this call's only result — pop the Matcher frame and
+        // return it (generateReturn ARETURNs it for the scalar-Atom return type).
+        generateReturn(mv)
+        mv.visitLabel(cont)
+        mv.visitInsn(Opcodes.POP)
+    }
+
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
+        maybeEmitTypeCheckPrologue(mv)
         // A Match whose clauses are provably mutually exclusive (FunctionRewriter did not
         // mark the function multivalued) has at most one matching branch, so it compiles to
         // a scalar dispatch — an if-else chain returning each branch value directly, with no

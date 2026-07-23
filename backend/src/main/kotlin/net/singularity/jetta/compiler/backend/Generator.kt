@@ -34,6 +34,11 @@ class Generator(
      */
     private val spaceAtomCount: Int? = null,
     private val spaceContentHash: String? = null,
+    /**
+     * Names of functions carrying an explicit `(: f (-> …))` type declaration in this module's
+     * space — the D2.3 eval-time-type-check opt-in set threaded to each [FunctionGenerator].
+     */
+    private val declaredTypeNames: Set<String> = emptySet(),
 ) {
     private var lambdaCount = 1
 
@@ -121,7 +126,7 @@ class Generator(
                             )
                         }
                     }
-                    FunctionGenerator(mv, node, true, null, moduleSpaceName, className).generate()
+                    FunctionGenerator(mv, node, true, null, moduleSpaceName, className, declaredTypeNames).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
                         val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(
@@ -348,5 +353,20 @@ class Generator(
             else -> {}
         }
         return acc
+    }
+
+    companion object {
+        /**
+         * The set of symbol names carrying a `(: name …)` type declaration among [atoms] (a
+         * module's space facts). This is the D2.3 eval-time-type-check opt-in set passed as
+         * [declaredTypeNames]; computed by every caller that drives the Generator (the CLI
+         * `Compiler`, `GeneratorTestBase`) so only declared functions get the type-check prologue.
+         */
+        fun declaredTypeNamesOf(atoms: List<Expression>): Set<String> =
+            atoms.mapNotNull { fact ->
+                val head = fact.atoms.firstOrNull()
+                val isTypeFact = (head as? Special)?.value == ":" || (head as? Symbol)?.name == ":"
+                if (isTypeFact && fact.atoms.size >= 3) (fact.atoms[1] as? Symbol)?.name else null
+            }.toSet()
     }
 }

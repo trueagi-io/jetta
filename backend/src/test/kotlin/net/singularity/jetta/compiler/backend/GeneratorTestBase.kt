@@ -64,7 +64,8 @@ abstract class GeneratorTestBase {
         SpaceDirectorySerializer.save(context.getSpace() as SpaceImpl, outputDir, programName = programName)
         JettaProgram.setDataDir(outputDir)
 
-        val generator = Generator(autoTable = autoTable)
+        val declaredTypeNames = Generator.declaredTypeNamesOf((context.getSpace() as SpaceImpl).getAtoms())
+        val generator = Generator(autoTable = autoTable, declaredTypeNames = declaredTypeNames)
         val compiled = generator.generate(result)
         compiled.forEach {
             log.debug { "Writing " + it.className }
