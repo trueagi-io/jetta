@@ -72,4 +72,45 @@ class OrderedTopLevelTest : GeneratorTestBase() {
             !(assertEqual (Add (S Z) Z) (S Z))
         """.trimIndent()
     )
+
+    /**
+     * Step 2 — compiled-rule reduction is position-aware. A SCALAR (single-clause) function:
+     * `(Mortal Plato)` is its own normal form BEFORE its `=` rule is declared (the branch is
+     * skipped by the watermark guard → non-reduction fallback), and reduces to `T` AFTER.
+     */
+    @Test
+    fun `scalar rule reduces only after it is declared`() = runLenient(
+        "OrderedScalarReduction",
+        """
+            (: Entity Type)
+            (: Plato Entity)
+            (: Mortal (-> Entity Type))
+            !(assertEqualToResult (Mortal Plato) ((Mortal Plato)))
+            (= (Mortal Plato) T)
+            !(assertEqual (Mortal Plato) T)
+        """.trimIndent()
+    )
+
+    /**
+     * Step 2 for a MULTIVALUED function (overlapping clauses incl. an unconditional one). Beyond
+     * the compiled branch guards, the multivalued non-reduction fallback re-queries the space for
+     * `(= (Mortal Socrates) $r)` via reduceOrInert — so the space `match` must ALSO be
+     * watermark-filtered, else the hidden rules re-reduce it. Before the rules `(Mortal Socrates)`
+     * stays inert; after, it reduces (to the `T` / `(Human Socrates)` bag).
+     */
+    @Test
+    fun `multivalued rules reduce only after they are declared`() = runLenient(
+        "OrderedMultivaluedReduction",
+        """
+            (: Entity Type)
+            (: Socrates Entity)
+            (: Mortal (-> Entity Type))
+            !(assertEqualToResult (Mortal Socrates) ((Mortal Socrates)))
+            (: Filler1 Thing)
+            (: Filler2 Thing)
+            (= (Mortal Socrates) T)
+            (= (Mortal ${'$'}x) (Human ${'$'}x))
+            !(assertEqualToResult (Mortal Socrates) (T (Human Socrates)))
+        """.trimIndent()
+    )
 }

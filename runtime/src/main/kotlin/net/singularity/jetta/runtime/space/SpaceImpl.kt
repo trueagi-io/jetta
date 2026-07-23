@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.compiler.logger.Logger
+import net.singularity.jetta.runtime.JettaProgram
 import net.singularity.jetta.runtime.Matcher
 import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toAtom
@@ -111,6 +112,35 @@ class SpaceImpl : Space {
         logger.trace { "|match| pattern=$src template=$dst matches=${packedIndex.size()}" }
 
         val size = packedIndex.size()
+
+        // Ordered-top-level visibility (step 2): when a run watermark is active (>= 0), a match
+        // sourced from a fact declared at/after the running `!`-form (storeIndex >= wm) is
+        // invisible — so BOTH reflective `match &self …` AND the `reduceOrInert` reduction fallback
+        // (which looks up `(= (f args) $r)` in the space) observe only rules/facts declared above
+        // the run. wm < 0 (the common case, including the hot backchain query, which runs after all
+        // facts -> -1) falls through to the UNCHANGED fast paths below — zero cost on the hot path.
+        val wm = JettaProgram.currentWatermark()
+        if (wm >= 0) {
+            val out = ArrayList<Atom>(size)
+            for (matchIndex in 0 until size) {
+                val m = packedIndex.getMatch(matchIndex)
+                // A match comes from ONE stored fact, so every binding shares its storeIndex. A
+                // ground pattern (no bindings) carries no storeIndex and cannot be filtered here —
+                // a known gap, but never a reduction `(= …)` lookup (which always binds a result var).
+                if (m.size() != 0 && m.getBinding(0).storeIndex >= wm) continue
+                val bindings = packedIndex.resolveToAtoms(matchIndex, this)
+                val result = substituteVariablesA(dst, bindings)
+                val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)
+                val final = applySpaceVarSubstitutions(result, spaceVarSubs)
+                if (enablePerCallBindings) {
+                    writeBindingsToVariablesA(src, bindings)
+                    out.add(BoundAtom(final, bindings))
+                } else {
+                    out.add(final)
+                }
+            }
+            return out
+        }
 
         // Foliation-elision fast path (single result). A BoundAtom exists only to give
         // each of SEVERAL non-deterministic branches its own binding snapshot to reinstall

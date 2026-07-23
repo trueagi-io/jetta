@@ -760,8 +760,13 @@ open class FunctionGenerator(
         // body legitimately yields empty must not fall back. Emitted only when (a)
         // this is a named function and (b) some branch is guarded; an all-unconditional
         // Match always matches, so the flag and fallback would be dead code.
+        // A visibility-guarded branch (sourceOrdinal >= 0) can also fail to match (rule hidden by
+        // the run watermark), so it needs the matched-flag + inert fallback just like a cond guard
+        // — otherwise a fully-guarded-out Match would return the empty bag instead of staying inert.
         val funcName = (function as? FunctionDefinition)?.name
-        val matchedVar = if (funcName != null && match.branches.any { it.cond != null }) {
+        val matchedVar = if (funcName != null &&
+            match.branches.any { it.cond != null || it.sourceOrdinal >= 0 }
+        ) {
             val v = mv.newLocal(Type.BOOLEAN_TYPE)
             mv.visitInsn(Opcodes.ICONST_0)
             mv.visitVarInsn(Opcodes.ISTORE, v)
@@ -808,7 +813,8 @@ open class FunctionGenerator(
         generateAtom(mv, branch.body, null, doReturn = true)
         scalarReturnCoercion = prev
         restoreDestructuring(savedLocals)
-        if (branch.cond != null) mv.visitLabel(elseLabel)
+        // elseLabel is a jump target when EITHER a cond guard OR a visibility guard was emitted.
+        if (branch.cond != null || branch.sourceOrdinal >= 0) mv.visitLabel(elseLabel)
     }
 
     /**
@@ -918,6 +924,23 @@ open class FunctionGenerator(
      * Shared by the multivalued (List) and scalar Match code paths.
      */
     private fun emitBranchGuard(mv: LocalVariablesSorter, branch: MatchBranch, elseLabel: Label) {
+        // Ordered-top-level reduction guard (step 2): skip this clause when its `=` rule is not
+        // yet visible at the current run's watermark (declared below the running `!`-form). A
+        // skipped branch falls through to the non-reduction fallback -> the expression stays inert
+        // (hyperon interleaved semantics). Only emitted for rules preceded by a run (ordinal >= 0);
+        // hot facts-then-runs code has ordinal == -1 and pays nothing. Runs BEFORE the cond guard
+        // so a hidden rule never even evaluates its pattern. See JettaProgram.isRuleVisible.
+        if (branch.sourceOrdinal >= 0) {
+            mv.visitLdcInsn(branch.sourceOrdinal)
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                "net/singularity/jetta/runtime/JettaProgram",
+                "isRuleVisible",
+                "(I)Z",
+                false
+            )
+            mv.visitJumpInsn(Opcodes.IFEQ, elseLabel)
+        }
         val cond = branch.cond ?: return
         emitLineNumber(cond)
         // Resolve bindings on parameters before evaluating conditions, so shared
@@ -1026,7 +1049,9 @@ open class FunctionGenerator(
 
         restoreDestructuring(savedLocals)
 
-        if (branch.cond != null) {
+        // elseLabel is a jump target when EITHER a cond guard OR a visibility guard was emitted;
+        // a hidden rule jumps here, leaving `matched` false so generateMatch emits the inert form.
+        if (branch.cond != null || branch.sourceOrdinal >= 0) {
             mv.visitLabel(elseLabel)
         }
     }

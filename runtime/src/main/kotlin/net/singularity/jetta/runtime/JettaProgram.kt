@@ -51,6 +51,12 @@ open class JettaProgram {
         @Volatile
         private var currentWatermark: Int = -1
 
+        /** The current ordered-top-level visibility cutoff; `< 0` = no filtering. Read by
+         *  [net.singularity.jetta.runtime.space.SpaceImpl.match] to hide `=`/data facts declared
+         *  below the running `!`-form (so `reduceOrInert` / reflective `match &self` are ordered). */
+        @JvmStatic
+        fun currentWatermark(): Int = currentWatermark
+
         /**
          * The `set-watermark!` builtin — the generated per-run prologue for ordered top-level
          * semantics. [w] is a `Grounded<Int>` fact-count; store it as the visibility cutoff and
@@ -61,6 +67,19 @@ open class JettaProgram {
         fun `set-watermark!`(w: Atom): Atom {
             currentWatermark = ((w as? Grounded<*>)?.value as? Number)?.toInt() ?: -1
             return UNIT_ATOM
+        }
+
+        /**
+         * Ordered-top-level reduction guard (step 2): is an `=` rule at source ordinal [ordinal]
+         * visible to the current run? A compiled Match branch consults this before matching, so a
+         * rule declared BELOW the running `!`-form is skipped (the expression stays inert). Only
+         * branches with `ordinal >= 0` (a rule preceded by a run) emit the call; `currentWatermark
+         * < 0` (run sees all facts) makes it always visible — the perf-neutral common case.
+         */
+        @JvmStatic
+        fun isRuleVisible(ordinal: Int): Boolean {
+            val wm = currentWatermark
+            return wm < 0 || ordinal < wm
         }
 
         /**

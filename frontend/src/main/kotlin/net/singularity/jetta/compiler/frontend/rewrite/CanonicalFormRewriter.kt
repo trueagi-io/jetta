@@ -65,7 +65,7 @@ class CanonicalFormRewriter(
                             multivaluedCalls.clear()
                             multivaluedCallsInverse.clear()
                             multivaluedAtoms.clear()
-                            MatchBranch(branch.cond, rewritten, branch.destructuredBindings)
+                            MatchBranch(branch.cond, rewritten, branch.destructuredBindings, branch.sourceOrdinal)
                         },
                         returnType = body.returnType,
                         position = body.position

@@ -49,7 +49,10 @@ class FunctionRewriter(
     private var factCount = 0
     private val runWatermarks = mutableListOf<Int>()
 
-    private data class Pattern(val pattern: Expression, val value: Atom)
+    // `ordinal` = the rule's source position among facts (== runtime storeIndex), or -1 when no
+    // `!`-run precedes it (so no reduction guard is emitted — the hot facts-then-runs shape). See
+    // [mkFunctions] / MatchBranch.sourceOrdinal / `docs/specs/ordered_top_level_semantics_plan.md`.
+    private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1)
 
     override fun rewrite(source: ParsedSource): ParsedSource {
         source.code.forEach {
@@ -320,7 +323,8 @@ class FunctionRewriter(
                         MatchBranch(
                             mkCond(params, it.pattern),
                             body,
-                            bindings
+                            bindings,
+                            it.ordinal
                         )
                     }, returnType = arrowType?.types?.last()),
                     annotations[name]?.toMutableList() ?: mutableListOf(),
@@ -956,7 +960,11 @@ class FunctionRewriter(
                 val head = pattern?.atoms?.getOrNull(0) as? Symbol
                 if (head != null) {
                     val list = patterns.getOrPut(head.name) { mutableListOf() }
-                    list.add(Pattern(pattern, rewriteAtom(expression.atoms[2])))
+                    // Guard this clause's reduction by source position ONLY if a `!`-run precedes
+                    // it (else -1 = always-visible, no guard). `factCount` here == the storeIndex
+                    // this fact will get (addAsFact ++s it just below), matching the run watermark.
+                    val ordinal = if (runs.isNotEmpty()) factCount else -1
+                    list.add(Pattern(pattern, rewriteAtom(expression.atoms[2]), ordinal))
                 }
                 // Every `(= lhs rhs)` is ALSO an equality fact in the space, whether or
                 // not its head compiles to a JVM function. This is the reference

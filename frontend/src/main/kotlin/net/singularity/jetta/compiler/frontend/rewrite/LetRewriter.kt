@@ -37,6 +37,7 @@ class LetRewriter : Rewriter {
                     cond = branch.cond?.let { rewriteAtom(it) as Expression },
                     body = rewriteAtom(branch.body),
                     destructuredBindings = branch.destructuredBindings,
+                    sourceOrdinal = branch.sourceOrdinal,
                 )
             },
             returnType = atom.returnType,
