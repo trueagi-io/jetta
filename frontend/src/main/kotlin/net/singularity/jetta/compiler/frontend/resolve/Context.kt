@@ -522,6 +522,19 @@ class Context private constructor(
     }
 
     /**
+     * D2.2 (tier i): a grounded arithmetic op applied to a concrete non-numeric operand is an
+     * eval-time type error (hyperon yields `(Error <expr> (BadArgType <pos> Number <actual>))`).
+     * When an operand's type is a known non-numeric grounded scalar (today `String`), stamp the
+     * node `ATOM` and return true — this routes codegen away from the inline `IADD`/`DADD` fast
+     * path onto its ATOM branch, where `FunctionGenerator` emits the `(Error …)` atom for THIS
+     * node instance (identity-precise — a structurally-identical `(+ …)` inside quoted expected
+     * data is emitted verbatim, not turned into an error). Numeric operands (Int/Long/Double) and
+     * gradual ones (`Atom`/`%Undefined%`/a bound `Variable`) are left on the normal path.
+     */
+    private fun hasGroundedArithmeticTypeError(operands: List<Atom>): Boolean =
+        operands.any { it.type == GroundedType.STRING }
+
+    /**
      * Infer a function's return type from the result-position types in its body,
      * unifying the branches of an `if`/Match. A *self-recursive* call whose type is
      * still the unrefined dynamic top (Atom/Any/null) contributes no information —
@@ -1322,9 +1335,13 @@ class Context private constructor(
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
                     val operands = expression.arguments()
                     operands.forEach { resolveAtom(it, scope) }
-                    inferArithmeticOperandTypes(atom.value, operands, scope)
-                    val hasDouble = operands.any { it.type == GroundedType.DOUBLE }
-                    expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
+                    if (hasGroundedArithmeticTypeError(operands)) {
+                        expression.type = GroundedType.ATOM
+                    } else {
+                        inferArithmeticOperandTypes(atom.value, operands, scope)
+                        val hasDouble = operands.any { it.type == GroundedType.DOUBLE }
+                        expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
+                    }
                 }
 
                 Predefined.DIVIDE -> {

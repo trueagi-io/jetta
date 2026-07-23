@@ -265,8 +265,17 @@ open class FunctionGenerator(
                             // like the other Special-headed data forms below. Genuine
                             // arithmetic always carries an INT/DOUBLE type, so this never
                             // suppresses a real `(+ …)`/`(* …)`/`(- …)` computation.
-                            if (atom.type == GroundedType.ATOM) generateQuote(mv, atom)
-                            else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
+                            if (atom.type == GroundedType.ATOM) {
+                                // D2.2 (tier i): a concrete non-numeric operand (String) makes this
+                                // an eval-time type error — emit the inert `(Error <expr>
+                                // (BadArgType pos Number <actual>))` atom for THIS instance instead
+                                // of the inert operator tuple. Recomputed here (not carried from the
+                                // resolver) so it stays identity-precise: an identical `(+ …)` inside
+                                // quoted expected data is emitted verbatim by generateQuote, never
+                                // reaching this arithmetic-dispatch branch.
+                                val err = groundedArithmeticError(atom)
+                                if (err != null) generateQuote(mv, err) else generateQuote(mv, atom)
+                            } else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
 
                         Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
                         Predefined.DIV -> generateDiv(mv, arguments, doReturn)
@@ -1747,6 +1756,23 @@ open class FunctionGenerator(
         generateAtom(mv, arguments[1], null, false)
         mv.visitInsn(Opcodes.IREM)
         if (doReturn) generateReturn(mv)
+    }
+
+    /**
+     * D2.2 (tier i): if [atom] is a grounded arithmetic application with a concrete non-numeric
+     * operand (today `String`), the `(Error <atom> (BadArgType <pos> Number <actual>))` atom to
+     * emit in its place, else null. `pos` is 1-based over the operands. Mirrors the resolver's
+     * [net.singularity.jetta.compiler.frontend.resolve.Context] `hasGroundedArithmeticTypeError`
+     * detection, and is only consulted once the resolver has stamped the node `ATOM`.
+     */
+    private fun groundedArithmeticError(atom: Expression): Expression? {
+        atom.atoms.drop(1).forEachIndexed { i, operand ->
+            if (operand.type == GroundedType.STRING) {
+                val badArg = Expression(Symbol("BadArgType"), Grounded(i + 1), Symbol("Number"), Symbol("String"))
+                return Expression(Symbol("Error"), atom, badArg)
+            }
+        }
+        return null
     }
 
     private fun generateArithmetics(
