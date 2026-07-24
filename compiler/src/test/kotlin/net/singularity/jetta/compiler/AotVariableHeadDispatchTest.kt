@@ -274,6 +274,56 @@ class AotVariableHeadDispatchTest {
         }
     }
 
+    // D3 increment D.1b: MULTI-RULE UNION in the reducer + `if`/`==`/`empty` execution. Two
+    // `(= $type T)` rules coexist — a direct-match rule and a "reasoning" rule. `(= (Mortal Plato)
+    // T)` matches BOTH: the direct rule's `match` finds no `(: _ (Mortal Plato))` (→ `[]`), while
+    // the reasoning rule's `match` finds `(: HumansAreMortal (-> (Human $t) (Mortal $t)))`, and the
+    // constructed `(if (== (Human Plato) (Mortal Plato)) (empty) (= (Human Plato) T))` runs the
+    // `==` guard (False), recurses into `(= (Human Plato) T)` → the direct rule finds
+    // `(: PlatoIsHuman (Human Plato))` → `[T]`. Hyperon UNIONs the two rule bodies (`[] ∪ [T]`);
+    // `firstOrNull` would drop `[T]`. Ordering mirrors d4_type_prop: the Socrates assert precedes
+    // the reasoning rule (watermark keeps it single-valued `[T]`, not `[T,T]`).
+    private val reflMatchReasoning = """
+        (: Entity Type)
+        (: Socrates Entity)
+        (: Plato Entity)
+        (: Human (-> Entity Type))
+        (: Mortal (-> Entity Type))
+        (: HumansAreMortal (-> (Human ${'$'}t) (Mortal ${'$'}t)))
+        (: SocratesIsHuman (Human Socrates))
+        (: PlatoIsHuman (Human Plato))
+        (: SocratesIsMortal (Mortal Socrates))
+        (: T Type)
+        (= (= ${'$'}x ${'$'}x) T)
+        (= (= ${'$'}type T)
+           (match &self (: ${'$'}x ${'$'}type) T))
+        !(assertEqual (= (Mortal Socrates) T) T)
+        !(assertEqualToResult (= (Mortal Plato) T) ())
+        (= (= ${'$'}type T)
+           (match &self (: ${'$'}impl (-> ${'$'}cause ${'$'}type))
+              (if (== ${'$'}cause ${'$'}type) (empty) (= ${'$'}cause T))))
+        !(assertEqual (= (Mortal Plato) T) T)
+        (: Sam Entity)
+        !(assertEqualToResult (= (Human Sam) T) ())
+    """.trimIndent()
+
+    @Test
+    fun `multi-rule union reduces reasoning rule with if-eq-empty`() {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-reason-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "ReflReason.metta").apply { writeText(reflMatchReasoning) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+            // No throw = `(= (Mortal Plato) T)` unioned both rules to `[T]` via the reasoning
+            // rule's match + `if`/`==`/`empty`, and `(= (Human Sam) T)` stayed empty `()`.
+            runCompiled(outDir, "ReflReason")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     /** Load and run the generated `__main` in-process, with no JitEnv, capturing stdout. */
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)

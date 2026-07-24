@@ -153,10 +153,33 @@ object JettaCallSite {
      * ground, so results need no binding install.
      */
     private fun reduceToBag(spaceName: String, atom: Atom, depth: Int): List<Atom> {
+        if (depth >= MAX_REDUCTION_STEPS) return listOf(atom)
+        // D.1b — multi-rule union. A term matching MORE THAN ONE `(= term $r)` rule reduces via
+        // EACH, and hyperon UNIONs the results (d4:131: `(= (Mortal Plato) T)` matches both the
+        // direct-match rule → `[]` and the reasoning rule → `[T]`, union `[T]`). The single-valued
+        // spine below keeps only the first, so branch here. Fires ONLY on genuine multiplicity;
+        // the 0/1-rule common case falls through to the fast, cycle-safe spine unchanged. The
+        // rule query honours the ordered-semantics watermark (via JettaProgram.match), so a rule
+        // declared below the running `!`-form is invisible and does not widen the branch.
+        if (atom is Expression && atom.atoms.isNotEmpty()) {
+            val bodies = allRuleBodies(spaceName, atom)
+            if (bodies.size > 1) return bodies.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
+        }
         val nf = reduceToFixedPoint(spaceName, atom)
-        if (depth >= MAX_REDUCTION_STEPS) return listOf(nf)
         val bag = executeSpecialForm(spaceName, nf, depth) ?: return listOf(nf)
         return bag.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
+    }
+
+    /**
+     * Every `(= expr $r)` rule body in the space (the full non-determinism bag), honouring the
+     * ordered-semantics watermark. The single-valued [reduceOnce] takes `firstOrNull` of the same
+     * query; [reduceToBag] uses this to UNION when more than one rule matches. Each result is a
+     * [BoundAtom] carrying its rule's bindings (already substituted into the body).
+     */
+    private fun allRuleBodies(spaceName: String, expr: Expression): List<Atom> {
+        val r = Variable(REDUCE_VAR)
+        val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
+        return JettaProgram.match(spaceName, pattern, r)
     }
 
     /**
