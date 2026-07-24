@@ -194,6 +194,46 @@ class AotVariableHeadDispatchTest {
         }
     }
 
+    // D3 increment C: `=`-as-reducible-head. `(= (= $x $x) T)` is a reflective-equality rule
+    // (a space fact). A binary `(= a b)` in a VALUE position is dispatched to the reducer, which
+    // reduces its OPERANDS applicatively — `(HumansAreMortal SocratesIsHuman)` → `SocratesIsMortal`
+    // via its own `=` rule, `(+ 1 1)` / `(- 3 1)` → 2 (grounded) — and then matches the reduced
+    // `(= a' a')` against the reflexive rule to yield T. A `(= a b)` whose operands stay distinct
+    // (`(= SocratesIsHuman SocratesIsMortal)`) matches no rule and remains inert — its own normal
+    // form (assertEqualToResult against the quoted literal).
+    private val eqRedex = """
+        (: Socrates Entity)
+        (: Human (-> Entity Type))
+        (: Mortal (-> Entity Type))
+        (: HumansAreMortal (-> (Human ${'$'}t) (Mortal ${'$'}t)))
+        (: SocratesIsHuman (Human Socrates))
+        (: SocratesIsMortal (Mortal Socrates))
+        (= (HumansAreMortal SocratesIsHuman) SocratesIsMortal)
+        (: T Type)
+        (= (= ${'$'}x ${'$'}x) T)
+        !(assertEqual (= SocratesIsMortal (HumansAreMortal SocratesIsHuman)) T)
+        !(assertEqual (= (+ 1 1) (- 3 1)) T)
+        !(assertEqualToResult
+           (= SocratesIsHuman SocratesIsMortal)
+           ((= SocratesIsHuman SocratesIsMortal)))
+    """.trimIndent()
+
+    @Test
+    fun `equality-as-redex reduces its operands and matches the reflexive rule`() {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-eqredex-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "EqRedex.metta").apply { writeText(eqRedex) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+            // No throw = both `= … → T` reductions held AND the distinct-operand `(= …)` stayed inert.
+            runCompiled(outDir, "EqRedex")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     /** Load and run the generated `__main` in-process, with no JitEnv, capturing stdout. */
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)

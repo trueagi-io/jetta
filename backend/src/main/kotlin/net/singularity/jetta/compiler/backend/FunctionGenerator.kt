@@ -313,13 +313,28 @@ open class FunctionGenerator(
                         Predefined.MAP_ -> generateCall(mv, Predefined.MAP_, arguments, atom.resolved)
                         Predefined.FLAT_MAP_ -> generateCall(mv, Predefined.FLAT_MAP_, arguments, atom.resolved)
                         Predefined.QUOTE -> generateQuote(mv, arguments[0])
+                        Predefined.PATTERN -> {
+                            // D3 increment C — `=`-as-reducible-head. A binary `(= a b)` in a
+                            // VALUE position (e.g. the argument of `assertEqual`, NOT a top-level
+                            // rule declaration — those are partitioned out by FunctionRewriter, and
+                            // NOT a `get-type`/`match` operand — those are quoted by their own
+                            // meta-Atom / `Match`-node paths) is dispatched through JettaCallSite so
+                            // the reducer can rewrite it via reflective-style rules such as
+                            // `(= (= $x $x) T)`, reducing its operands applicatively first. When no
+                            // such rule exists the reducer returns `(= a b)` unchanged (its own
+                            // normal form), so this is 0-regression for programs without one.
+                            if (arguments.size == 2) {
+                                generateExpressionHeadDispatchCall(mv, atom)
+                            } else {
+                                generateQuote(mv, atom)
+                            }
+                        }
                         Predefined.ANNOTATION,
-                        Predefined.PATTERN,
                         Predefined.TYPE,
                         Predefined.ARROW -> {
                             // Data forms with a Special head reach codegen as inert
                             // values (see resolver counterpart). Emit as a quoted
-                            // expression so the whole `(@ doc …)` / `(= … …)` /
+                            // expression so the whole `(@ doc …)` /
                             // `(: … …)` / `(-> …)` lives as a runtime Expression atom.
                             generateQuote(mv, atom)
                         }
@@ -1391,14 +1406,15 @@ open class FunctionGenerator(
     }
 
     /**
-     * Expression-headed application `((head…) args…)` — a curried call such as
-     * `(((curry +) 2) 3)`, whose head is itself an Expression the static codegen can't lower
-     * to a call. Mirrors [generateDispatchCall] but pushes the head as a quoted Atom (it is an
-     * Expression, not a variable slot): the head is quoted inert with `evalCalls = true` so any
-     * reducible scalar call nested in it keeps its value-position semantics, args are packed and
-     * boxed exactly as for variable-head dispatch, and the whole `(head args…)` is dispatched
-     * through the [net.singularity.jetta.runtime.functions.JettaCallSite] bootstrap. At runtime
-     * the reducer rewrites it via space `(= …)` rules (+ the registry step) or, if nothing
+     * Dispatch a `(head args…)` application whose head is not a statically-callable Symbol/
+     * Variable slot — either an Expression head (a curried call such as `(((curry +) 2) 3)`) or
+     * a Special-`=` head in a value position (the increment-C `=`-redex `(= a b)`). Mirrors
+     * [generateDispatchCall] but pushes the head as a quoted Atom rather than loading a variable
+     * slot: the head is quoted with `evalCalls = true` so any reducible scalar call nested in it
+     * keeps its value-position semantics, args are packed and boxed exactly as for variable-head
+     * dispatch, and the whole `(head args…)` is dispatched through the
+     * [net.singularity.jetta.runtime.functions.JettaCallSite] bootstrap. At runtime the reducer
+     * rewrites it via space `(= …)` rules (+ the registry / `=`-operand steps) or, if nothing
      * applies, returns it inert.
      */
     private fun generateExpressionHeadDispatchCall(mv: LocalVariablesSorter, atom: Expression) {

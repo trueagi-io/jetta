@@ -143,6 +143,13 @@ object JettaCallSite {
                 first.atom
             } else first
         }
+        // D3 increment C — `=`-as-reducible-head. A binary `(= a b)` that no direct `(= (= a b)
+        // $r)` rule rewrote may still be a redex under a reflective rule `(= (= $x $x) T)`, which
+        // needs its OPERANDS reduced applicatively first (`(= S (HumansAreMortal SocratesIsHuman))`
+        // → `(= S S)` → T). Try that here. The reduced form is committed ONLY when it matches a
+        // rule; otherwise this returns null and the expression stays inert UNCHANGED (its own
+        // normal form) — so a program without such a rule is byte-identical.
+        reduceEqOperands(spaceName, expr)?.let { return it }
         // D3 increment A — unified reducer: when NO space `(= expr $r)` rule applies, fall
         // back to the registry (grounded op / compiled user fn), exactly as [dispatch] does
         // for the TOP head. This is what makes a term PRODUCED mid-reduction reduce further:
@@ -172,6 +179,32 @@ object JettaCallSite {
         val args = arrayOfNulls<Any?>(atoms.size - 1)
         for (i in 1 until atoms.size) args[i - 1] = atoms[i]
         return JettaLinkRegistry.invoke(entry, args) as? Atom
+    }
+
+    /**
+     * Increment C — reduce the operands of a binary `(= a b)` applicatively and, if the reduced
+     * `(= a' b')` matches an `=`-rule (typically the reflective `(= (= $x $x) T)`), return that
+     * rewrite. Only fires for a `=`-headed 2-operand expression; returns null (leave `(= a b)`
+     * inert UNCHANGED) when nothing reduces or the reduced form matches no rule, so a program
+     * without a reflective `=`-rule is byte-identical. Termination: operands are reduced to a
+     * fixed point (its own budget + cycle guard) and the `unchanged` guard prevents re-entry.
+     */
+    private fun reduceEqOperands(spaceName: String, expr: Expression): Atom? {
+        val atoms = expr.atoms
+        if (atoms.size != 3) return null
+        val head = atoms[0]
+        if (opHeadName(head) != PATTERN_EQ) return null
+        val a = reduceToFixedPoint(spaceName, atoms[1])
+        val b = reduceToFixedPoint(spaceName, atoms[2])
+        if (a == atoms[1] && b == atoms[2]) return null // neither operand reduced — nothing new
+        val reduced = Expression(listOf(head, a, b))
+        val r = Variable(REDUCE_VAR)
+        val pattern = Expression(listOf(Special(PATTERN_EQ), reduced, r))
+        val match = JettaProgram.match(spaceName, pattern, r).firstOrNull() ?: return null
+        return if (match is BoundAtom) {
+            Matcher.installBindings(match.bindings)
+            match.atom
+        } else match
     }
 
     /**
