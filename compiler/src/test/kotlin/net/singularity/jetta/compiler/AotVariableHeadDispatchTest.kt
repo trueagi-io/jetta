@@ -234,6 +234,46 @@ class AotVariableHeadDispatchTest {
         }
     }
 
+    // D3 increment D.1: reflective `match` EXECUTED mid-reduction. The rule
+    // `(= (= $type T) (match &self (: $x $type) T))` makes `(= (Mortal Socrates) T)` rewrite to
+    // the runtime term `(match &self (: $x (Mortal Socrates)) T)` — which has no compiled `Match`
+    // node (it was CONSTRUCTED by a rule body), so the reducer must interpret it against the live
+    // space. With the `(: SocratesIsMortal (Mortal Socrates))` fact present it yields `T`; for
+    // `(Mortal Plato)`, whose type is not asserted, the same `match` yields the empty bag `()`.
+    // Guards the Tier-2 special-form execution: `match` runs, `empty` result threads as `()`.
+    private val reflMatch = """
+        (: Entity Type)
+        (: Socrates Entity)
+        (: Plato Entity)
+        (: Human (-> Entity Type))
+        (: Mortal (-> Entity Type))
+        (: SocratesIsHuman (Human Socrates))
+        (: SocratesIsMortal (Mortal Socrates))
+        (: T Type)
+        (= (= ${'$'}x ${'$'}x) T)
+        (= (= ${'$'}type T)
+           (match &self (: ${'$'}x ${'$'}type) T))
+        !(assertEqual (= (Mortal Socrates) T) T)
+        !(assertEqualToResult (= (Mortal Plato) T) ())
+    """.trimIndent()
+
+    @Test
+    fun `reflective match constructed by a rule body is executed by the reducer`() {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-reflmatch-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "ReflMatch.metta").apply { writeText(reflMatch) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+            // No throw = `(= (Mortal Socrates) T)` → T (match found the `:` fact) AND
+            // `(= (Mortal Plato) T)` → () (match yielded the empty bag).
+            runCompiled(outDir, "ReflMatch")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     /** Load and run the generated `__main` in-process, with no JitEnv, capturing stdout. */
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)
