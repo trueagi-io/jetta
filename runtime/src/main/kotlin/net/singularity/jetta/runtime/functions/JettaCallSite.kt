@@ -136,11 +136,42 @@ object JettaCallSite {
         val r = Variable(REDUCE_VAR)
         val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
         val results = JettaProgram.match(spaceName, pattern, r)
-        val first = results.firstOrNull() ?: return null
-        return if (first is BoundAtom) {
-            Matcher.installBindings(first.bindings)
-            first.atom
-        } else first
+        val first = results.firstOrNull()
+        if (first != null) {
+            return if (first is BoundAtom) {
+                Matcher.installBindings(first.bindings)
+                first.atom
+            } else first
+        }
+        // D3 increment A — unified reducer: when NO space `(= expr $r)` rule applies, fall
+        // back to the registry (grounded op / compiled user fn), exactly as [dispatch] does
+        // for the TOP head. This is what makes a term PRODUCED mid-reduction reduce further:
+        // `(((curry +) 2) 3)` rewrites (via the space rule) to `(+ 2 3)`, which has no `(=
+        // (+ 2 3) $r)` fact — here the registry computes the grounded `+` → `5`. Reached only
+        // on the space-rule miss, so the hot symbolic/backchain path (where a rule always
+        // matches) stays byte-identical; the previously-dead-end miss now evaluates.
+        return reduceViaRegistry(expr)
+    }
+
+    /**
+     * Evaluate `expr` = `(head args…)` by resolving `head` to a registry entry (a grounded
+     * operator such as `+`, or a compiled user function) and invoking it — the recursion-step
+     * counterpart to [dispatch]'s top-head registry lookup. Returns null (leave inert) when the
+     * head is not a registered op/function, the arity mismatches (a partial application like
+     * `((curry +) 2)` — no matching entry, stays inert as MeTTa requires), the op is not
+     * computable over its operands (a grounded op over non-numbers), or the result is a
+     * non-determinism bag (which a single reduction step cannot represent — left inert here).
+     */
+    private fun reduceViaRegistry(expr: Expression): Atom? {
+        val atoms = expr.atoms
+        if (atoms.isEmpty()) return null
+        val name = opHeadName(Matcher.resolveBinding(atoms[0])) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: return null
+        if (entry.multivalued) return null
+        if (entry.paramTypes.size != atoms.size - 1) return null
+        val args = arrayOfNulls<Any?>(atoms.size - 1)
+        for (i in 1 until atoms.size) args[i - 1] = atoms[i]
+        return JettaLinkRegistry.invoke(entry, args) as? Atom
     }
 
     /**

@@ -406,20 +406,31 @@ open class FunctionGenerator(
                     is Lambda -> generateInlineLambdaCall(mv, func, arguments)
 
                     else -> {
-                        // Expression with a non-callable head — a tuple of tuples such
-                        // as `((stop ventilation) (start kettle))` (e.g. the argument of
-                        // `superpose`), or a `(Grounded …)`/`(-> …)`-headed data form.
-                        // The resolver already stamps these as inert ATOM data; quote
-                        // the whole expression so it lives as a runtime Expression atom
-                        // (runtime dispatch may still reduce it via space rules).
-                        // Applicative order (symmetric with the unresolved-Symbol-head
-                        // case above): in this value position, a reducible SCALAR call
-                        // among the tuple elements is evaluated for its value/side effect
-                        // — e.g. `(hide ((add-atom …) (remove-atom …)))` must run its
-                        // element calls. Genuinely inert data (elements with
-                        // resolved == null, like `(stop ventilation)`) stays quoted, so
-                        // `superpose`'s data tuples are unaffected.
-                        generateQuote(mv, atom, evalCalls = true)
+                        // D3 increment B — Expression-headed form `((h …) a …)`. Two shapes
+                        // arrive here and they need opposite treatment:
+                        //
+                        //  * a CURRIED APPLICATION `(((curry +) 2) 3)` — the head is an
+                        //    *unresolved* Expression (`curry`/`lambda` are defined as space
+                        //    `(= …)` facts, never resolved to a compiled function). Dispatch it
+                        //    through [JettaCallSite] so the unified reducer rewrites it by the
+                        //    space rule (`(= (((curry $f) $x) $y) ($f $x $y))`) and finishes the
+                        //    produced `(+ 2 3)` via the registry step (increment A).
+                        //  * an EFFECT/DATA TUPLE `((add-atom …) (add-atom …))` — the head is a
+                        //    *resolved* reducible call. Its element calls must be EVALUATED for
+                        //    their side effects (the hide idiom, match templates), so keep the
+                        //    old applicative-order quote path.
+                        //
+                        // The head's resolution status is the discriminator: `resolved == null`
+                        // ⇒ curried application ⇒ dispatch; otherwise the effect/data path. A
+                        // genuinely-inert unresolved tuple (`((stop ventilation) …)`) also takes
+                        // the dispatch path but matches no rule/op and returns unchanged, so this
+                        // stays 0-regression for inert data.
+                        val headExpr = func as? Expression
+                        if (headExpr != null && headExpr.resolved == null) {
+                            generateExpressionHeadDispatchCall(mv, atom)
+                        } else {
+                            generateQuote(mv, atom, evalCalls = true)
+                        }
                     }
                 }
             }
@@ -1361,6 +1372,39 @@ open class FunctionGenerator(
         } else {
             generateLoadVar(mv, variable, function.params, isStatic, className)
         }
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitInvokeDynamicInsn(
+            "apply",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            CALL_SITE_BOOTSTRAP_HANDLE,
+            // Static bootstrap arg: the space name to query for `(= …)` rules.
+            moduleSpaceName,
+        )
+    }
+
+    /**
+     * Expression-headed application `((head…) args…)` — a curried call such as
+     * `(((curry +) 2) 3)`, whose head is itself an Expression the static codegen can't lower
+     * to a call. Mirrors [generateDispatchCall] but pushes the head as a quoted Atom (it is an
+     * Expression, not a variable slot): the head is quoted inert with `evalCalls = true` so any
+     * reducible scalar call nested in it keeps its value-position semantics, args are packed and
+     * boxed exactly as for variable-head dispatch, and the whole `(head args…)` is dispatched
+     * through the [net.singularity.jetta.runtime.functions.JettaCallSite] bootstrap. At runtime
+     * the reducer rewrites it via space `(= …)` rules (+ the registry step) or, if nothing
+     * applies, returns it inert.
+     */
+    private fun generateExpressionHeadDispatchCall(mv: LocalVariablesSorter, atom: Expression) {
+        val head = atom.atoms.first()
+        val arguments = atom.atoms.drop(1)
+        generateQuote(mv, head, evalCalls = true)
         generateLoadInt(arguments.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
         arguments.forEachIndexed { i, arg ->

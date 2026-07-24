@@ -153,6 +153,47 @@ class AotVariableHeadDispatchTest {
         }
     }
 
+    // D3 increments A+B: an EXPRESSION-headed (curried) application `(((curry +) 2) 3)`.
+    // `curry` is defined by a space `(= …)` fact whose LHS head is itself an Expression, so
+    // it never becomes a compiled function — the application escapes static dispatch and
+    // reaches `JettaCallSite` via the expression-head indy wiring (increment B). The reducer
+    // rewrites it by the space rule to `(+ 2 3)`, then the unified registry step (increment A)
+    // computes the grounded `+` to `5`. A PARTIAL application `((curry +) 2)` matches no rule
+    // (wrong arity) and must stay inert — its own normal form, per MeTTa.
+    private val curried = """
+        (: curry (-> (-> ${'$'}a ${'$'}b ${'$'}c) (-> ${'$'}a (-> ${'$'}b ${'$'}c))))
+        (= (((curry ${'$'}f) ${'$'}x) ${'$'}y) (${'$'}f ${'$'}x ${'$'}y))
+        (: curry-a (-> (-> ${'$'}a ${'$'}b ${'$'}c) ${'$'}a (-> ${'$'}b ${'$'}c)))
+        (= ((curry-a ${'$'}f ${'$'}a) ${'$'}b) (${'$'}f ${'$'}a ${'$'}b))
+        !(println (((curry +) 2) 3))
+        !(println ((curry +) 2))
+        !(println ((curry-a + 2) 3))
+        !(assertEqual (((curry +) 2) 3) 5)
+        !(assertEqual ((curry-a + 2) 3) 5)
+        !(assertEqualToResult ((curry +) 2) (((curry +) 2)))
+    """.trimIndent()
+
+    @Test
+    fun `curried application reduces to a grounded value through the unified reducer`() {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-curry-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "Curried.metta").apply { writeText(curried) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+
+            // No throw = the two assertEqual + assertEqualToResult held; the three println
+            // lines pin the reduced full applications and the inert partial application.
+            val output = runCompiled(outDir, "Curried").trim().lines().map { it.trim() }
+            assertEquals("5", output[0])
+            assertEquals("((curry +) 2)", output[1])
+            assertEquals("5", output[2])
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     /** Load and run the generated `__main` in-process, with no JitEnv, capturing stdout. */
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)
