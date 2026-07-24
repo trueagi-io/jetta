@@ -323,6 +323,26 @@ open class FunctionGenerator(
                             // `(: … …)` / `(-> …)` lives as a runtime Expression atom.
                             generateQuote(mv, atom)
                         }
+                        Predefined.COND_EQ, Predefined.COND_NEQ ->
+                            // D2.4 (increment 1): the resolver stamps a `==`/`!=` node ATOM when
+                            // its operands are a concrete numeric-vs-String mismatch (an eval-time
+                            // type error). In that case emit the inert `(Error <expr>
+                            // (BadArgType …))` VALUE for THIS instance — a reference, not a Bool —
+                            // so it never reaches the integer-comparison path (which would
+                            // VerifyError over a String operand). Recomputed here so it stays
+                            // identity-precise (an identical `(== …)` inside quoted expected data
+                            // is emitted verbatim by generateQuote, never reaching this branch).
+                            if (atom.type == GroundedType.ATOM) {
+                                val err = comparisonBadArgType(atom)
+                                if (err != null) generateQuote(mv, err) else generateQuote(mv, atom)
+                                if (doReturn) mv.visitInsn(Opcodes.ARETURN)
+                            } else generateIf(
+                                mv,
+                                listOf(atom, Grounded(true), Grounded(false)),
+                                exit,
+                                doReturn
+                            )
+
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
                                 mv,
@@ -1849,6 +1869,37 @@ open class FunctionGenerator(
         atom.atoms.drop(1).forEachIndexed { i, operand ->
             if (operand.type == GroundedType.STRING) {
                 val badArg = Expression(Symbol("BadArgType"), Grounded(i + 1), Symbol("Number"), Symbol("String"))
+                return Expression(Symbol("Error"), atom, badArg)
+            }
+        }
+        return null
+    }
+
+    /** The MeTTa-level type name of a grounded value type (the name hyperon uses in a
+     *  `BadArgType`): the numeric tower collapses to `Number`, the rest map by name. */
+    private fun mettaTypeName(t: Atom?): String = when (t) {
+        GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE -> "Number"
+        GroundedType.STRING -> "String"
+        GroundedType.BOOLEAN -> "Bool"
+        else -> "%Undefined%"
+    }
+
+    /**
+     * D2.4 (increment 1): build the `(Error <call> (BadArgType <pos> <exp> <act>))` atom for a
+     * type-errored `==`/`!=`. `==` is grounded `(-> $t $t Bool)`, so `$t` binds to the first
+     * operand's type and any later operand of a different type is the offender. Report its
+     * 1-based position, the expected type (arg0's), and its actual type — mirroring hyperon's
+     * left-to-right binding (`(== 5 "S")` → `(BadArgType 2 Number String)`; the reversed
+     * `(== "S" 5)` → `(BadArgType 2 String Number)`). Returns null if no mismatch is found.
+     */
+    private fun comparisonBadArgType(atom: Expression): Expression? {
+        val operands = atom.atoms.drop(1)
+        if (operands.size < 2) return null
+        val expected = mettaTypeName(operands[0].type)
+        operands.drop(1).forEachIndexed { i, operand ->
+            val actual = mettaTypeName(operand.type)
+            if (actual != expected) {
+                val badArg = Expression(Symbol("BadArgType"), Grounded(i + 2), Symbol(expected), Symbol(actual))
                 return Expression(Symbol("Error"), atom, badArg)
             }
         }

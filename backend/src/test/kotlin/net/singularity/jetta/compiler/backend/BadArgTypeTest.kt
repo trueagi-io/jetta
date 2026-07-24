@@ -70,6 +70,41 @@ class BadArgTypeTest : GeneratorTestBase() {
     )
 
     /**
+     * D2.4 (increment 1): `==`/`!=` are grounded `(-> $t $t Bool)`, so a concrete numeric-vs-String
+     * operand mismatch is an eval-time type error — the node is stamped ATOM by the resolver and
+     * codegen emits the `(Error … (BadArgType …))` VALUE instead of the integer-comparison path
+     * (which would VerifyError over a String operand). `$t` binds to the first operand's type, so
+     * the position/expected/actual mirror hyperon's left-to-right binding.
+     */
+    @Test
+    fun `grounded comparison with a string operand is a BadArgType error`() = run(
+        "BadArgCmp",
+        """
+            !(assertEqualToResult
+              (== 5 "S")
+              ((Error (== 5 "S") (BadArgType 2 Number String))))
+            !(assertEqualToResult
+              (== "S" 5)
+              ((Error (== "S" 5) (BadArgType 2 String Number))))
+            !(assertEqualToResult
+              (!= 5 "S")
+              ((Error (!= 5 "S") (BadArgType 2 Number String))))
+        """.trimIndent()
+    )
+
+    /** Well-typed comparisons keep the Bool path — no false positives on same-type operands. */
+    @Test
+    fun `well-typed comparison is unaffected`() = run(
+        "BadArgCmpOk",
+        """
+            !(assertEqual (== 5 5) True)
+            !(assertEqual (== 5 6) False)
+            !(assertEqual (== "a" "a") True)
+            !(assertEqual (== "a" "b") False)
+        """.trimIndent()
+    )
+
+    /**
      * D2.3: a `(: f (-> …))`-declared user function type-checks its args before reducing. `(Add S
      * Z)` errors (S : (-> Nat Nat), param 1 wants Nat) instead of matching `(= (Add $x Z) $x)`;
      * a well-typed call reduces normally; a gradual/undeclared argument (`Something`) is allowed.
