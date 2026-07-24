@@ -324,6 +324,49 @@ class AotVariableHeadDispatchTest {
         }
     }
 
+    // D3 increment (a): RELATIONAL dispatch for a free-variable argument (backward chaining).
+    // `Mortal` mixes a constant clause `(= (Mortal Socrates) T)` with a wildcard clause
+    // `(= (Mortal $x) (Human $x))` — the wildcard-swallow shape. Called with a FREE `$x`,
+    // functional first-match dispatch fails `$x == Socrates` and is swallowed by the wildcard
+    // (→ only `Plato`, via `(Human $x)` → `(= (Human Plato) T)`). The compile-time prologue
+    // routes the free-var call to `reduceRelationalIfFree`, which unions over BOTH clauses by
+    // unification (binding `$x = Socrates` for the constant clause, `$x = Plato` through the
+    // wildcard body) and foliates the per-branch bindings, so `(ift (Mortal $x) $x)` yields the
+    // full bag `[Socrates, Plato]`. Guards the relational-vs-functional fix; the narrow shape
+    // trigger keeps purely-relational functions off this path.
+    private val backwardChain = """
+        (: Entity Type)
+        (: Socrates Entity)
+        (: Plato Entity)
+        (: Human (-> Entity Type))
+        (: Mortal (-> Entity Type))
+        (: T Type)
+        (= (= ${'$'}x ${'$'}x) T)
+        (= (Human Plato) T)
+        (= (Mortal Socrates) T)
+        (= (Mortal ${'$'}x) (Human ${'$'}x))
+        (: ift (-> Type ${'$'}t ${'$'}t))
+        (= (ift T ${'$'}then) ${'$'}then)
+        !(assertEqualToResult (ift (Mortal ${'$'}x) ${'$'}x) (Socrates Plato))
+    """.trimIndent()
+
+    @Test
+    fun `free-variable argument reduces relationally over all clauses`() {
+        val tmp = File(System.getProperty("java.io.tmpdir"), "jetta-backchain-" + UUID.randomUUID())
+        val srcDir = File(tmp, "src").apply { mkdirs() }
+        val outDir = File(tmp, "out").apply { mkdirs() }
+        try {
+            val src = File(srcDir, "BackChain.metta").apply { writeText(backwardChain) }
+            val code = Compiler(files = listOf(src.absolutePath), outputDir = outDir.absolutePath).compile()
+            assertEquals(0, code, "compile should succeed")
+            // No throw = `(Mortal $x)` unioned both clauses relationally to `[T{Socrates},
+            // T{Plato}]`, and `ift` foliated each binding to yield `[Socrates, Plato]`.
+            runCompiled(outDir, "BackChain")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     /** Load and run the generated `__main` in-process, with no JitEnv, capturing stdout. */
     private fun runCompiled(outDir: File, programName: String): String {
         val loader = URLClassLoader(arrayOf(outDir.toURI().toURL()), javaClass.classLoader)

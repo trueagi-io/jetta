@@ -796,6 +796,43 @@ open class FunctionGenerator(
         mv.visitInsn(Opcodes.POP)
     }
 
+    /**
+     * D3 increment (a) — relational-dispatch prologue for the wildcard-swallow shape. A multivalued
+     * function whose Match mixes a GUARDED clause (a constant like `(Mortal Socrates)`) with a
+     * WILDCARD clause (`(Mortal $x)`) mis-handles a FREE-variable argument: the free var fails the
+     * guard's equality and is swallowed by the wildcard, dropping the specific clause that would
+     * UNIFY with it. Emit, at entry: `reduceRelationalIfFree(space, fn, args)` — which returns the
+     * relational bag when an argument is a bare unbound Variable, else null to proceed with the
+     * normal functional dispatch. On a non-null result, pop the entry frame (balance the push in
+     * [generate]) and return it. The narrow shape trigger keeps purely-relational functions
+     * (`(green $x)`, needing applicative arg reduction) and constant-only functions (which already
+     * fall through to `reduceOrInert`) on their existing paths.
+     */
+    private fun maybeEmitRelationalPrologue(mv: LocalVariablesSorter, match: Match) {
+        val funcName = (function as? FunctionDefinition)?.name ?: return
+        val hasGuarded = match.branches.any { it.cond != null }
+        val hasWildcard = match.branches.any { it.cond == null }
+        if (!hasGuarded || !hasWildcard) return
+
+        mv.visitLdcInsn(moduleSpaceName)
+        mv.visitLdcInsn(funcName)
+        emitParamArgsArray(mv)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/functions/JettaCallSite",
+            "reduceRelationalIfFree",
+            "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/List;",
+            false
+        )
+        val proceed = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, proceed)
+        generatePop(mv) // balance the entry Matcher.push() before the early return
+        mv.visitInsn(Opcodes.ARETURN)
+        mv.visitLabel(proceed)
+        mv.visitInsn(Opcodes.POP) // discard the null; fall through to functional dispatch
+    }
+
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
         maybeEmitTypeCheckPrologue(mv)
         // A Match whose clauses are provably mutually exclusive (FunctionRewriter did not
@@ -808,6 +845,7 @@ open class FunctionGenerator(
             generateScalarMatch(mv, match)
             return
         }
+        maybeEmitRelationalPrologue(mv, match)
         emitLineNumber(match)
         val returnType = match.returnType
             ?: match.branches.firstNotNullOfOrNull { it.body.type }

@@ -183,6 +183,85 @@ object JettaCallSite {
     }
 
     /**
+     * D3 increment (a) — RELATIONAL reduction of a compiled function called with a FREE-variable
+     * argument, when [name]'s compiled dispatch would mis-handle it. Returns the relational
+     * result bag, or null (proceed with the ordinary functional dispatch) when no argument is a
+     * bare unbound [Variable].
+     *
+     * WHY: a compiled multivalued function is a first-match cascade (`(== $arg Socrates) => T`,
+     * else the wildcard clause `(Mortal $x)` → `(Human $x)`). A FREE `$x` fails the `== Socrates`
+     * equality (a Variable is not equal to Socrates) and is SWALLOWED by the wildcard — so the
+     * specific clause that would UNIFY `$x = Socrates` is lost, and only the wildcard branch's
+     * value survives (d4:164: `(Mortal $x)` → only `[Plato]`, not `[Socrates, Plato]`). The
+     * relational path instead unions over EVERY clause by unification, reducing each recursively,
+     * foliating per-branch bindings so `$x` reaches the caller (`(ift (Mortal $x) $x)`).
+     *
+     * SCOPE: only a BARE free `Variable` argument triggers this (a compound free-var arg like
+     * `(making $y)` stays on the existing `reduceOrInert` path — it already works). Codegen emits
+     * the call ONLY for functions whose Match mixes a guarded clause with a wildcard clause (the
+     * exact wildcard-swallow shape), so a purely-relational function (`(green $x)`, needing
+     * applicative argument reduction this reducer does NOT do) is never routed here.
+     */
+    @JvmStatic
+    fun reduceRelationalIfFree(spaceName: String, name: String, args: Array<Any?>): List<Atom>? {
+        val hasFreeVar = args.any { it is Atom && Matcher.resolveBinding(it) is Variable }
+        if (!hasFreeVar) return null
+        val atoms = ArrayList<Atom>(args.size + 1)
+        atoms.add(Symbol(name))
+        args.forEach { atoms.add(resolveDeep(toAtom(it))) }
+        return reduceRelationalBag(spaceName, Expression(atoms), 0)
+    }
+
+    /**
+     * Reduce [atom] RELATIONALLY to a bag of [BoundAtom]s, each carrying its branch's bindings.
+     * At each step: union over ALL `(= atom $r)` rule bodies (by unification, not first-match),
+     * recursing into each body under its own pushed [Matcher] frame and [Matcher.foliate]-ing the
+     * branch bindings onto every result — the same per-branch isolation `simpleFlatMap` gives a
+     * source-level non-deterministic call. A `match`/`if`/`==`/`empty` constructed here is executed
+     * ([executeSpecialForm]); a grounded op / compiled fn is finished via the registry; anything
+     * else is its own normal form. Does NOT reduce a term's ARGUMENTS applicatively (that is the
+     * functional compiled path's job) — hence the narrow codegen trigger above.
+     */
+    private fun reduceRelationalBag(spaceName: String, atom: Atom, depth: Int): List<Atom> {
+        if (depth >= MAX_REDUCTION_STEPS) return listOf(atom)
+        if (atom is Expression && atom.atoms.isNotEmpty()) {
+            allRuleBodies(spaceName, atom).takeIf { it.isNotEmpty() }?.let { bodies ->
+                return foliateBranches(spaceName, bodies, depth)
+            }
+            executeSpecialForm(spaceName, atom, depth)?.let { produced ->
+                return foliateBranches(spaceName, produced, depth)
+            }
+            reduceViaRegistry(atom)?.let { return reduceRelationalBag(spaceName, it, depth + 1) }
+        }
+        return listOf(atom)
+    }
+
+    /**
+     * For each branch [source] (a match/rule result, possibly a [BoundAtom]): push a frame, install
+     * its bindings, reduce it relationally one level deeper, and foliate the frame's bindings onto
+     * each result — then pop. Mirrors [simpleFlatMap]'s push/installBindings/foliate/pop so the
+     * per-branch bindings survive to the caller and sibling branches stay isolated.
+     */
+    private fun foliateBranches(spaceName: String, sources: List<Atom>, depth: Int): List<Atom> {
+        val out = ArrayList<Atom>()
+        for (source in sources) {
+            Matcher.push()
+            try {
+                val body = if (source is BoundAtom) {
+                    Matcher.installBindings(source.bindings)
+                    source.atom
+                } else source
+                for (res in reduceRelationalBag(spaceName, body, depth + 1)) {
+                    (Matcher.foliate(res) as? Atom)?.let { out.add(it) }
+                }
+            } finally {
+                Matcher.pop()
+            }
+        }
+        return out
+    }
+
+    /**
      * Execute a special form PRODUCED mid-reduction, returning its result bag; or null when
      * [atom] is not a runtime-constructed special form (the caller then keeps it as its own
      * singleton — every non-special term stays byte-identical). This is the Tier-2 core of
