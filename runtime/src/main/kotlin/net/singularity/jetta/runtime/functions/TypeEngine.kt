@@ -148,10 +148,17 @@ object TypeEngine {
         else -> UNDEF
     }
 
-    /** Built-in operator arrow types: arithmetic → `Number`, comparisons → `Bool`. */
+    /**
+     * Built-in operator arrow types. Arithmetic and ordering are numeric (`(-> Number Number …)`).
+     * Equality `==`/`!=` is polymorphic-homogeneous `(-> $t $t Bool)` — both operands must share a
+     * type — matching hyperon, so `(== 5 "S")` / `(== SocratesIsHuman SamIsMortal)` are `BadArgType`
+     * at position 2 (the second operand, once `$t` binds to the first). A globally-fresh `$t` per
+     * call keeps its variable from colliding with any variable in the checked arguments.
+     */
     private fun builtinType(op: String): Atom? = when (op) {
         "+", "-", "*", "/", "div", "%", "mod" -> arrow(NUMBER, NUMBER, NUMBER)
-        "<", ">", "<=", ">=", "==", "!=" -> arrow(NUMBER, NUMBER, BOOL)
+        "<", ">", "<=", ">=" -> arrow(NUMBER, NUMBER, BOOL)
+        "==", "!=" -> Variable("_eqT#${freshCounter.incrementAndGet()}").let { arrow(it, it, BOOL) }
         else -> null
     }
 

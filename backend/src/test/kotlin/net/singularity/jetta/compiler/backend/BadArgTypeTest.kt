@@ -105,6 +105,47 @@ class BadArgTypeTest : GeneratorTestBase() {
     )
 
     /**
+     * D2.4 (increment 2): a structural `==` of two custom-typed operands whose declared `:` types
+     * do not unify is an eval-time BadArgType. Since the types are `:` facts, this is a RUNTIME
+     * check (`JettaProgram.typeCheckError`): `SocratesIsHuman : (Human Socrates)` and
+     * `SamIsMortal : (Mortal Sam)` don't unify, so `$t` (bound to arg1's type) rejects arg2 →
+     * `(BadArgType 2 (Human Socrates) (Mortal Sam))`.
+     */
+    @Test
+    fun `custom-type comparison mismatch is a BadArgType error`() = runLenient(
+        "BadArgCmpCustom",
+        """
+            (: Entity Type)
+            (: Human (-> Entity Type))
+            (: Mortal (-> Entity Type))
+            (: SocratesIsHuman (Human Socrates))
+            (: SamIsMortal (Mortal Sam))
+            !(assertEqualToResult
+              (== SocratesIsHuman SamIsMortal)
+              ((Error (== SocratesIsHuman SamIsMortal) (BadArgType 2 (Human Socrates) (Mortal Sam)))))
+        """.trimIndent()
+    )
+
+    /**
+     * No false positives on the structural path: well-typed custom operands compare as Bool, and
+     * undeclared (gradual) symbols unify with anything — neither errors.
+     */
+    @Test
+    fun `well-typed and gradual custom comparisons are unaffected`() = runLenient(
+        "BadArgCmpCustomOk",
+        """
+            (: Entity Type)
+            (: Human (-> Entity Type))
+            (: Mortal (-> Entity Type))
+            (: SocratesIsHuman (Human Socrates))
+            !(assertEqualToResult (== Mortal Human) (False))
+            !(assertEqualToResult (== Human Human) (True))
+            !(assertEqualToResult (== Foo Bar) (False))
+            !(assertEqualToResult (== SocratesIsHuman SocratesIsHuman) (True))
+        """.trimIndent()
+    )
+
+    /**
      * D2.3: a `(: f (-> …))`-declared user function type-checks its args before reducing. `(Add S
      * Z)` errors (S : (-> Nat Nat), param 1 wants Nat) instead of matching `(= (Add $x Z) $x)`;
      * a well-typed call reduces normally; a gradual/undeclared argument (`Something`) is allowed.

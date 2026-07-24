@@ -323,25 +323,38 @@ open class FunctionGenerator(
                             // `(: … …)` / `(-> …)` lives as a runtime Expression atom.
                             generateQuote(mv, atom)
                         }
-                        Predefined.COND_EQ, Predefined.COND_NEQ ->
-                            // D2.4 (increment 1): the resolver stamps a `==`/`!=` node ATOM when
-                            // its operands are a concrete numeric-vs-String mismatch (an eval-time
-                            // type error). In that case emit the inert `(Error <expr>
-                            // (BadArgType …))` VALUE for THIS instance — a reference, not a Bool —
-                            // so it never reaches the integer-comparison path (which would
-                            // VerifyError over a String operand). Recomputed here so it stays
-                            // identity-precise (an identical `(== …)` inside quoted expected data
-                            // is emitted verbatim by generateQuote, never reaching this branch).
-                            if (atom.type == GroundedType.ATOM) {
-                                val err = comparisonBadArgType(atom)
-                                if (err != null) generateQuote(mv, err) else generateQuote(mv, atom)
-                                if (doReturn) mv.visitInsn(Opcodes.ARETURN)
-                            } else generateIf(
+                        Predefined.COND_EQ, Predefined.COND_NEQ -> when {
+                            // D2.4 (increment 1): the resolver stamps a `==`/`!=` node ATOM when its
+                            // operands are a concrete numeric-vs-String mismatch (an eval-time type
+                            // error). Emit the inert `(Error <expr> (BadArgType …))` VALUE for THIS
+                            // instance — a reference, not a Bool — so it never reaches the
+                            // integer-comparison path (which would VerifyError over a String
+                            // operand). Recomputed here so it stays identity-precise (an identical
+                            // `(== …)` inside quoted expected data is emitted verbatim by
+                            // generateQuote, never reaching this branch). Falls through to the
+                            // doReturn/exit epilogue.
+                            atom.type == GroundedType.ATOM ->
+                                generateQuote(mv, comparisonBadArgType(atom) ?: atom)
+
+                            // D2.4 (increment 2): a structural comparison of two custom-typed
+                            // operands in a typed program may be an eval-time BadArgType (types are
+                            // `:` facts, so it is a RUNTIME check — `(== SocratesIsHuman
+                            // SamIsMortal)` errors when their declared types don't unify). Only in a
+                            // value/argument position (`!doReturn`), where the result is consumed as
+                            // an Atom, so an `(Error …)` and a `Grounded<Bool>` are interchangeable
+                            // — the bare-run/tail path keeps the primitive-Bool return unchanged.
+                            !doReturn && needsRuntimeComparisonTypeCheck(atom.atoms.drop(1)) -> {
+                                generateComparisonWithTypeCheck(mv, atom, exit)
+                                return
+                            }
+
+                            else -> generateIf(
                                 mv,
                                 listOf(atom, Grounded(true), Grounded(false)),
                                 exit,
                                 doReturn
                             )
+                        }
 
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
@@ -1904,6 +1917,57 @@ open class FunctionGenerator(
             }
         }
         return null
+    }
+
+    /**
+     * D2.4 (increment 2): whether a STRUCTURAL `==`/`!=` (reference operands) warrants a runtime
+     * type check. The custom types being compared live as `:` facts, so the error can only be
+     * decided at runtime ([net.singularity.jetta.runtime.JettaProgram.typeCheckError]). Gated
+     * tightly: the program must declare types at all ([declaredTypeNames]), both operands must be
+     * stable source terms (non-`Variable`), and the comparison must be structural
+     * ([numericCompareType] `== null`) — a numeric/Bool comparison cannot carry a custom-type
+     * mismatch, and hot untyped code (no `:` facts) pays nothing.
+     */
+    private fun needsRuntimeComparisonTypeCheck(operands: List<Atom>): Boolean =
+        declaredTypeNames.isNotEmpty() &&
+            operands.size == 2 &&
+            operands.none { it is Variable } &&
+            numericCompareType(operands[0], operands[1]) == null
+
+    /**
+     * Emit a value-position structural `==`/`!=` guarded by an eval-time type check (D2.4
+     * increment 2). Reconstruct `(== a b)`, ask `JettaProgram.typeCheckError`: a non-null result is
+     * the `(Error … (BadArgType …))` atom (the comparison's value); a null means well-typed /
+     * gradual, so fall through to the ordinary Bool comparison. Both outcomes leave a single Atom
+     * (an `Error` expression or a `Grounded<Bool>`) on the stack, so they merge cleanly. Only called
+     * with `doReturn == false`; honours [exit] (jump) or leaves the value on the stack (join).
+     */
+    private fun generateComparisonWithTypeCheck(mv: LocalVariablesSorter, atom: Expression, exit: Label?) {
+        generateQuote(mv, atom)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.JETTA_PROGRAM,
+            "typeCheckError",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+            false,
+        )
+        val wellTyped = Label()
+        val join = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, wellTyped)
+        // Non-null: the Error atom on the stack IS the result — jump past the Bool path.
+        mv.visitJumpInsn(Opcodes.GOTO, join)
+        mv.visitLabel(wellTyped)
+        mv.visitInsn(Opcodes.POP) // drop the null
+        // Well-typed: the ordinary Bool comparison. generateIf(exit=null) leaves the raw primitive
+        // boolean on the stack; box it into a Grounded<Bool> so BOTH edges reaching [join] carry an
+        // Atom (an `Error` expression or a `Grounded`) — merging a primitive with a reference is a
+        // VerifyError (`top` stack slot). The epilogue's boxing is bypassed (this branch `return`s
+        // from generateAtom), so the boxing is done here explicitly.
+        generateIf(mv, listOf(atom, Grounded(true), Grounded(false)), null, false)
+        wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+        mv.visitLabel(join)
+        if (exit != null) mv.visitJumpInsn(Opcodes.GOTO, exit)
     }
 
     private fun generateArithmetics(
