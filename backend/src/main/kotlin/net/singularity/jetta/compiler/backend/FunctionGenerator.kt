@@ -370,13 +370,24 @@ open class FunctionGenerator(
                         if (atom.resolved != null) {
                             generateCall(mv, func.name, arguments, atom.resolved)
                         } else {
-                            // Unresolved symbol in function position — a data constructor like
-                            // (Cons …), (Pair $x $y). Quote it, but in this applicative
-                            // position evaluate any reducible call nested in its arguments
-                            // (`(Cons (Bind $x (ev $e $env)) …)` stores the VALUE of
-                            // `(ev …)`, not a thunk) — canonical MeTTa: a data constructor
-                            // does not suppress reduction of its arguments.
-                            generateQuote(mv, atom, evalCalls = true)
+                            // D2.4 (increment 4): an inert/undefined application whose argument is
+                            // a statically-known grounded type error (`(f (+ 5 "S"))`, f declared
+                            // but unruled) reduces to that inner error — hyperon's errors are
+                            // absorbing: reducing the argument first surfaces the `(Error …)` as
+                            // the whole application's value. Propagate the FIRST such argument
+                            // error instead of quoting `(f (Error …))`.
+                            val argErr = firstStaticArgError(atom)
+                            if (argErr != null) {
+                                generateQuote(mv, argErr)
+                            } else {
+                                // Unresolved symbol in function position — a data constructor like
+                                // (Cons …), (Pair $x $y). Quote it, but in this applicative
+                                // position evaluate any reducible call nested in its arguments
+                                // (`(Cons (Bind $x (ev $e $env)) …)` stores the VALUE of
+                                // `(ev …)`, not a thunk) — canonical MeTTa: a data constructor
+                                // does not suppress reduction of its arguments.
+                                generateQuote(mv, atom, evalCalls = true)
+                            }
                         }
                     }
 
@@ -1914,6 +1925,30 @@ open class FunctionGenerator(
             if (actual != expected) {
                 val badArg = Expression(Symbol("BadArgType"), Grounded(i + 2), Symbol(expected), Symbol(actual))
                 return Expression(Symbol("Error"), atom, badArg)
+            }
+        }
+        return null
+    }
+
+    /**
+     * D2.4 (increment 4): the first argument of an inert/undefined application that is itself a
+     * statically-known grounded type error, as its `(Error … (BadArgType …))` atom — or null if no
+     * argument statically errors. Errors are absorbing in hyperon: reducing `(f (+ 5 "S"))` reduces
+     * the argument first, surfaces its error, and that error becomes the whole application's value.
+     * Only the compile-time-decidable grounded cases (a String operand of `+`/`-`/`*`, a
+     * numeric-vs-String `==`/`!=`) are recognised here — the same shapes [generateArithmetics] /
+     * the COND_EQ branch turn into errors in a value position. Not recursive (a direct argument
+     * only), matching the `(f (+ 5 "S"))` shape.
+     */
+    private fun firstStaticArgError(atom: Expression): Expression? {
+        atom.atoms.drop(1).forEach { arg ->
+            if (arg is Expression && arg.type == GroundedType.ATOM) {
+                when ((arg.atoms.firstOrNull() as? Special)?.value) {
+                    Predefined.PLUS, Predefined.MINUS, Predefined.TIMES ->
+                        groundedArithmeticError(arg)?.let { return it }
+                    Predefined.COND_EQ, Predefined.COND_NEQ ->
+                        comparisonBadArgType(arg)?.let { return it }
+                }
             }
         }
         return null

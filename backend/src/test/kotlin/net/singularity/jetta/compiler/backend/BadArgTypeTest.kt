@@ -177,4 +177,37 @@ class BadArgTypeTest : GeneratorTestBase() {
             !(assertEqual (pick A B) A)
         """.trimIndent()
     )
+
+    /**
+     * D2.4 (increment 4): errors are absorbing — an inert/undefined application whose argument
+     * reduces to an `(Error …)` yields that error, not `(f (Error …))`. `f` is declared but has no
+     * `=` rule, so `(f (+ 5 "S"))` is an inert head applied to a reducible-error argument; reducing
+     * the argument surfaces the arithmetic error as the whole application's value.
+     */
+    @Test
+    fun `an inner grounded error surfaces through an undefined function`() = runLenient(
+        "BadArgNested",
+        $$"""
+            (: f (-> $t Number))
+            !(assertEqualToResult
+              (f (+ 5 "S"))
+              ((Error (+ 5 "S") (BadArgType 2 Number String))))
+            !(assertEqualToResult
+              (f (== 5 "S"))
+              ((Error (== 5 "S") (BadArgType 2 Number String))))
+        """.trimIndent()
+    )
+
+    /**
+     * No over-firing: an inert application with NO reducible-error argument stays symbolic data
+     * (an undefined constructor is not turned into an error just because it appears in an actual
+     * position).
+     */
+    @Test
+    fun `an inert application without an error argument is preserved`() = runLenient(
+        "BadArgInert",
+        """
+            !(assertEqualToResult (Foo A B) ((Foo A B)))
+        """.trimIndent()
+    )
 }
