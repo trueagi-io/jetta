@@ -37,6 +37,7 @@ class LetRewriter : Rewriter {
                     cond = branch.cond?.let { rewriteAtom(it) as Expression },
                     body = rewriteAtom(branch.body),
                     destructuredBindings = branch.destructuredBindings,
+                    sourceOrdinal = branch.sourceOrdinal,
                 )
             },
             returnType = atom.returnType,
@@ -105,6 +106,30 @@ class LetRewriter : Rewriter {
                     )
                 )
             }
+            // Form 2 — a general STRUCTURAL pattern LHS, e.g. `(let (List $t) VAL BODY)`. The
+            // pattern's variables are bound by unifying it against each result of VAL; BODY is
+            // then evaluated with those bindings. Lowered to the runtime `letMatch` helper plus a
+            // lambda over the pattern variables (document order): `(letMatch (List $t) VAL
+            // (\ ($t) BODY))`. `letMatch` unifies, reads the bindings back, and applies the
+            // lambda per result. Limited to a single pattern variable for now — the common case
+            // and all the reference suite exercises (`(let (List $t) (get-type …) $t)`);
+            // multi-variable patterns fall through to the generic (inert) rewrite.
+            if (lhs is Expression) {
+                val vars = collectPatternVars(lhs)
+                if (vars.size == 1) {
+                    val value = rewriteAtom(rawValue)
+                    val body = rewriteAtom(rawBody)
+                    val paramList = Expression(vars.map { Variable(it) }, position = lhs.position)
+                    val lambda = Expression(
+                        listOf(Special(Predefined.LAMBDA), paramList, body),
+                        position = expression.position,
+                    )
+                    return Expression(
+                        listOf(Symbol(LETMATCH_KEYWORD), lhs, value, lambda),
+                        position = expression.position,
+                    )
+                }
+            }
             // Other pattern-LHS forms: fall through to generic rewrite — a unify-based follow-up.
         }
 
@@ -117,9 +142,24 @@ class LetRewriter : Rewriter {
     private fun isQuoteHead(head: Atom): Boolean =
         (head as? Symbol)?.name == "quote" || (head as? Special)?.value == "quote"
 
+    /** Variable names occurring in [pattern], in document order, deduplicated. */
+    private fun collectPatternVars(pattern: Atom): List<String> {
+        val out = LinkedHashSet<String>()
+        fun go(a: Atom) {
+            when (a) {
+                is Variable -> out.add(a.name)
+                is Expression -> a.atoms.forEach(::go)
+                else -> {}
+            }
+        }
+        go(pattern)
+        return out.toList()
+    }
+
     companion object {
         const val LET_KEYWORD = "let"
         const val LETSTAR_KEYWORD = "let*"
         const val UNQUOTE_KEYWORD = "unquote"
+        const val LETMATCH_KEYWORD = "letMatch"
     }
 }

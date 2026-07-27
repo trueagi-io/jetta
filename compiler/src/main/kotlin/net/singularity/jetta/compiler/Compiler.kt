@@ -154,12 +154,17 @@ class Compiler(
         // manifest and (below) the compiled class, so JettaProgram.init can verify the
         // artifacts loaded at runtime are the ones this program was compiled against.
         val fingerprints = mutableMapOf<String, SpaceDigest.Fingerprint>()
+        // D2.3: per-program set of `(: f …)`-declared symbol names, read from the module's space
+        // facts. Threaded to Generator so only declared functions get the eval-time type-check
+        // prologue (untyped hot code stays uninstrumented). A `:` fact head is `Special`/`Symbol` ":".
+        val declaredTypeNamesByProgram = mutableMapOf<String, Set<String>>()
         allSources.forEachIndexed { i, preRewriteSource ->
             val resolvedSource = resolved[i]
             val programName = resolvedSource.getJvmClassName().substringAfterLast('/')
             val space = (spaces[preRewriteSource] as? SpaceImpl) ?: SpaceImpl()
             val fingerprint = SpaceDigest.of(space.getAtoms())
             fingerprints[programName] = fingerprint
+            declaredTypeNamesByProgram[programName] = Generator.declaredTypeNamesOf(space.getAtoms())
             val ext = storageStrategy.manifestExtensionFor(preRewriteSource, cache, importsBySource)
             SpaceDirectorySerializer.save(
                 space = space,
@@ -190,6 +195,7 @@ class Compiler(
                 autoTable = true,
                 spaceAtomCount = fingerprint?.atomCount,
                 spaceContentHash = fingerprint?.contentHash,
+                declaredTypeNames = declaredTypeNamesByProgram[programName] ?: emptySet(),
             )
             val compiled = generator.generate(it)
             compiled.forEach(::writeResult)

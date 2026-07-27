@@ -522,6 +522,37 @@ class Context private constructor(
     }
 
     /**
+     * D2.2 (tier i): a grounded arithmetic op applied to a concrete non-numeric operand is an
+     * eval-time type error (hyperon yields `(Error <expr> (BadArgType <pos> Number <actual>))`).
+     * When an operand's type is a known non-numeric grounded scalar (today `String`), stamp the
+     * node `ATOM` and return true — this routes codegen away from the inline `IADD`/`DADD` fast
+     * path onto its ATOM branch, where `FunctionGenerator` emits the `(Error …)` atom for THIS
+     * node instance (identity-precise — a structurally-identical `(+ …)` inside quoted expected
+     * data is emitted verbatim, not turned into an error). Numeric operands (Int/Long/Double) and
+     * gradual ones (`Atom`/`%Undefined%`/a bound `Variable`) are left on the normal path.
+     */
+    private fun hasGroundedArithmeticTypeError(operands: List<Atom>): Boolean =
+        operands.any { it.type == GroundedType.STRING }
+
+    /**
+     * D2.4 (increment 1): `==`/`!=` are grounded `(-> $t $t Bool)`, so both operands must
+     * share a type. Detect a statically-known numeric-vs-`String` mismatch — the one
+     * concretely-decidable grounded case — which hyperon reports as
+     * `(Error <expr> (BadArgType <pos> Number String))`. Scoped narrowly on purpose: two
+     * numbers, two Strings, or any operand whose type is gradual (`Atom`/`Any`/`%Undefined%`/a
+     * bound `Variable`) or a reference (Symbol, structural expression) is NOT flagged here —
+     * those stay on the Bool/structural path. Custom-typed operand mismatches are increment 2.
+     */
+    private fun hasGroundedComparisonTypeError(lhs: Atom, rhs: Atom): Boolean {
+        fun isNumeric(t: Atom?) =
+            t == GroundedType.INT || t == GroundedType.LONG || t == GroundedType.DOUBLE
+        val lt = lhs.type
+        val rt = rhs.type
+        return (lt == GroundedType.STRING && isNumeric(rt)) ||
+            (rt == GroundedType.STRING && isNumeric(lt))
+    }
+
+    /**
      * Infer a function's return type from the result-position types in its body,
      * unifying the branches of an `if`/Match. A *self-recursive* call whose type is
      * still the unrefined dynamic top (Atom/Any/null) contributes no information —
@@ -1307,7 +1338,25 @@ class Context private constructor(
                 }
 
                 Predefined.COND_EQ,
-                Predefined.COND_NEQ,
+                Predefined.COND_NEQ -> {
+                    val (_, lhs, rhs) = expression.atoms
+                    resolveAtom(lhs, scope)
+                    resolveAtom(rhs, scope)
+                    // D2.4 (increment 1): `==`/`!=` are grounded `(-> $t $t Bool)` — both
+                    // operands must share a type. A concrete numeric-vs-String mismatch is an
+                    // eval-time type error (hyperon yields `(Error <expr> (BadArgType …))`).
+                    // Stamp the node ATOM so codegen routes it onto the value path (emitting the
+                    // `(Error …)` atom) instead of the Bool comparison path — where an integer
+                    // opcode over a String operand would VerifyError. Genuine Bool comparisons
+                    // and structural `==` over two references are left untouched.
+                    if (hasGroundedComparisonTypeError(lhs, rhs)) {
+                        expression.type = GroundedType.ATOM
+                    } else {
+                        propagateComparisonOperandType(lhs, rhs, scope)
+                        expression.type = GroundedType.BOOLEAN
+                    }
+                }
+
                 Predefined.COND_LT,
                 Predefined.COND_GT,
                 Predefined.COND_LE,
@@ -1322,9 +1371,13 @@ class Context private constructor(
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
                     val operands = expression.arguments()
                     operands.forEach { resolveAtom(it, scope) }
-                    inferArithmeticOperandTypes(atom.value, operands, scope)
-                    val hasDouble = operands.any { it.type == GroundedType.DOUBLE }
-                    expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
+                    if (hasGroundedArithmeticTypeError(operands)) {
+                        expression.type = GroundedType.ATOM
+                    } else {
+                        inferArithmeticOperandTypes(atom.value, operands, scope)
+                        val hasDouble = operands.any { it.type == GroundedType.DOUBLE }
+                        expression.type = if (hasDouble) GroundedType.DOUBLE else GroundedType.INT
+                    }
                 }
 
                 Predefined.DIVIDE -> {

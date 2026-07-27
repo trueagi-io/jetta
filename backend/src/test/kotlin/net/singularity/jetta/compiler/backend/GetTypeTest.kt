@@ -1,0 +1,145 @@
+package net.singularity.jetta.compiler.backend
+
+import net.singularity.jetta.compiler.backend.utils.toClasses
+import net.singularity.jetta.runtime.JettaProgram
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+/**
+ * End-to-end regression tests for the `get-type` builtin (d1_gadt / d3), compiling and running
+ * each program. `:` type facts reach the running "self" space (FunctionRewriter) and the
+ * [net.singularity.jetta.runtime.functions.TypeEngine] infers the MeTTa type; the argument is
+ * ATOM (unreduced), so an ill-typed application like `(+ 5 "4")` is type-checked (→ empty set
+ * `()`) rather than evaluated.
+ *
+ * Each `!(assertEqual …)` throws AssertionError from `__main` on a wrong answer, so a green
+ * `invoke` IS the assertion. Cases whose programs use custom constructors as application heads
+ * (no `=` rules) tolerate unresolved-symbol warnings via [runLenient].
+ */
+class GetTypeTest : GeneratorTestBase() {
+
+    private fun run(name: String, code: String, allowWarnings: Boolean = false) {
+        compile("$name.metta", code, mapImpl, flatMapImpl) { registerExternals(it) }
+            .let { (result, messageCollector) ->
+                messageCollector.list().forEach(::println)
+                if (!allowWarnings) assertTrue(messageCollector.list().isEmpty())
+                val classes = result.toMap().toClasses()
+                JettaProgram.init(name)
+                classes[name]!!.getMethod("__main").invoke(null)
+            }
+    }
+
+    private fun runLenient(name: String, code: String) = run(name, code, allowWarnings = true)
+
+    /** Grounded literals, arithmetic result type, and the bare-operator arrow. */
+    @Test
+    fun `literal, arithmetic and bare-operator types`() = run(
+        "GetTypeLiteral",
+        """
+            !(assertEqual (get-type 5) Number)
+            !(assertEqual (get-type (+ 5 7)) Number)
+            !(assertEqual (get-type +) (-> Number Number Number))
+        """.trimIndent()
+    )
+
+    /** Ill-typed expressions return the empty set `()`, not a value (and never crash). */
+    @Test
+    fun `ill-typed expressions are the empty set`() = run(
+        "GetTypeIllTyped",
+        """
+            !(assertEqualToResult (get-type (+ 5 "4")) ())
+            !(assertEqualToResult (get-type (+ -)) ())
+        """.trimIndent()
+    )
+
+    /** A user `:`-declared type, and an arrow application with a `%Undefined%` wildcard param. */
+    @Test
+    fun `custom declared and arrow-applied types`() = runLenient(
+        "GetTypeCustom",
+        """
+            (: Either Type)
+            (: Left (-> %Undefined% Either))
+            (: isLeft (-> Either Bool))
+            (: Right (-> %Undefined% Either))
+            !(assertEqual (get-type Either) Type)
+            !(assertEqual (get-type (Left 5)) Either)
+            !(assertEqual (get-type (isLeft (Right 5))) Bool)
+            !(assertEqualToResult (get-type (isLeft 5)) ())
+        """.trimIndent()
+    )
+
+    /** Parametric and recursively-parametric types with fresh type-variable instantiation. */
+    @Test
+    fun `parametric and recursive types`() = runLenient(
+        "GetTypeParametric",
+        $$"""
+            (: EitherP (-> $t Type))
+            (: LeftP (-> $t (EitherP $t)))
+            (: List (-> $a Type))
+            (: Nil (List $a))
+            (: Cons (-> $a (List $a) (List $a)))
+            !(assertEqual (get-type (LeftP 5)) (EitherP Number))
+            !(assertEqual (get-type (Cons 5 (Cons 6 Nil))) (List Number))
+            !(assertEqualToResult (get-type (Cons 5 (Cons "6" Nil))) ())
+        """.trimIndent()
+    )
+
+    /**
+     * Dependent `Vec` types (d3): the argument must reach the engine FULLY INERT. Here `Cons`
+     * appears in the `(= (drop (Cons $x $xs)) $xs)` rule, so it is a `resolved` sub-application;
+     * without the `get-type` inert-ATOM flag (D2.1) the arg-delivery quote path evaluates it and
+     * the term collapses to `Nil` (→ wrong `(Vec $t Z)`). With the flag it stays inert and the
+     * type is inferred correctly. Also exercises a reducible-function argument `(drop …)`.
+     */
+    @Test
+    fun `dependent Vec types with inert reducible arguments`() = runLenient(
+        "GetTypeVec",
+        $$"""
+            (: Nat Type)
+            (: Z Nat)
+            (: S (-> Nat Nat))
+            (: Vec (-> $t Nat Type))
+            (: Cons (-> $t (Vec $t $x) (Vec $t (S $x))))
+            (: Nil (Vec $t Z))
+            (: drop (-> (Vec $t (S $x)) (Vec $t $x)))
+            (= (drop (Cons $x $xs)) $xs)
+            !(assertEqual (get-type (Cons 0 (Cons 1 Nil))) (Vec Number (S (S Z))))
+            !(assertEqual (get-type (drop (Cons 1 Nil))) (Vec Number Z))
+            !(assertEqualToResult (get-type (drop Nil)) ())
+        """.trimIndent()
+    )
+
+    /** Form-2 pattern-`let` over a `get-type` result binds the type variable and returns it. */
+    @Test
+    fun `pattern-let extracts a type variable from a get-type result`() = runLenient(
+        "GetTypeLet",
+        $$"""
+            (: List (-> $a Type))
+            (: Nil (List $a))
+            (: Cons (-> $a (List $a) (List $a)))
+            !(assertEqual
+               (let (List $t) (get-type (Cons 5 (Cons 6 Nil))) $t)
+               Number)
+        """.trimIndent()
+    )
+
+    /**
+     * A `get-type` argument whose head is a MULTIVALUED resolved function must still reach the
+     * engine INERT. `Mortal` has `=` rules, so `(Mortal Plato)` is nondeterministic; without the
+     * inert-ATOM guard in CanonicalFormRewriter it would be lifted into a `map?` and EVALUATED, so
+     * `get-type` infers the type of the reduced result (`%Undefined%`) instead of `(Mortal Plato)`
+     * → `Type`. This was the d4 line-18 blocker; complements the scalar inert case above.
+     */
+    @Test
+    fun `get-type keeps a multivalued-headed argument inert`() = runLenient(
+        "GetTypeMultivaluedArg",
+        $$"""
+            (: Entity Type)
+            (: Plato Entity)
+            (: Mortal (-> Entity Type))
+            (= (Mortal $x) (Human $x))
+            (= (Mortal Plato) T)
+            !(assertEqual (get-type (Mortal Plato)) Type)
+        """.trimIndent()
+    )
+}

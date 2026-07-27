@@ -64,6 +64,13 @@ class LowerAssertExpressionsRewriter : Rewriter {
         if (!expectedQuoted || actualAlreadyQuoted) return expression
         if (actual !is Expression) return expression
         if (!shouldQuoteAsSymbolicData(actual)) return expression
+        // D2.4 (increment 4): an unresolved-head application whose argument is a reducible
+        // grounded type error (`(f (+ 5 "S"))`, f declared but unruled) is NOT pure symbolic
+        // data — quoting it verbatim would freeze the inner `(+ 5 "S")`. Leave it live so codegen
+        // reduces the argument and surfaces its `(Error …)` (errors are absorbing in hyperon).
+        // Only the ACTUAL is checked here; the expected is quoted data (may legitimately contain a
+        // literal `(+ 5 "S")` inside its `(Error …)`), so this never corrupts expected data.
+        if (hasReducibleGroundedError(actual)) return expression
 
         return expression.copy(
             atoms = listOf(
@@ -102,5 +109,31 @@ class LowerAssertExpressionsRewriter : Rewriter {
             is Symbol -> expression.resolved == null
             else -> false
         }
+    }
+
+    /**
+     * Whether a direct argument of [expression] is a statically-known grounded type error — a
+     * `+`/`-`/`*` or `==`/`!=` sub-expression stamped `ATOM` (by the D2.2/D2.4 resolver) with a
+     * `String` operand. Mirrors the backend's `firstStaticArgError`: such an argument reduces to
+     * an `(Error …)` that must surface, so the enclosing application is not pure symbolic data.
+     */
+    private fun hasReducibleGroundedError(expression: Expression): Boolean =
+        expression.atoms.drop(1).any { arg ->
+            arg is Expression && groundedOpName(arg.atoms.firstOrNull()) in GROUNDED_ERROR_OPS &&
+                arg.atoms.drop(1).any { it.type == GroundedType.STRING }
+        }
+
+    /** The surface name of a grounded-op head, whether stored as [Special] or [Symbol]. */
+    private fun groundedOpName(head: Atom?): String? = when (head) {
+        is Special -> head.value
+        is Symbol -> head.name
+        else -> null
+    }
+
+    companion object {
+        private val GROUNDED_ERROR_OPS = setOf(
+            Predefined.PLUS, Predefined.MINUS, Predefined.TIMES,
+            Predefined.COND_EQ, Predefined.COND_NEQ,
+        )
     }
 }

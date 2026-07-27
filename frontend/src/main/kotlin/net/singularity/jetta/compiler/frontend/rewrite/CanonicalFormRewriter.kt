@@ -65,7 +65,7 @@ class CanonicalFormRewriter(
                             multivaluedCalls.clear()
                             multivaluedCallsInverse.clear()
                             multivaluedAtoms.clear()
-                            MatchBranch(branch.cond, rewritten, branch.destructuredBindings)
+                            MatchBranch(branch.cond, rewritten, branch.destructuredBindings, branch.sourceOrdinal)
                         },
                         returnType = body.returnType,
                         position = body.position
@@ -235,6 +235,15 @@ class CanonicalFormRewriter(
         // (handed over as its full List result), NOT lifted — same rule the simple-call
         // path already follows via the `barrierArg` flag in collection.
         val isBarrierParent = (expression.atoms.getOrNull(0) as? Symbol)?.name in BARRIER_FUNCTIONS
+        // Parameters declared inert-ATOM (currently only `get-type`, JvmMethod.inertAtomParams)
+        // must reach the callee as the UN-reduced term. A multivalued-headed argument like
+        // `(Mortal Plato)` (Mortal has `=` rules -> nondeterministic) would otherwise be lifted
+        // into a `map?` here and EVALUATED before `get-type` sees it -> get-type infers the type
+        // of the reduced result (`%Undefined%`/`()`) instead of `(Mortal Plato)` -> `Type`
+        // (d4 line 18). Keep such an argument raw so codegen inert-quotes it (the scalar case,
+        // e.g. d3's `(drop (Cons 1 Nil))`, already stays raw because it is not nondeterministic).
+        val inertParams = (expression.atoms.getOrNull(0) as? Symbol)?.name
+            ?.let { context.resolve(it)?.jvmMethod?.inertAtomParams } ?: emptySet()
         val compoundLifts = mutableListOf<Triple<Int, Atom, Atom?>>()
         fun rewriteOrLift(atom: Atom): Atom {
             multivaluedCalls[atom.id]?.let { return mkVariable(it, expression.position) }
@@ -277,7 +286,10 @@ class CanonicalFormRewriter(
         val body = if (selfVar != null && !hasNestedLifts) {
             mkVariable(selfVar, expression.position)
         } else Expression(
-            atoms = expression.atoms.map { rewriteOrLift(it) },
+            atoms = expression.atoms.mapIndexed { i, a ->
+                // Leave an inert-ATOM argument raw (no lift, no map?-rewrite) — see [inertParams].
+                if (i >= 1 && (i - 1) in inertParams) a else rewriteOrLift(a)
+            },
             position = expression.position
         )
         // Whether the (substituted) body itself yields a bag — a call to a multivalued user

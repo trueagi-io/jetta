@@ -12,6 +12,7 @@ import net.singularity.jetta.runtime.functions.GroundedOps
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
+import net.singularity.jetta.runtime.functions.TypeEngine
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceId
@@ -35,6 +36,51 @@ open class JettaProgram {
 
         @JvmStatic
         fun currentSpaceName(): String? = currentSpaceName
+
+        /**
+         * Ordered-top-level-semantics watermark (Approach 2, "space-query watermark"). The number
+         * of `&self` facts declared ABOVE the currently-running top-level `!`-run in source order;
+         * `< 0` means "no filtering" (the run sees every fact). Set by the generated
+         * `set-watermark!` step that `FunctionRewriter.mkMain` interleaves before each run, reset
+         * per program in [init]. Read by [selfAtoms] so `get-type`/`get-doc`/`typeCheckError`
+         * observe only the facts/`:`-decls/`=`-rules visible at the run's position — hyperon's
+         * interleaved model. See `docs/specs/ordered_top_level_semantics_plan.md`.
+         *
+         * `@Volatile` is visibility only (single running program per JVM in this slice).
+         */
+        @Volatile
+        private var currentWatermark: Int = -1
+
+        /** The current ordered-top-level visibility cutoff; `< 0` = no filtering. Read by
+         *  [net.singularity.jetta.runtime.space.SpaceImpl.match] to hide `=`/data facts declared
+         *  below the running `!`-form (so `reduceOrInert` / reflective `match &self` are ordered). */
+        @JvmStatic
+        fun currentWatermark(): Int = currentWatermark
+
+        /**
+         * The `set-watermark!` builtin — the generated per-run prologue for ordered top-level
+         * semantics. [w] is a `Grounded<Int>` fact-count; store it as the visibility cutoff and
+         * return unit. Compiler-internal (emitted only by [net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter],
+         * never written by users); impure, so excluded from memoization in `Generator.impureGrounded`.
+         */
+        @JvmStatic
+        fun `set-watermark!`(w: Atom): Atom {
+            currentWatermark = ((w as? Grounded<*>)?.value as? Number)?.toInt() ?: -1
+            return UNIT_ATOM
+        }
+
+        /**
+         * Ordered-top-level reduction guard (step 2): is an `=` rule at source ordinal [ordinal]
+         * visible to the current run? A compiled Match branch consults this before matching, so a
+         * rule declared BELOW the running `!`-form is skipped (the expression stays inert). Only
+         * branches with `ordinal >= 0` (a rule preceded by a run) emit the call; `currentWatermark
+         * < 0` (run sees all facts) makes it always visible — the perf-neutral common case.
+         */
+        @JvmStatic
+        fun isRuleVisible(ordinal: Int): Boolean {
+            val wm = currentWatermark
+            return wm < 0 || ordinal < wm
+        }
 
         /**
          * Tokens bound by `bind!` (token name → bound atom, typically a state cell). Reset per
@@ -92,6 +138,7 @@ open class JettaProgram {
             tokens.clear()
             importedModules.clear()
             currentSpaceName = programName
+            currentWatermark = -1
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
             // directory regardless of cwd. The intended way to run a compiled program from
@@ -387,9 +434,19 @@ open class JettaProgram {
         private val UNDEF = Symbol("%Undefined%")
         private val EMPTY = Symbol("Empty")
 
-        /** The atoms of the currently-running program's own space (`&self`). */
-        private fun selfAtoms(): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+        /**
+         * The atoms of the currently-running program's own space (`&self`), clipped to the current
+         * ordered-top-level [currentWatermark]: a run sees only the facts declared above it in
+         * source order. `getAtoms()` returns the store in insertion == source-fact order, and the
+         * `.jtsf` round-trip preserves that order, so `subList(0, wm)` is exactly the visible prefix.
+         * A negative watermark (or one past the end) means "see everything" — the common
+         * facts-then-runs shape, where no filtering is emitted at all (perf-neutral).
+         */
+        private fun selfAtoms(): List<Atom> {
+            val all = SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+            val wm = currentWatermark
+            return if (wm < 0 || wm >= all.size) all else all.subList(0, wm)
+        }
 
         /** `(@ tag …)` — an annotation Expression whose tag Symbol is [tag]. */
         private fun isAnn(a: Atom, tag: String): Boolean =
@@ -508,6 +565,86 @@ open class JettaProgram {
                 if (ret != null) kotlin.io.println("Return: ${ret.atoms.getOrNull(2)} ${(ret.atoms.getOrNull(3) as? Expression)?.atoms?.getOrNull(2)}")
             }
             return UNIT_ATOM
+        }
+
+        /**
+         * `get-type <atom>` — the inferred MeTTa type(s) of [atom]. Returns a bag (`List`): a
+         * singleton holding the type when well-typed, EMPTY when ill-typed (the `()` empty-set
+         * the reference suite asserts via `assertEqualToResult … ()`). The argument is unreduced
+         * (ATOM meta-type) so `(+ 5 "4")` is type-checked as an inert expression rather than
+         * evaluated. Single-valued for now — a symbol carrying several `:` types (non-deterministic
+         * get-type) is a later phase; this takes the first declaration. See [TypeEngine].
+         */
+        @JvmStatic
+        fun `get-type`(atom: Atom): List<Atom> {
+            val t = TypeEngine.inferType(atom, selfAtoms())
+            return if (t == null) emptyList() else listOf(t)
+        }
+
+        /**
+         * Eval-time type check for a user-function application (phase D2.3). [callExpr] is the
+         * reconstructed `(f arg…)` (built by the generated function's prologue via
+         * [net.singularity.jetta.runtime.functions.JettaCallSite.nonReduced]). Returns the inert
+         * `(Error <callExpr> (BadArgType pos expected actual))` atom when an argument's type does
+         * not match `f`'s declared `(: f (-> …))` arrow (the reference's BadArgType), or `null`
+         * when it is well-typed OR gradually typed (an undeclared/`%Undefined%` argument unifies
+         * with anything) — in which case the caller proceeds to normal clause reduction.
+         * [TypeEngine.checkApp] reads the `:` facts in `&self`, so a head without an arrow `:`
+         * fact yields `null` too.
+         */
+        @JvmStatic
+        fun typeCheckError(callExpr: Atom): Atom? {
+            val err = TypeEngine.checkApp(callExpr, selfAtoms()) ?: return null
+            return TypeEngine.errorExpr(callExpr, err)
+        }
+
+        /**
+         * `letMatch <pattern> <value> <body>` — the runtime of MeTTa's Form-2 pattern-`let`
+         * (`(let (List $t) VALUE BODY)`), lowered by `LetRewriter`. [pattern] is the LHS
+         * unreduced data (`(List $t)`), [value] the evaluated RHS (a result bag `List`, or a
+         * single result), and [body] a lambda over the pattern's variables in document order.
+         *
+         * For each result, the pattern is unified against it ([TypeEngine.unify]); on success the
+         * pattern variables' bindings are read back ([TypeEngine.resolve]) and passed positionally
+         * to [body], whose results are spliced into the output bag. A result that fails to unify
+         * contributes nothing (an empty branch, as in `match`). Multivalued (returns a `List`) so
+         * it composes with `assertEqual`'s bag semantics.
+         */
+        @JvmStatic
+        fun letMatch(pattern: Atom, value: Any?, body: JettaFunction): List<Atom> {
+            val pat = if (pattern is BoundAtom) pattern.atom else pattern
+            val varNames = LinkedHashSet<String>()
+            collectVarNames(pat, varNames)
+            val vars = varNames.toList()
+
+            val results: List<Any?> = when (val v = if (value is BoundAtom) value.atom else value) {
+                is List<*> -> v
+                null -> emptyList()
+                else -> listOf(v)
+            }
+            val out = ArrayList<Atom>()
+            for (raw in results) {
+                val elem = (if (raw is BoundAtom) raw.atom else raw) as? Atom ?: continue
+                val s = HashMap<String, Atom>()
+                if (!TypeEngine.unify(pat, elem, s)) continue
+                val args = Array<Any?>(vars.size) { i -> TypeEngine.resolve(Variable(vars[i]), s) }
+                when (val res = body.apply(args)) {
+                    is List<*> -> res.forEach { it?.let { a -> out.add(a as Atom) } }
+                    is Atom -> out.add(res)
+                    null -> {}
+                    else -> out.add(Grounded(res))
+                }
+            }
+            return out
+        }
+
+        /** Collect the variable names in [a] in document order (deduplicated by [out]'s type). */
+        private fun collectVarNames(a: Atom, out: MutableSet<String>) {
+            when (a) {
+                is Variable -> out.add(a.name)
+                is Expression -> a.atoms.forEach { collectVarNames(it, out) }
+                else -> {}
+            }
         }
 
         /**

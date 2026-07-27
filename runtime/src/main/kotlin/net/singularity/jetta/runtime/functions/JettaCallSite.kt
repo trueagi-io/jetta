@@ -102,7 +102,14 @@ object JettaCallSite {
                 else -> results        // non-deterministic application — return the bag
             }
         }
-        return reduceToFixedPoint(spaceName, callExpr)
+        // D3 increment D.1 — reduce to a BAG so a special form (`match`/`if`/`==`/`empty`)
+        // CONSTRUCTED mid-reduction is EXECUTED, not left inert. For a term that never
+        // produces a special form this is exactly `[reduceToFixedPoint(callExpr)]`, so the
+        // hot path is byte-identical: size-1 unwraps to the same single Atom as before; only
+        // the special-form case yields an empty/multi bag (which the assertion + `flat-map?`
+        // layers already consume as non-determinism).
+        val bag = reduceToBag(spaceName, callExpr, 0)
+        return if (bag.size == 1) bag[0] else bag
     }
 
     /**
@@ -126,6 +133,176 @@ object JettaCallSite {
     }
 
     /**
+     * D3 increment D.1 — reduce [atom] to its normal-form BAG, EXECUTING any special form
+     * (`match`/`if`/`==`/`empty`) that a rule body constructs mid-reduction rather than
+     * leaving it inert (the d4:113 blocker: `(= (= $type T) (match &self (: $x $type) T))`
+     * rewrites `(= (Mortal Socrates) T)` to a `(match …)` term that must now be *run*).
+     *
+     * The single-valued rule/registry reducer ([reduceToFixedPoint]) drives ordinary
+     * rewriting; when its normal form is a runtime-constructed special form,
+     * [executeSpecialForm] runs it and the resulting bag is threaded — each element reduced
+     * again and the results unioned. A NON-special normal form is returned as its own
+     * singleton, so a term that never constructs a special form yields exactly
+     * `[reduceToFixedPoint(atom)]` — byte-identical to the pre-D.1 dispatch result. [depth]
+     * bounds the special-form recursion (the `==`/`empty` guard in the reasoning rule keeps
+     * it finite; this is the belt-and-braces backstop).
+     *
+     * SCOPE (correctness-first): the `=`-rule step stays single-valued (first matching rule),
+     * so multiplicity enters ONLY at a `match`'s result bag. Multi-rule union and per-branch
+     * binding foliation (d4:131/:164) are a later increment; templates reachable here are
+     * ground, so results need no binding install.
+     */
+    private fun reduceToBag(spaceName: String, atom: Atom, depth: Int): List<Atom> {
+        if (depth >= MAX_REDUCTION_STEPS) return listOf(atom)
+        // D.1b — multi-rule union. A term matching MORE THAN ONE `(= term $r)` rule reduces via
+        // EACH, and hyperon UNIONs the results (d4:131: `(= (Mortal Plato) T)` matches both the
+        // direct-match rule → `[]` and the reasoning rule → `[T]`, union `[T]`). The single-valued
+        // spine below keeps only the first, so branch here. Fires ONLY on genuine multiplicity;
+        // the 0/1-rule common case falls through to the fast, cycle-safe spine unchanged. The
+        // rule query honours the ordered-semantics watermark (via JettaProgram.match), so a rule
+        // declared below the running `!`-form is invisible and does not widen the branch.
+        if (atom is Expression && atom.atoms.isNotEmpty()) {
+            val bodies = allRuleBodies(spaceName, atom)
+            if (bodies.size > 1) return bodies.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
+        }
+        val nf = reduceToFixedPoint(spaceName, atom)
+        val bag = executeSpecialForm(spaceName, nf, depth) ?: return listOf(nf)
+        return bag.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
+    }
+
+    /**
+     * Every `(= expr $r)` rule body in the space (the full non-determinism bag), honouring the
+     * ordered-semantics watermark. The single-valued [reduceOnce] takes `firstOrNull` of the same
+     * query; [reduceToBag] uses this to UNION when more than one rule matches. Each result is a
+     * [BoundAtom] carrying its rule's bindings (already substituted into the body).
+     */
+    private fun allRuleBodies(spaceName: String, expr: Expression): List<Atom> {
+        val r = Variable(REDUCE_VAR)
+        val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
+        return JettaProgram.match(spaceName, pattern, r)
+    }
+
+    /**
+     * D3 increment (a) — RELATIONAL reduction of a compiled function called with a FREE-variable
+     * argument, when [name]'s compiled dispatch would mis-handle it. Returns the relational
+     * result bag, or null (proceed with the ordinary functional dispatch) when no argument is a
+     * bare unbound [Variable].
+     *
+     * WHY: a compiled multivalued function is a first-match cascade (`(== $arg Socrates) => T`,
+     * else the wildcard clause `(Mortal $x)` → `(Human $x)`). A FREE `$x` fails the `== Socrates`
+     * equality (a Variable is not equal to Socrates) and is SWALLOWED by the wildcard — so the
+     * specific clause that would UNIFY `$x = Socrates` is lost, and only the wildcard branch's
+     * value survives (d4:164: `(Mortal $x)` → only `[Plato]`, not `[Socrates, Plato]`). The
+     * relational path instead unions over EVERY clause by unification, reducing each recursively,
+     * foliating per-branch bindings so `$x` reaches the caller (`(ift (Mortal $x) $x)`).
+     *
+     * SCOPE: only a BARE free `Variable` argument triggers this (a compound free-var arg like
+     * `(making $y)` stays on the existing `reduceOrInert` path — it already works). Codegen emits
+     * the call ONLY for functions whose Match mixes a guarded clause with a wildcard clause (the
+     * exact wildcard-swallow shape), so a purely-relational function (`(green $x)`, needing
+     * applicative argument reduction this reducer does NOT do) is never routed here.
+     */
+    @JvmStatic
+    fun reduceRelationalIfFree(spaceName: String, name: String, args: Array<Any?>): List<Atom>? {
+        val hasFreeVar = args.any { it is Atom && Matcher.resolveBinding(it) is Variable }
+        if (!hasFreeVar) return null
+        val atoms = ArrayList<Atom>(args.size + 1)
+        atoms.add(Symbol(name))
+        args.forEach { atoms.add(resolveDeep(toAtom(it))) }
+        return reduceRelationalBag(spaceName, Expression(atoms), 0)
+    }
+
+    /**
+     * Reduce [atom] RELATIONALLY to a bag of [BoundAtom]s, each carrying its branch's bindings.
+     * At each step: union over ALL `(= atom $r)` rule bodies (by unification, not first-match),
+     * recursing into each body under its own pushed [Matcher] frame and [Matcher.foliate]-ing the
+     * branch bindings onto every result — the same per-branch isolation `simpleFlatMap` gives a
+     * source-level non-deterministic call. A `match`/`if`/`==`/`empty` constructed here is executed
+     * ([executeSpecialForm]); a grounded op / compiled fn is finished via the registry; anything
+     * else is its own normal form. Does NOT reduce a term's ARGUMENTS applicatively (that is the
+     * functional compiled path's job) — hence the narrow codegen trigger above.
+     */
+    private fun reduceRelationalBag(spaceName: String, atom: Atom, depth: Int): List<Atom> {
+        if (depth >= MAX_REDUCTION_STEPS) return listOf(atom)
+        if (atom is Expression && atom.atoms.isNotEmpty()) {
+            allRuleBodies(spaceName, atom).takeIf { it.isNotEmpty() }?.let { bodies ->
+                return foliateBranches(spaceName, bodies, depth)
+            }
+            executeSpecialForm(spaceName, atom, depth)?.let { produced ->
+                return foliateBranches(spaceName, produced, depth)
+            }
+            reduceViaRegistry(atom)?.let { return reduceRelationalBag(spaceName, it, depth + 1) }
+        }
+        return listOf(atom)
+    }
+
+    /**
+     * For each branch [source] (a match/rule result, possibly a [BoundAtom]): push a frame, install
+     * its bindings, reduce it relationally one level deeper, and foliate the frame's bindings onto
+     * each result — then pop. Mirrors [simpleFlatMap]'s push/installBindings/foliate/pop so the
+     * per-branch bindings survive to the caller and sibling branches stay isolated.
+     */
+    private fun foliateBranches(spaceName: String, sources: List<Atom>, depth: Int): List<Atom> {
+        val out = ArrayList<Atom>()
+        for (source in sources) {
+            Matcher.push()
+            try {
+                val body = if (source is BoundAtom) {
+                    Matcher.installBindings(source.bindings)
+                    source.atom
+                } else source
+                for (res in reduceRelationalBag(spaceName, body, depth + 1)) {
+                    (Matcher.foliate(res) as? Atom)?.let { out.add(it) }
+                }
+            } finally {
+                Matcher.pop()
+            }
+        }
+        return out
+    }
+
+    /**
+     * Execute a special form PRODUCED mid-reduction, returning its result bag; or null when
+     * [atom] is not a runtime-constructed special form (the caller then keeps it as its own
+     * singleton — every non-special term stays byte-identical). This is the Tier-2 core of
+     * the reflective-`match` plan: a `match`/`if`/`==`/`empty` that only exists because a
+     * rule body built it at runtime has no compiled `Match`/`generateIf` node, so it is
+     * interpreted here against the live space.
+     *
+     * Fires ONLY for these heads at their exact arity — a `(match …)`/`(if …)` used as DATA
+     * (get-type operands, quoted expected results) never reaches a dispatch normal form.
+     */
+    private fun executeSpecialForm(spaceName: String, atom: Atom, depth: Int): List<Atom>? {
+        val atoms = (atom as? Expression)?.atoms ?: return null
+        if (atoms.isEmpty()) return null
+        return when (opHeadName(atoms[0])) {
+            // (match <space> <pattern> <template>) — run against the live space. `&self`
+            // resolves to the running program via JettaProgram.resolveSpaceName (the Symbol
+            // reaches it directly). Each result may be a BoundAtom carrying its bindings.
+            SPECIAL_MATCH -> if (atoms.size == 4) JettaProgram.match(atoms[1], atoms[2], atoms[3]) else null
+            // (empty) — the empty result bag (hyperon's `empty` grounded function).
+            SPECIAL_EMPTY -> if (atoms.size == 1) emptyList() else null
+            // (if <cond> <then> <else>) — reduce the condition (executing any nested special
+            // form, e.g. the `==` guard), pick ONE branch lazily; the caller reduces it.
+            SPECIAL_IF -> if (atoms.size == 4) {
+                val cond = reduceToBag(spaceName, atoms[1], depth + 1).firstOrNull()
+                listOf(if (cond != null && JettaProgram.isTruthy(cond)) atoms[2] else atoms[3])
+            } else null
+            // (== a b) — structural equality of the reduced operands (the reasoning rule's
+            // loop guard `(if (== $cause $type) (empty) …)`); yields the True/False symbols.
+            SPECIAL_EQ -> if (atoms.size == 3) {
+                val a = reduceToBag(spaceName, atoms[1], depth + 1).firstOrNull() ?: atoms[1]
+                val b = reduceToBag(spaceName, atoms[2], depth + 1).firstOrNull() ?: atoms[2]
+                listOf(if (a == b) TRUE_SYMBOL else FALSE_SYMBOL)
+            } else null
+            else -> null
+        }
+    }
+
+    /** Drop a [BoundAtom] wrapper (templates reachable in [reduceToBag] are already ground). */
+    private fun unwrapBound(atom: Atom): Atom = if (atom is BoundAtom) atom.atom else atom
+
+    /**
      * One rewrite step: query the space for `(= expr $r)` and return the
      * substituted `$r` of the first matching rule, or null if no rule applies.
      * Bindings carried on a [BoundAtom] result are installed into the current
@@ -136,11 +313,75 @@ object JettaCallSite {
         val r = Variable(REDUCE_VAR)
         val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
         val results = JettaProgram.match(spaceName, pattern, r)
-        val first = results.firstOrNull() ?: return null
-        return if (first is BoundAtom) {
-            Matcher.installBindings(first.bindings)
-            first.atom
-        } else first
+        val first = results.firstOrNull()
+        if (first != null) {
+            return if (first is BoundAtom) {
+                Matcher.installBindings(first.bindings)
+                first.atom
+            } else first
+        }
+        // D3 increment C — `=`-as-reducible-head. A binary `(= a b)` that no direct `(= (= a b)
+        // $r)` rule rewrote may still be a redex under a reflective rule `(= (= $x $x) T)`, which
+        // needs its OPERANDS reduced applicatively first (`(= S (HumansAreMortal SocratesIsHuman))`
+        // → `(= S S)` → T). Try that here. The reduced form is committed ONLY when it matches a
+        // rule; otherwise this returns null and the expression stays inert UNCHANGED (its own
+        // normal form) — so a program without such a rule is byte-identical.
+        reduceEqOperands(spaceName, expr)?.let { return it }
+        // D3 increment A — unified reducer: when NO space `(= expr $r)` rule applies, fall
+        // back to the registry (grounded op / compiled user fn), exactly as [dispatch] does
+        // for the TOP head. This is what makes a term PRODUCED mid-reduction reduce further:
+        // `(((curry +) 2) 3)` rewrites (via the space rule) to `(+ 2 3)`, which has no `(=
+        // (+ 2 3) $r)` fact — here the registry computes the grounded `+` → `5`. Reached only
+        // on the space-rule miss, so the hot symbolic/backchain path (where a rule always
+        // matches) stays byte-identical; the previously-dead-end miss now evaluates.
+        return reduceViaRegistry(expr)
+    }
+
+    /**
+     * Evaluate `expr` = `(head args…)` by resolving `head` to a registry entry (a grounded
+     * operator such as `+`, or a compiled user function) and invoking it — the recursion-step
+     * counterpart to [dispatch]'s top-head registry lookup. Returns null (leave inert) when the
+     * head is not a registered op/function, the arity mismatches (a partial application like
+     * `((curry +) 2)` — no matching entry, stays inert as MeTTa requires), the op is not
+     * computable over its operands (a grounded op over non-numbers), or the result is a
+     * non-determinism bag (which a single reduction step cannot represent — left inert here).
+     */
+    private fun reduceViaRegistry(expr: Expression): Atom? {
+        val atoms = expr.atoms
+        if (atoms.isEmpty()) return null
+        val name = opHeadName(Matcher.resolveBinding(atoms[0])) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: return null
+        if (entry.multivalued) return null
+        if (entry.paramTypes.size != atoms.size - 1) return null
+        val args = arrayOfNulls<Any?>(atoms.size - 1)
+        for (i in 1 until atoms.size) args[i - 1] = atoms[i]
+        return JettaLinkRegistry.invoke(entry, args) as? Atom
+    }
+
+    /**
+     * Increment C — reduce the operands of a binary `(= a b)` applicatively and, if the reduced
+     * `(= a' b')` matches an `=`-rule (typically the reflective `(= (= $x $x) T)`), return that
+     * rewrite. Only fires for a `=`-headed 2-operand expression; returns null (leave `(= a b)`
+     * inert UNCHANGED) when nothing reduces or the reduced form matches no rule, so a program
+     * without a reflective `=`-rule is byte-identical. Termination: operands are reduced to a
+     * fixed point (its own budget + cycle guard) and the `unchanged` guard prevents re-entry.
+     */
+    private fun reduceEqOperands(spaceName: String, expr: Expression): Atom? {
+        val atoms = expr.atoms
+        if (atoms.size != 3) return null
+        val head = atoms[0]
+        if (opHeadName(head) != PATTERN_EQ) return null
+        val a = reduceToFixedPoint(spaceName, atoms[1])
+        val b = reduceToFixedPoint(spaceName, atoms[2])
+        if (a == atoms[1] && b == atoms[2]) return null // neither operand reduced — nothing new
+        val reduced = Expression(listOf(head, a, b))
+        val r = Variable(REDUCE_VAR)
+        val pattern = Expression(listOf(Special(PATTERN_EQ), reduced, r))
+        val match = JettaProgram.match(spaceName, pattern, r).firstOrNull() ?: return null
+        return if (match is BoundAtom) {
+            Matcher.installBindings(match.bindings)
+            match.atom
+        } else match
     }
 
     /**
@@ -260,6 +501,18 @@ object JettaCallSite {
     /** Mirror of `Predefined.PATTERN` — kept local to avoid a frontend-resolve dependency. */
     private const val PATTERN_EQ = "="
     private const val REDUCE_VAR = "__reduce_r"
+
+    // D3 increment D.1 — special-form head names (mirror `Predefined`, kept local by the
+    // same convention as PATTERN_EQ). `match`/`empty` have no `Predefined` entry (they are
+    // compiled specially in the frontend); `if`/`==` mirror Predefined.IF / Predefined.COND_EQ.
+    private const val SPECIAL_MATCH = "match"
+    private const val SPECIAL_EMPTY = "empty"
+    private const val SPECIAL_IF = "if"
+    private const val SPECIAL_EQ = "=="
+
+    /** hyperon's boolean symbols, produced by the runtime `==` special form. */
+    private val TRUE_SYMBOL = Symbol("True")
+    private val FALSE_SYMBOL = Symbol("False")
 
     private val INTERNAL_LOOKUP: MethodHandles.Lookup = MethodHandles.lookup()
 }

@@ -26,6 +26,13 @@ open class FunctionGenerator(
      * methods. Used at indy lambda creation sites to reference the static lambda body.
      */
     private val enclosingClassInternalName: String,
+    /**
+     * Names of top-level functions that carry an explicit `(: f (-> …))` type declaration in
+     * this module's space (phase D2.3). Such a function gets an eval-time type-check prologue
+     * ([maybeEmitTypeCheckPrologue]); undeclared functions are left untouched so hot untyped code
+     * (backchaining, symbolic interpreters) pays no per-call type-check cost.
+     */
+    private val declaredTypeNames: Set<String> = emptySet(),
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
@@ -180,6 +187,25 @@ open class FunctionGenerator(
                 }
             }
 
+            // A bare `Special` operator reaching a value/data position — e.g. `+` as the ATOM
+            // argument of `(get-type +)`, quoted as data rather than applied. Materialize the
+            // runtime `Special` object, mirroring the `Special` case in `generateQuote`.
+            is Special -> {
+                mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Special::class.java))
+                mv.visitInsn(Opcodes.DUP)
+                mv.visitLdcInsn(atom.value)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                generateLoadInt(mv, 2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESPECIAL,
+                    Type.getInternalName(Special::class.java),
+                    "<init>",
+                    "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+                    false
+                )
+            }
+
             is ArrowType -> {
                 // Same surface-form reification as in `generateQuote` — an arrow
                 // type appearing as a direct value (e.g. RHS of `assertEqual`)
@@ -246,8 +272,17 @@ open class FunctionGenerator(
                             // like the other Special-headed data forms below. Genuine
                             // arithmetic always carries an INT/DOUBLE type, so this never
                             // suppresses a real `(+ …)`/`(* …)`/`(- …)` computation.
-                            if (atom.type == GroundedType.ATOM) generateQuote(mv, atom)
-                            else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
+                            if (atom.type == GroundedType.ATOM) {
+                                // D2.2 (tier i): a concrete non-numeric operand (String) makes this
+                                // an eval-time type error — emit the inert `(Error <expr>
+                                // (BadArgType pos Number <actual>))` atom for THIS instance instead
+                                // of the inert operator tuple. Recomputed here (not carried from the
+                                // resolver) so it stays identity-precise: an identical `(+ …)` inside
+                                // quoted expected data is emitted verbatim by generateQuote, never
+                                // reaching this arithmetic-dispatch branch.
+                                val err = groundedArithmeticError(atom)
+                                if (err != null) generateQuote(mv, err) else generateQuote(mv, atom)
+                            } else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
 
                         Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
                         Predefined.DIV -> generateDiv(mv, arguments, doReturn)
@@ -278,16 +313,64 @@ open class FunctionGenerator(
                         Predefined.MAP_ -> generateCall(mv, Predefined.MAP_, arguments, atom.resolved)
                         Predefined.FLAT_MAP_ -> generateCall(mv, Predefined.FLAT_MAP_, arguments, atom.resolved)
                         Predefined.QUOTE -> generateQuote(mv, arguments[0])
+                        Predefined.PATTERN -> {
+                            // D3 increment C — `=`-as-reducible-head. A binary `(= a b)` in a
+                            // VALUE position (e.g. the argument of `assertEqual`, NOT a top-level
+                            // rule declaration — those are partitioned out by FunctionRewriter, and
+                            // NOT a `get-type`/`match` operand — those are quoted by their own
+                            // meta-Atom / `Match`-node paths) is dispatched through JettaCallSite so
+                            // the reducer can rewrite it via reflective-style rules such as
+                            // `(= (= $x $x) T)`, reducing its operands applicatively first. When no
+                            // such rule exists the reducer returns `(= a b)` unchanged (its own
+                            // normal form), so this is 0-regression for programs without one.
+                            if (arguments.size == 2) {
+                                generateExpressionHeadDispatchCall(mv, atom)
+                            } else {
+                                generateQuote(mv, atom)
+                            }
+                        }
                         Predefined.ANNOTATION,
-                        Predefined.PATTERN,
                         Predefined.TYPE,
                         Predefined.ARROW -> {
                             // Data forms with a Special head reach codegen as inert
                             // values (see resolver counterpart). Emit as a quoted
-                            // expression so the whole `(@ doc …)` / `(= … …)` /
+                            // expression so the whole `(@ doc …)` /
                             // `(: … …)` / `(-> …)` lives as a runtime Expression atom.
                             generateQuote(mv, atom)
                         }
+                        Predefined.COND_EQ, Predefined.COND_NEQ -> when {
+                            // D2.4 (increment 1): the resolver stamps a `==`/`!=` node ATOM when its
+                            // operands are a concrete numeric-vs-String mismatch (an eval-time type
+                            // error). Emit the inert `(Error <expr> (BadArgType …))` VALUE for THIS
+                            // instance — a reference, not a Bool — so it never reaches the
+                            // integer-comparison path (which would VerifyError over a String
+                            // operand). Recomputed here so it stays identity-precise (an identical
+                            // `(== …)` inside quoted expected data is emitted verbatim by
+                            // generateQuote, never reaching this branch). Falls through to the
+                            // doReturn/exit epilogue.
+                            atom.type == GroundedType.ATOM ->
+                                generateQuote(mv, comparisonBadArgType(atom) ?: atom)
+
+                            // D2.4 (increment 2): a structural comparison of two custom-typed
+                            // operands in a typed program may be an eval-time BadArgType (types are
+                            // `:` facts, so it is a RUNTIME check — `(== SocratesIsHuman
+                            // SamIsMortal)` errors when their declared types don't unify). Only in a
+                            // value/argument position (`!doReturn`), where the result is consumed as
+                            // an Atom, so an `(Error …)` and a `Grounded<Bool>` are interchangeable
+                            // — the bare-run/tail path keeps the primitive-Bool return unchanged.
+                            !doReturn && needsRuntimeComparisonTypeCheck(atom.atoms.drop(1)) -> {
+                                generateComparisonWithTypeCheck(mv, atom, exit)
+                                return
+                            }
+
+                            else -> generateIf(
+                                mv,
+                                listOf(atom, Grounded(true), Grounded(false)),
+                                exit,
+                                doReturn
+                            )
+                        }
+
                         else -> if (func.isBooleanExpression()) {
                             generateIf(
                                 mv,
@@ -302,13 +385,24 @@ open class FunctionGenerator(
                         if (atom.resolved != null) {
                             generateCall(mv, func.name, arguments, atom.resolved)
                         } else {
-                            // Unresolved symbol in function position — a data constructor like
-                            // (Cons …), (Pair $x $y). Quote it, but in this applicative
-                            // position evaluate any reducible call nested in its arguments
-                            // (`(Cons (Bind $x (ev $e $env)) …)` stores the VALUE of
-                            // `(ev …)`, not a thunk) — canonical MeTTa: a data constructor
-                            // does not suppress reduction of its arguments.
-                            generateQuote(mv, atom, evalCalls = true)
+                            // D2.4 (increment 4): an inert/undefined application whose argument is
+                            // a statically-known grounded type error (`(f (+ 5 "S"))`, f declared
+                            // but unruled) reduces to that inner error — hyperon's errors are
+                            // absorbing: reducing the argument first surfaces the `(Error …)` as
+                            // the whole application's value. Propagate the FIRST such argument
+                            // error instead of quoting `(f (Error …))`.
+                            val argErr = firstStaticArgError(atom)
+                            if (argErr != null) {
+                                generateQuote(mv, argErr)
+                            } else {
+                                // Unresolved symbol in function position — a data constructor like
+                                // (Cons …), (Pair $x $y). Quote it, but in this applicative
+                                // position evaluate any reducible call nested in its arguments
+                                // (`(Cons (Bind $x (ev $e $env)) …)` stores the VALUE of
+                                // `(ev …)`, not a thunk) — canonical MeTTa: a data constructor
+                                // does not suppress reduction of its arguments.
+                                generateQuote(mv, atom, evalCalls = true)
+                            }
                         }
                     }
 
@@ -327,20 +421,31 @@ open class FunctionGenerator(
                     is Lambda -> generateInlineLambdaCall(mv, func, arguments)
 
                     else -> {
-                        // Expression with a non-callable head — a tuple of tuples such
-                        // as `((stop ventilation) (start kettle))` (e.g. the argument of
-                        // `superpose`), or a `(Grounded …)`/`(-> …)`-headed data form.
-                        // The resolver already stamps these as inert ATOM data; quote
-                        // the whole expression so it lives as a runtime Expression atom
-                        // (runtime dispatch may still reduce it via space rules).
-                        // Applicative order (symmetric with the unresolved-Symbol-head
-                        // case above): in this value position, a reducible SCALAR call
-                        // among the tuple elements is evaluated for its value/side effect
-                        // — e.g. `(hide ((add-atom …) (remove-atom …)))` must run its
-                        // element calls. Genuinely inert data (elements with
-                        // resolved == null, like `(stop ventilation)`) stays quoted, so
-                        // `superpose`'s data tuples are unaffected.
-                        generateQuote(mv, atom, evalCalls = true)
+                        // D3 increment B — Expression-headed form `((h …) a …)`. Two shapes
+                        // arrive here and they need opposite treatment:
+                        //
+                        //  * a CURRIED APPLICATION `(((curry +) 2) 3)` — the head is an
+                        //    *unresolved* Expression (`curry`/`lambda` are defined as space
+                        //    `(= …)` facts, never resolved to a compiled function). Dispatch it
+                        //    through [JettaCallSite] so the unified reducer rewrites it by the
+                        //    space rule (`(= (((curry $f) $x) $y) ($f $x $y))`) and finishes the
+                        //    produced `(+ 2 3)` via the registry step (increment A).
+                        //  * an EFFECT/DATA TUPLE `((add-atom …) (add-atom …))` — the head is a
+                        //    *resolved* reducible call. Its element calls must be EVALUATED for
+                        //    their side effects (the hide idiom, match templates), so keep the
+                        //    old applicative-order quote path.
+                        //
+                        // The head's resolution status is the discriminator: `resolved == null`
+                        // ⇒ curried application ⇒ dispatch; otherwise the effect/data path. A
+                        // genuinely-inert unresolved tuple (`((stop ventilation) …)`) also takes
+                        // the dispatch path but matches no rule/op and returns unchanged, so this
+                        // stays 0-regression for inert data.
+                        val headExpr = func as? Expression
+                        if (headExpr != null && headExpr.resolved == null) {
+                            generateExpressionHeadDispatchCall(mv, atom)
+                        } else {
+                            generateQuote(mv, atom, evalCalls = true)
+                        }
                     }
                 }
             }
@@ -644,7 +749,92 @@ open class FunctionGenerator(
         }
     }
 
+    /**
+     * D2.3 eval-time `BadArgType` prologue for a `(: f (-> …))`-declared user function. Before any
+     * clause is matched, reconstruct `(f arg…)` from the parameter slots (Atom args resolved to
+     * their caller bindings — the same reconstruction the non-reduction fallback uses) and ask
+     * [net.singularity.jetta.runtime.JettaProgram.typeCheckError]; if it returns a non-null
+     * `(Error … (BadArgType …))` atom, return that immediately, so an ill-typed call errors instead
+     * of reducing (`(Add S Z)` → error, not `S`). A null (well-typed, or a gradual/undeclared
+     * argument) falls through to normal reduction.
+     *
+     * Gated to names in [declaredTypeNames] with all-`Atom` params and a scalar `Atom` return:
+     *  - undeclared functions are skipped so hot untyped code (backchaining, symbolic interpreters)
+     *    pays no per-call type-check cost;
+     *  - a primitive/List return cannot hold an Error atom in its return slot, so those are skipped
+     *    too (their eval-time errors are a later phase — multivalued needs a singleton-List wrap).
+     */
+    private fun maybeEmitTypeCheckPrologue(mv: LocalVariablesSorter) {
+        val fn = function as? FunctionDefinition ?: return
+        if (fn.name !in declaredTypeNames) return
+        if (fn.isMultivalued() || fn.returnType != GroundedType.ATOM) return
+        if (!fn.params.all { it.type == GroundedType.ATOM }) return
+
+        mv.visitLdcInsn(fn.name)
+        emitParamArgsArray(mv)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/functions/JettaCallSite",
+            "nonReduced",
+            "(Ljava/lang/String;[Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            false,
+        )
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/JettaProgram",
+            "typeCheckError",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+            false,
+        )
+        val cont = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, cont)
+        // Non-null: the `(Error …)` atom is this call's only result — pop the Matcher frame and
+        // return it (generateReturn ARETURNs it for the scalar-Atom return type).
+        generateReturn(mv)
+        mv.visitLabel(cont)
+        mv.visitInsn(Opcodes.POP)
+    }
+
+    /**
+     * D3 increment (a) — relational-dispatch prologue for the wildcard-swallow shape. A multivalued
+     * function whose Match mixes a GUARDED clause (a constant like `(Mortal Socrates)`) with a
+     * WILDCARD clause (`(Mortal $x)`) mis-handles a FREE-variable argument: the free var fails the
+     * guard's equality and is swallowed by the wildcard, dropping the specific clause that would
+     * UNIFY with it. Emit, at entry: `reduceRelationalIfFree(space, fn, args)` — which returns the
+     * relational bag when an argument is a bare unbound Variable, else null to proceed with the
+     * normal functional dispatch. On a non-null result, pop the entry frame (balance the push in
+     * [generate]) and return it. The narrow shape trigger keeps purely-relational functions
+     * (`(green $x)`, needing applicative arg reduction) and constant-only functions (which already
+     * fall through to `reduceOrInert`) on their existing paths.
+     */
+    private fun maybeEmitRelationalPrologue(mv: LocalVariablesSorter, match: Match) {
+        val funcName = (function as? FunctionDefinition)?.name ?: return
+        val hasGuarded = match.branches.any { it.cond != null }
+        val hasWildcard = match.branches.any { it.cond == null }
+        if (!hasGuarded || !hasWildcard) return
+
+        mv.visitLdcInsn(moduleSpaceName)
+        mv.visitLdcInsn(funcName)
+        emitParamArgsArray(mv)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/functions/JettaCallSite",
+            "reduceRelationalIfFree",
+            "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/Object;)Ljava/util/List;",
+            false
+        )
+        val proceed = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, proceed)
+        generatePop(mv) // balance the entry Matcher.push() before the early return
+        mv.visitInsn(Opcodes.ARETURN)
+        mv.visitLabel(proceed)
+        mv.visitInsn(Opcodes.POP) // discard the null; fall through to functional dispatch
+    }
+
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
+        maybeEmitTypeCheckPrologue(mv)
         // A Match whose clauses are provably mutually exclusive (FunctionRewriter did not
         // mark the function multivalued) has at most one matching branch, so it compiles to
         // a scalar dispatch — an if-else chain returning each branch value directly, with no
@@ -655,6 +845,7 @@ open class FunctionGenerator(
             generateScalarMatch(mv, match)
             return
         }
+        maybeEmitRelationalPrologue(mv, match)
         emitLineNumber(match)
         val returnType = match.returnType
             ?: match.branches.firstNotNullOfOrNull { it.body.type }
@@ -677,8 +868,13 @@ open class FunctionGenerator(
         // body legitimately yields empty must not fall back. Emitted only when (a)
         // this is a named function and (b) some branch is guarded; an all-unconditional
         // Match always matches, so the flag and fallback would be dead code.
+        // A visibility-guarded branch (sourceOrdinal >= 0) can also fail to match (rule hidden by
+        // the run watermark), so it needs the matched-flag + inert fallback just like a cond guard
+        // — otherwise a fully-guarded-out Match would return the empty bag instead of staying inert.
         val funcName = (function as? FunctionDefinition)?.name
-        val matchedVar = if (funcName != null && match.branches.any { it.cond != null }) {
+        val matchedVar = if (funcName != null &&
+            match.branches.any { it.cond != null || it.sourceOrdinal >= 0 }
+        ) {
             val v = mv.newLocal(Type.BOOLEAN_TYPE)
             mv.visitInsn(Opcodes.ICONST_0)
             mv.visitVarInsn(Opcodes.ISTORE, v)
@@ -725,7 +921,8 @@ open class FunctionGenerator(
         generateAtom(mv, branch.body, null, doReturn = true)
         scalarReturnCoercion = prev
         restoreDestructuring(savedLocals)
-        if (branch.cond != null) mv.visitLabel(elseLabel)
+        // elseLabel is a jump target when EITHER a cond guard OR a visibility guard was emitted.
+        if (branch.cond != null || branch.sourceOrdinal >= 0) mv.visitLabel(elseLabel)
     }
 
     /**
@@ -835,6 +1032,23 @@ open class FunctionGenerator(
      * Shared by the multivalued (List) and scalar Match code paths.
      */
     private fun emitBranchGuard(mv: LocalVariablesSorter, branch: MatchBranch, elseLabel: Label) {
+        // Ordered-top-level reduction guard (step 2): skip this clause when its `=` rule is not
+        // yet visible at the current run's watermark (declared below the running `!`-form). A
+        // skipped branch falls through to the non-reduction fallback -> the expression stays inert
+        // (hyperon interleaved semantics). Only emitted for rules preceded by a run (ordinal >= 0);
+        // hot facts-then-runs code has ordinal == -1 and pays nothing. Runs BEFORE the cond guard
+        // so a hidden rule never even evaluates its pattern. See JettaProgram.isRuleVisible.
+        if (branch.sourceOrdinal >= 0) {
+            mv.visitLdcInsn(branch.sourceOrdinal)
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                "net/singularity/jetta/runtime/JettaProgram",
+                "isRuleVisible",
+                "(I)Z",
+                false
+            )
+            mv.visitJumpInsn(Opcodes.IFEQ, elseLabel)
+        }
         val cond = branch.cond ?: return
         emitLineNumber(cond)
         // Resolve bindings on parameters before evaluating conditions, so shared
@@ -943,7 +1157,9 @@ open class FunctionGenerator(
 
         restoreDestructuring(savedLocals)
 
-        if (branch.cond != null) {
+        // elseLabel is a jump target when EITHER a cond guard OR a visibility guard was emitted;
+        // a hidden rule jumps here, leaving `matched` false so generateMatch emits the inert form.
+        if (branch.cond != null || branch.sourceOrdinal >= 0) {
             mv.visitLabel(elseLabel)
         }
     }
@@ -1116,13 +1332,34 @@ open class FunctionGenerator(
                 // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
                 // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
                 generateLoadBoolean(arg.name == "True")
+            } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression) {
+                // A FULLY-INERT Atom parameter (e.g. `get-type`): the argument must reach the
+                // method un-reduced, so quote the whole term structurally (evalCalls=false ⇒ no
+                // nested sub-call is evaluated). This is what makes `(get-type (Cons 0 (Cons 1
+                // Nil)))` and `(get-type (drop (Cons 1 Nil)))` type-check the un-reduced
+                // application; the plain-`generateAtom` path below would instead take the
+                // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
+                // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
+                generateQuote(mv, arg)
             } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
-                // A grounded VALUE (Int/Double/String/…) passed to an Atom-typed parameter
-                // must be wrapped in a Grounded: a bare box (Integer) is not an Atom subtype,
-                // so the verifier rejects `Integer` where `Atom` is expected. Routine in
-                // higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load the
-                // raw value, box it, wrap in Grounded (which IS an Atom).
-                generateGroundedValueArg(mv, arg, argType)
+                if (arg is Expression) {
+                    // An arithmetic/grounded APPLICATION reaching an Atom-typed parameter is
+                    // DATA, not a computation — the ATOM meta-type suppresses reduction (hyperon).
+                    // Quote it inert rather than evaluating it, even though its resolved type is a
+                    // grounded value. This is what lets `(get-type (+ 5 "4"))` type-check the
+                    // ill-typed expression (→ `()`) instead of evaluating `5 + "4"` and crashing.
+                    // (A reducible user-function application — e.g. `(get-type (drop …))` — is not
+                    // grounded-value-typed and so still reduces here; suppressing THAT needs a
+                    // per-builtin meta-type distinction, out of scope for get-type's D0/D1.)
+                    generateQuote(mv, arg)
+                } else {
+                    // A grounded VALUE LITERAL (Int/Double/String/…) passed to an Atom-typed
+                    // parameter must be wrapped in a Grounded: a bare box (Integer) is not an Atom
+                    // subtype, so the verifier rejects `Integer` where `Atom` is expected. Routine
+                    // in higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load
+                    // the raw value, box it, wrap in Grounded (which IS an Atom).
+                    generateGroundedValueArg(mv, arg, argType)
+                }
             } else {
                 generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
             }
@@ -1188,6 +1425,40 @@ open class FunctionGenerator(
         } else {
             generateLoadVar(mv, variable, function.params, isStatic, className)
         }
+        generateLoadInt(arguments.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        arguments.forEachIndexed { i, arg ->
+            mv.visitInsn(Opcodes.DUP)
+            generateLoadInt(i)
+            generateAtom(mv, arg, null, false)
+            boxIfNeeded(mv, arg.type as? GroundedType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitInvokeDynamicInsn(
+            "apply",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            CALL_SITE_BOOTSTRAP_HANDLE,
+            // Static bootstrap arg: the space name to query for `(= …)` rules.
+            moduleSpaceName,
+        )
+    }
+
+    /**
+     * Dispatch a `(head args…)` application whose head is not a statically-callable Symbol/
+     * Variable slot — either an Expression head (a curried call such as `(((curry +) 2) 3)`) or
+     * a Special-`=` head in a value position (the increment-C `=`-redex `(= a b)`). Mirrors
+     * [generateDispatchCall] but pushes the head as a quoted Atom rather than loading a variable
+     * slot: the head is quoted with `evalCalls = true` so any reducible scalar call nested in it
+     * keeps its value-position semantics, args are packed and boxed exactly as for variable-head
+     * dispatch, and the whole `(head args…)` is dispatched through the
+     * [net.singularity.jetta.runtime.functions.JettaCallSite] bootstrap. At runtime the reducer
+     * rewrites it via space `(= …)` rules (+ the registry / `=`-operand steps) or, if nothing
+     * applies, returns it inert.
+     */
+    private fun generateExpressionHeadDispatchCall(mv: LocalVariablesSorter, atom: Expression) {
+        val head = atom.atoms.first()
+        val arguments = atom.atoms.drop(1)
+        generateQuote(mv, head, evalCalls = true)
         generateLoadInt(arguments.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
         arguments.forEachIndexed { i, arg ->
@@ -1707,6 +1978,129 @@ open class FunctionGenerator(
         generateAtom(mv, arguments[1], null, false)
         mv.visitInsn(Opcodes.IREM)
         if (doReturn) generateReturn(mv)
+    }
+
+    /**
+     * D2.2 (tier i): if [atom] is a grounded arithmetic application with a concrete non-numeric
+     * operand (today `String`), the `(Error <atom> (BadArgType <pos> Number <actual>))` atom to
+     * emit in its place, else null. `pos` is 1-based over the operands. Mirrors the resolver's
+     * [net.singularity.jetta.compiler.frontend.resolve.Context] `hasGroundedArithmeticTypeError`
+     * detection, and is only consulted once the resolver has stamped the node `ATOM`.
+     */
+    private fun groundedArithmeticError(atom: Expression): Expression? {
+        atom.atoms.drop(1).forEachIndexed { i, operand ->
+            if (operand.type == GroundedType.STRING) {
+                val badArg = Expression(Symbol("BadArgType"), Grounded(i + 1), Symbol("Number"), Symbol("String"))
+                return Expression(Symbol("Error"), atom, badArg)
+            }
+        }
+        return null
+    }
+
+    /** The MeTTa-level type name of a grounded value type (the name hyperon uses in a
+     *  `BadArgType`): the numeric tower collapses to `Number`, the rest map by name. */
+    private fun mettaTypeName(t: Atom?): String = when (t) {
+        GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE -> "Number"
+        GroundedType.STRING -> "String"
+        GroundedType.BOOLEAN -> "Bool"
+        else -> "%Undefined%"
+    }
+
+    /**
+     * D2.4 (increment 1): build the `(Error <call> (BadArgType <pos> <exp> <act>))` atom for a
+     * type-errored `==`/`!=`. `==` is grounded `(-> $t $t Bool)`, so `$t` binds to the first
+     * operand's type and any later operand of a different type is the offender. Report its
+     * 1-based position, the expected type (arg0's), and its actual type — mirroring hyperon's
+     * left-to-right binding (`(== 5 "S")` → `(BadArgType 2 Number String)`; the reversed
+     * `(== "S" 5)` → `(BadArgType 2 String Number)`). Returns null if no mismatch is found.
+     */
+    private fun comparisonBadArgType(atom: Expression): Expression? {
+        val operands = atom.atoms.drop(1)
+        if (operands.size < 2) return null
+        val expected = mettaTypeName(operands[0].type)
+        operands.drop(1).forEachIndexed { i, operand ->
+            val actual = mettaTypeName(operand.type)
+            if (actual != expected) {
+                val badArg = Expression(Symbol("BadArgType"), Grounded(i + 2), Symbol(expected), Symbol(actual))
+                return Expression(Symbol("Error"), atom, badArg)
+            }
+        }
+        return null
+    }
+
+    /**
+     * D2.4 (increment 4): the first argument of an inert/undefined application that is itself a
+     * statically-known grounded type error, as its `(Error … (BadArgType …))` atom — or null if no
+     * argument statically errors. Errors are absorbing in hyperon: reducing `(f (+ 5 "S"))` reduces
+     * the argument first, surfaces its error, and that error becomes the whole application's value.
+     * Only the compile-time-decidable grounded cases (a String operand of `+`/`-`/`*`, a
+     * numeric-vs-String `==`/`!=`) are recognised here — the same shapes [generateArithmetics] /
+     * the COND_EQ branch turn into errors in a value position. Not recursive (a direct argument
+     * only), matching the `(f (+ 5 "S"))` shape.
+     */
+    private fun firstStaticArgError(atom: Expression): Expression? {
+        atom.atoms.drop(1).forEach { arg ->
+            if (arg is Expression && arg.type == GroundedType.ATOM) {
+                when ((arg.atoms.firstOrNull() as? Special)?.value) {
+                    Predefined.PLUS, Predefined.MINUS, Predefined.TIMES ->
+                        groundedArithmeticError(arg)?.let { return it }
+                    Predefined.COND_EQ, Predefined.COND_NEQ ->
+                        comparisonBadArgType(arg)?.let { return it }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * D2.4 (increment 2): whether a STRUCTURAL `==`/`!=` (reference operands) warrants a runtime
+     * type check. The custom types being compared live as `:` facts, so the error can only be
+     * decided at runtime ([net.singularity.jetta.runtime.JettaProgram.typeCheckError]). Gated
+     * tightly: the program must declare types at all ([declaredTypeNames]), both operands must be
+     * stable source terms (non-`Variable`), and the comparison must be structural
+     * ([numericCompareType] `== null`) — a numeric/Bool comparison cannot carry a custom-type
+     * mismatch, and hot untyped code (no `:` facts) pays nothing.
+     */
+    private fun needsRuntimeComparisonTypeCheck(operands: List<Atom>): Boolean =
+        declaredTypeNames.isNotEmpty() &&
+            operands.size == 2 &&
+            operands.none { it is Variable } &&
+            numericCompareType(operands[0], operands[1]) == null
+
+    /**
+     * Emit a value-position structural `==`/`!=` guarded by an eval-time type check (D2.4
+     * increment 2). Reconstruct `(== a b)`, ask `JettaProgram.typeCheckError`: a non-null result is
+     * the `(Error … (BadArgType …))` atom (the comparison's value); a null means well-typed /
+     * gradual, so fall through to the ordinary Bool comparison. Both outcomes leave a single Atom
+     * (an `Error` expression or a `Grounded<Bool>`) on the stack, so they merge cleanly. Only called
+     * with `doReturn == false`; honours [exit] (jump) or leaves the value on the stack (join).
+     */
+    private fun generateComparisonWithTypeCheck(mv: LocalVariablesSorter, atom: Expression, exit: Label?) {
+        generateQuote(mv, atom)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.JETTA_PROGRAM,
+            "typeCheckError",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+            false,
+        )
+        val wellTyped = Label()
+        val join = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, wellTyped)
+        // Non-null: the Error atom on the stack IS the result — jump past the Bool path.
+        mv.visitJumpInsn(Opcodes.GOTO, join)
+        mv.visitLabel(wellTyped)
+        mv.visitInsn(Opcodes.POP) // drop the null
+        // Well-typed: the ordinary Bool comparison. generateIf(exit=null) leaves the raw primitive
+        // boolean on the stack; box it into a Grounded<Bool> so BOTH edges reaching [join] carry an
+        // Atom (an `Error` expression or a `Grounded`) — merging a primitive with a reference is a
+        // VerifyError (`top` stack slot). The epilogue's boxing is bypassed (this branch `return`s
+        // from generateAtom), so the boxing is done here explicitly.
+        generateIf(mv, listOf(atom, Grounded(true), Grounded(false)), null, false)
+        wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+        mv.visitLabel(join)
+        if (exit != null) mv.visitJumpInsn(Opcodes.GOTO, exit)
     }
 
     private fun generateArithmetics(

@@ -147,6 +147,13 @@ fun JvmMethod.doesParameterHaveAnyType(index: Int) =
 fun JvmMethod.isParameterAtomType(index: Int) =
     descriptor.parseDescriptor()[index] == "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
 
+/**
+ * An `Atom` parameter whose argument must arrive fully inert (un-reduced) — see
+ * [JvmMethod.inertAtomParams]. Codegen quotes such an argument structurally rather than evaluating
+ * it (so `(get-type (drop (Cons 1 Nil)))` type-checks the un-reduced application).
+ */
+fun JvmMethod.isParameterInertAtom(index: Int) = index in inertAtomParams
+
 fun JvmMethod.isParameterBooleanType(index: Int) =
     descriptor.parseDescriptor()[index] == "Z"
 
