@@ -13,12 +13,14 @@ between compile time and call time. The behavioural reference is the Rust
 interpreter [`trueagi-io/hyperon-experimental`](https://github.com/trueagi-io/hyperon-experimental);
 JeTTa aims to produce byte-for-byte identical answers on its test suite.
 
-- **Version:** `0.6.1` · **License:** MIT · **Runtime:** Java 17+
+- **Version:** `0.7.0` · **License:** MIT · **Runtime:** Java 17+
 
 > **Status.** JeTTa is under active development. The fundamentals — symbols,
 > pattern match, equality, chaining, non-determinism, spaces, mutable state and
-> module imports — work today; the type system (GADTs, dependent, auto) is the
-> current frontier. See [correctness](#compatibility--correctness) below.
+> module imports — work today, and as of `0.7.0` so does most of the type system:
+> GADTs, dependent types, type propagation and inference all pass. The current
+> frontier is mutable state, grounded values / PLN, and higher-order currying.
+> See [correctness](#compatibility--correctness) below.
 
 ---
 
@@ -189,17 +191,21 @@ kept under `docs/`).
 ## Compatibility & correctness
 
 Every program is checked against `hyperon-experimental` for the same answer.
-Group-by-group coverage of the reference topic suite (`a`–`g`):
+Group-by-group coverage of the reference topic suite (`a`–`g`) — **15 of 22
+topic tests pass** as of `0.7.0`:
 
-| Group | Feature | Status |
-| --- | --- | --- |
-| a | symbols / match | ✅ full |
-| b | equality · chaining · non-det | core done |
-| c | grounded values · spaces · PLN | spaces done |
-| d | types (GADT · dependent · auto) | frontier |
-| e | mutation / states | KB-write done |
-| f | modules / imports | `import!` works |
-| g | doc atoms (`get-doc` / `help!`) | ✅ full |
+| Group | Feature | Pass | Status |
+| --- | --- | --- | --- |
+| a | symbols / match | 3 / 3 | ✅ full |
+| b | equality · chaining · non-det | 5 / 6 | core done · inert constructors left |
+| c | grounded values · spaces · PLN | 1 / 3 | spaces done · grounded ops / PLN next |
+| d | types (GADT · dependent · propagation · auto) | 4 / 5 | was 0 / 5 · only currying left |
+| e | mutation / states | 1 / 3 | KB-write done · state cells next |
+| f | modules / imports | 0 / 1 | `import!` works · needs higher-order |
+| g | doc atoms (`get-doc` / `help!`) | 1 / 1 | ✅ full |
+
+Run the suite yourself with `./gradlew :test-runner:run`; it writes a per-test
+report to `tests/reports/`.
 
 ## License
 
