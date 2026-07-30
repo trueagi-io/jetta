@@ -10,12 +10,9 @@
 # The runner skips files imported by other files in the suite (modules).
 # So entries here only need to cover files that run as standalone tests.
 
-# f1_imports transitively imports f1_moduleC, which trips a pre-existing
-# compiler NotImplementedError (likely tied to `Number` type / zero-arg
-# function in its declarations). Once that compiler bug is fixed the
-# whole f1 family should pass.
-f1_imports.metta            COMPILE_FAIL:KNOWN_BUG:moduleC-not-implemented        compiler crashes resolving f1_moduleC's body
-
-# c2_spaces uses (import! &kb ...) which is explicitly rejected until
-# Import-As semantics are implemented.
-c2_spaces.metta             COMPILE_FAIL:FEATURE_PENDING:import-as               needs Import-As (&kb) support
+# f1_imports now COMPILES (f1_moduleC's body resolves, and `import!` works) and
+# fails at run time instead: a higher-order Boolean lambda leaves a List where the
+# verifier wants a primitive boolean —
+#   f1_imports.lambda$9(Atom)Z @10: 'java/util/List' is not assignable to integer
+# The old expectation (a compiler NotImplementedError in f1_moduleC) is obsolete.
+f1_imports.metta            RUN_EXCEPTION:KNOWN_BUG:higher-order-bool-verify      lambda$9 returns List in a boolean slot
