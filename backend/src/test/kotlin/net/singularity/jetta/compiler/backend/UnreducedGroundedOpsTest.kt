@@ -85,6 +85,27 @@ class UnreducedGroundedOpsTest : GeneratorTestBase() {
     )
 
     /**
+     * A symbol operand with a DECLARED non-numeric type turns the same unreducible form into a
+     * `BadArgType` error — and because `:` declarations are space facts read under the run's
+     * watermark, the verdict depends on the run's position: identical expressions, one above the
+     * declaration and one below it, get different answers.
+     */
+    @Test
+    fun `a declared non-numeric operand makes the form a BadArgType error from that point on`() =
+        runLenient(
+            "UnreducedDeclaredType",
+            """
+                !(assertEqualToResult
+                  (+ ln 2)
+                  ((+ ln 2)))
+                (: ln LN)
+                !(assertEqualToResult
+                  (+ ln 2)
+                  ((Error (+ ln 2) (BadArgType 1 Number LN))))
+            """.trimIndent()
+        )
+
+    /**
      * The computable path is untouched: real arithmetic, a numeric-parameter function and the
      * variable-pinning that lets untyped arithmetic compile all still work.
      */

@@ -281,7 +281,19 @@ open class FunctionGenerator(
                                 // quoted expected data is emitted verbatim by generateQuote, never
                                 // reaching this arithmetic-dispatch branch.
                                 val err = groundedArithmeticError(atom)
-                                if (err != null) generateQuote(mv, err) else generateQuote(mv, atom)
+                                when {
+                                    err != null -> generateQuote(mv, err)
+                                    // A symbol operand may have a DECLARED type, and `:` facts live
+                                    // in the space, so whether `(+ ln 2)` is merely unreduced or an
+                                    // ill-typed application is only known at runtime — and depends
+                                    // on the run's position relative to the declaration. Ask, and
+                                    // fall back to the inert form. c1 has the same `(+ ln 2)` both
+                                    // before `(: ln LN)` (unreduced) and after it (BadArgType).
+                                    atom.atoms.drop(1).any { it is Symbol } ->
+                                        generateInertArithmeticWithTypeCheck(mv, atom)
+
+                                    else -> generateQuote(mv, atom)
+                                }
                             } else generateArithmetics(mv, func, arguments, atom.type as GroundedType, doReturn)
 
                         Predefined.DIVIDE -> generateDivide(mv, arguments, doReturn)
@@ -2159,6 +2171,34 @@ open class FunctionGenerator(
         wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
         mv.visitLabel(join)
         if (exit != null) mv.visitJumpInsn(Opcodes.GOTO, exit)
+    }
+
+    /**
+     * An unreducible arithmetic form whose operand is a symbol: emit `(Error … (BadArgType …))` when
+     * that symbol has a declared non-numeric type, else the inert form itself. The decision must be
+     * made at runtime because `:` declarations are space facts read through
+     * [net.singularity.jetta.runtime.JettaProgram.typeCheckError], which honours the run's watermark
+     * — so the same `(+ ln 2)` is unreduced above `(: ln LN)` and an error below it. Both edges leave
+     * an Atom on the stack, so no boxing is needed at the join.
+     */
+    private fun generateInertArithmeticWithTypeCheck(mv: LocalVariablesSorter, atom: Expression) {
+        generateQuote(mv, atom)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.JETTA_PROGRAM,
+            "typeCheckError",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+            false,
+        )
+        val unreduced = Label()
+        val join = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, unreduced)
+        mv.visitJumpInsn(Opcodes.GOTO, join)
+        mv.visitLabel(unreduced)
+        mv.visitInsn(Opcodes.POP) // drop the null
+        generateQuote(mv, atom)
+        mv.visitLabel(join)
     }
 
     private fun generateArithmetics(
