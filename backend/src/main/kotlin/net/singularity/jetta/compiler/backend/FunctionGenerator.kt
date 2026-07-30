@@ -363,6 +363,17 @@ open class FunctionGenerator(
                             atom.type == GroundedType.ATOM ->
                                 generateQuote(mv, comparisonBadArgType(atom) ?: atom)
 
+                            // An operand that is an unreducible arithmetic form may itself be an
+                            // ill-typed application once a `:` declaration is in scope. Errors are
+                            // absorbing, so surface it as the comparison's value instead of
+                            // comparing a `(Error …)` atom against the other operand.
+                            !doReturn && runtimeErrorableOperands(atom).isNotEmpty() -> {
+                                generateComparisonWithArgErrorCheck(
+                                    mv, atom, runtimeErrorableOperands(atom), exit
+                                )
+                                return
+                            }
+
                             // D2.4 (increment 2): a structural comparison of two custom-typed
                             // operands in a typed program may be an eval-time BadArgType (types are
                             // `:` facts, so it is a RUNTIME check — `(== SocratesIsHuman
@@ -1623,6 +1634,17 @@ open class FunctionGenerator(
             (atom.atoms.firstOrNull() as? Special)?.value in ARITHMETIC_OPS
 
     /**
+     * Arguments of [atom] that may turn out to be an `(Error … (BadArgType …))` at run time: an
+     * unreducible arithmetic form with a SYMBOL operand, whose verdict depends on a `:` declaration
+     * in the space and therefore on the run's position (see
+     * [generateInertArithmeticWithTypeCheck]).
+     */
+    private fun runtimeErrorableOperands(atom: Expression): List<Expression> =
+        atom.atoms.drop(1).filterIsInstance<Expression>().filter { operand ->
+            isInertArithmetic(operand) && operand.atoms.drop(1).any { it is Symbol }
+        }
+
+    /**
      * Whether an ORDERING comparison (`<`/`>`/`<=`/`>=`) should emit DOUBLE opcodes.
      * True when either operand is statically DOUBLE, OR when NEITHER is a statically-known
      * primitive (both `Atom`, e.g. `min`'s `$a`/`$b` bound to destructured `Grounded`
@@ -2181,6 +2203,47 @@ open class FunctionGenerator(
      * — so the same `(+ ln 2)` is unreduced above `(: ln LN)` and an error below it. Both edges leave
      * an Atom on the stack, so no boxing is needed at the join.
      */
+    /**
+     * hyperon's errors are ABSORBING: when an argument reduces to `(Error …)`, the enclosing
+     * application IS that error, not a comparison result. D2.4 increment 4 does this for
+     * statically-known argument errors (`firstStaticArgError`); here the verdict is only knowable at
+     * run time, since it depends on a `:` declaration in the space — c1 asserts the same
+     * `(== 4 (+ ln 2))` as `False` above `(: ln LN)` and as the inner error below it.
+     *
+     * Each errorable operand is asked about in turn ([net.singularity.jetta.runtime.JettaProgram.typeCheckError]);
+     * the first non-null answer IS the result of the comparison. Only reached in a value position,
+     * where an `(Error …)` atom and a `Grounded<Bool>` are interchangeable to the consumer — hence
+     * boxing the Bool edge so both edges into the join carry an Atom.
+     */
+    private fun generateComparisonWithArgErrorCheck(
+        mv: LocalVariablesSorter,
+        atom: Expression,
+        operands: List<Expression>,
+        exit: Label?
+    ) {
+        val join = Label()
+        operands.forEach { operand ->
+            generateQuote(mv, operand)
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                RuntimeNames.JETTA_PROGRAM,
+                "typeCheckError",
+                "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                false,
+            )
+            val wellTyped = Label()
+            mv.visitInsn(Opcodes.DUP)
+            mv.visitJumpInsn(Opcodes.IFNULL, wellTyped)
+            mv.visitJumpInsn(Opcodes.GOTO, join) // the Error atom on the stack IS the result
+            mv.visitLabel(wellTyped)
+            mv.visitInsn(Opcodes.POP) // drop the null and try the next operand
+        }
+        generateIf(mv, listOf(atom, Grounded(true), Grounded(false)), null, false)
+        wrapValueOnStackInGrounded(GroundedType.BOOLEAN)
+        mv.visitLabel(join)
+        if (exit != null) mv.visitJumpInsn(Opcodes.GOTO, exit)
+    }
+
     private fun generateInertArithmeticWithTypeCheck(mv: LocalVariablesSorter, atom: Expression) {
         generateQuote(mv, atom)
         mv.visitMethodInsn(

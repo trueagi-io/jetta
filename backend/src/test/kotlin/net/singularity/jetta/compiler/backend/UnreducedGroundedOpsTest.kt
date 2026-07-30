@@ -106,6 +106,26 @@ class UnreducedGroundedOpsTest : GeneratorTestBase() {
         )
 
     /**
+     * Errors are absorbing: once the operand's own application is ill-typed, the enclosing `==` IS
+     * that error rather than a comparison against it. Position-sensitive for the same reason as
+     * above — the identical comparison is `False` while `ln` is undeclared and the inner error once
+     * it is declared.
+     */
+    @Test
+    fun `an operand error surfaces as the value of the enclosing comparison`() = runLenient(
+        "UnreducedEqError",
+        """
+            !(assertEqualToResult
+              (== 4 (+ ln 2))
+              (False))
+            (: ln LN)
+            !(assertEqualToResult
+              (== 4 (+ ln 2))
+              ((Error (+ ln 2) (BadArgType 1 Number LN))))
+        """.trimIndent()
+    )
+
+    /**
      * The computable path is untouched: real arithmetic, a numeric-parameter function and the
      * variable-pinning that lets untyped arithmetic compile all still work.
      */
