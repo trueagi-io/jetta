@@ -372,12 +372,21 @@ open class FunctionGenerator(
                         }
 
                         else -> if (func.isBooleanExpression()) {
-                            generateIf(
-                                mv,
-                                listOf(atom, Grounded(true), Grounded(false)),
-                                exit,
-                                doReturn
-                            )
+                            // An order comparison the resolver stamped ATOM has an operand it
+                            // cannot compute — `(> 4 (+ ln 2))`. It has no Bool value, so emit the
+                            // whole form as data (hyperon leaves it unreduced). Comparing would
+                            // also CCE: the inert operand is an Expression at runtime, not a
+                            // Grounded number.
+                            if (atom.type == GroundedType.ATOM) {
+                                generateQuote(mv, atom)
+                            } else {
+                                generateIf(
+                                    mv,
+                                    listOf(atom, Grounded(true), Grounded(false)),
+                                    exit,
+                                    doReturn
+                                )
+                            }
                         } else TODO("func=$func")
                     }
 
@@ -548,6 +557,33 @@ open class FunctionGenerator(
         }
     }
 
+    /**
+     * A grounded ARITHMETIC form that computes a scalar — `(+ 2 2)` inside `(ln (+ 2 2))`. Such a
+     * form carries no `resolved` symbol (its head is a [Special], not a user function), so the
+     * applicative-order branch of [generateQuote] used to miss it and quote it as a thunk, leaving
+     * `(ln (+ 2 2))` where hyperon reduces the argument and yields `(ln 4)` (c1). The grounded-value
+     * type is the discriminator: an arithmetic form over an unreducible operand is stamped `ATOM` by
+     * the resolver and therefore stays inert here, as it must — `(> 4 (+ ln 2))` keeps its shape.
+     */
+    private fun isGroundedArithmetic(atom: Expression): Boolean {
+        val head = atom.atoms.firstOrNull() as? Special ?: return false
+        val type = atom.type
+        if (head.value !in ARITHMETIC_OPS || type !is GroundedType || !type.isGroundedValue()) {
+            return false
+        }
+        // Only when every operand is a grounded LITERAL (or nested arithmetic over such literals),
+        // so the value is computable right here. An operand that is a variable or some other call
+        // is deliberately excluded: `(stv (* $s (s-tv (TV $y))) …)` (c3) is a match TEMPLATE, and
+        // forcing its `(* …)` hands the multiplication an unbound variable at runtime.
+        return atom.atoms.drop(1).all { operand ->
+            when (operand) {
+                is Expression -> isGroundedArithmetic(operand)
+                is Grounded<*> -> (operand.type as? GroundedType)?.isGroundedValue() == true
+                else -> false
+            }
+        }
+    }
+
     private fun generateQuote(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
         when (atom) {
             is Expression -> {
@@ -567,8 +603,9 @@ open class FunctionGenerator(
                     // CanonicalForm lifting; genuinely inert data (and `quote`d content,
                     // evalCalls=false) is quoted as before.
                     val subType = sub.type
-                    if (evalCalls && sub is Expression && sub.resolved != null &&
-                        sub.resolved?.isMultiValued != true
+                    if (evalCalls && sub is Expression &&
+                        ((sub.resolved != null && sub.resolved?.isMultiValued != true) ||
+                            isGroundedArithmetic(sub))
                     ) {
                         generateAtom(mv, sub, null, false)
                         if (subType is GroundedType && subType.isGroundedValue()) {
@@ -1556,11 +1593,22 @@ open class FunctionGenerator(
      * grounded values, not object identity.
      */
     private fun numericCompareType(left: Atom, right: Atom): GroundedType? = when {
+        // An operand that stays UNREDUCED is an `Expression` at runtime, never a grounded number,
+        // so no numeric opcode can consume it — `(== 4 (+ ln 2))` must compare structurally and
+        // yield False (c1), not cast an Expression to Grounded. Distinct from an Atom-typed CALL
+        // (`(== (foo) 5)`), which does hold a grounded number at runtime and keeps the numeric path.
+        isInertArithmetic(left) || isInertArithmetic(right) -> null
         left.type == GroundedType.DOUBLE || right.type == GroundedType.DOUBLE -> GroundedType.DOUBLE
         left.type == GroundedType.INT || right.type == GroundedType.INT -> GroundedType.INT
         left.type == GroundedType.BOOLEAN || right.type == GroundedType.BOOLEAN -> GroundedType.BOOLEAN
         else -> null
     }
+
+    /** An arithmetic form the resolver could not compute (an unreducible operand), so it is data:
+     *  arithmetic head, `ATOM` type and no resolved callee. Counterpart of [isGroundedArithmetic]. */
+    private fun isInertArithmetic(atom: Atom): Boolean =
+        atom is Expression && atom.type == GroundedType.ATOM && atom.resolved == null &&
+            (atom.atoms.firstOrNull() as? Special)?.value in ARITHMETIC_OPS
 
     /**
      * Whether an ORDERING comparison (`<`/`>`/`<=`/`>=`) should emit DOUBLE opcodes.
@@ -1666,6 +1714,16 @@ open class FunctionGenerator(
                 "(Ljava/lang/Object;)Z",
                 false
             )
+        }
+
+        // Push an operand for a STRUCTURAL (`Object.equals`) comparison, which needs a reference.
+        // A grounded literal leaves a primitive on the stack — `(== 4 (+ ln 2))`, where the right
+        // operand is unreduced so the comparison is structural — so box it into its Grounded atom
+        // (an int on the stack would fail the verifier at `equals`).
+        fun pushComparisonOperandAsAtom(operand: Atom) {
+            generateAtom(mv, operand, null, false)
+            stackShapeType(operand)?.takeIf { it.isGroundedValue() }
+                ?.let { wrapValueOnStackInGrounded(it) }
         }
 
         fun generateIntComparison(left: Atom, right: Atom, inverseOp: Int, elemType: GroundedType = GroundedType.INT) {
@@ -1780,8 +1838,8 @@ open class FunctionGenerator(
                                     false
                                 )
                             } else {
-                                generateAtom(mv, left, null, false)
-                                generateAtom(mv, right!!, null, false)
+                                pushComparisonOperandAsAtom(left)
+                                pushComparisonOperandAsAtom(right!!)
                                 mv.visitMethodInsn(
                                     Opcodes.INVOKEVIRTUAL,
                                     "java/lang/Object",
@@ -1802,8 +1860,8 @@ open class FunctionGenerator(
                             generateIntComparison(left, right, Opcodes.IF_ICMPEQ, cmp)
                         } else {
                             // Reference types — use !Object.equals()
-                            generateAtom(mv, left, null, false)
-                            generateAtom(mv, right!!, null, false)
+                            pushComparisonOperandAsAtom(left)
+                            pushComparisonOperandAsAtom(right!!)
                             mv.visitMethodInsn(
                                 Opcodes.INVOKEVIRTUAL,
                                 "java/lang/Object",
@@ -2150,6 +2208,15 @@ open class FunctionGenerator(
             maxStack++
         }
         if (doReturn) generateReturn(mv)
+    }
+
+    companion object {
+        /** Grounded arithmetic heads — the ops whose result is a number, so a non-numeric operand
+         *  makes the whole form unreducible rather than a computation. */
+        private val ARITHMETIC_OPS = setOf(
+            Predefined.PLUS, Predefined.MINUS, Predefined.TIMES,
+            Predefined.DIVIDE, Predefined.DIV, Predefined.MOD,
+        )
     }
 }
 

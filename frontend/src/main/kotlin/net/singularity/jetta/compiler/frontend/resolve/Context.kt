@@ -535,6 +535,60 @@ class Context private constructor(
         operands.any { it.type == GroundedType.STRING }
 
     /**
+     * A grounded arithmetic op computes over numbers, so a bare [Symbol] operand — `(+ ln 2)`,
+     * where `ln` is an ordinary symbol rather than a grounded function — is neither a number nor
+     * something that reduces to one. hyperon leaves the whole application UNREDUCED (c1:
+     * `(> 4 (+ ln 2))` → `(> 4 (+ ln 2))`), so stamp the node `ATOM` and let codegen take its
+     * inert branch and quote the expression. Without this the operand reached `IADD` and tripped
+     * `FunctionGenerator.type`'s `TODO` — a bare Symbol has no JVM type, so arithmetic codegen
+     * could never have handled one. Variables (pinned numeric by [inferArithmeticOperandTypes]),
+     * nested calls and grounded numbers are untouched.
+     */
+    private fun hasUnreducibleArithmeticOperand(operands: List<Atom>, scope: Scope): Boolean =
+        operands.any { it is Symbol || isFreeRunVariable(it, scope) }
+
+    /**
+     * A variable with no binder at all: it occurs in a top-level `!`-run, whose generated `__main_N`
+     * has no parameters and no match pattern, and it is not in scope. c1 expects
+     * `(> 4 (+ $x 2))` back unreduced for exactly this reason.
+     *
+     * Restricted to run functions on purpose. Inside an ordinary function an untyped variable is a
+     * parameter or a destructured match binding — [inferArithmeticOperandTypes] must keep pinning
+     * those to a numeric type (that is what lets an untyped `(+ $x $x)` compile at all), and a
+     * destructured binding is not in `scope.data` before it is pinned, so "absent from scope" alone
+     * would wrongly condemn `subsum`'s `(* $x $b)`.
+     */
+    private fun isFreeRunVariable(atom: Atom, scope: Scope): Boolean =
+        atom is Variable && scope[atom.name] == null &&
+            (scope.functionDefinition as? FunctionDefinition)
+                ?.name?.startsWith(FunctionRewriter.MAIN) == true
+
+    /**
+     * An arithmetic form that cannot be computed because an operand is a plain symbol — `(+ ln 2)`,
+     * the node [hasUnreducibleArithmeticOperand] stamps `ATOM`. An enclosing order comparison then
+     * has no Bool value either and must stay inert as a whole: c1 expects `(> 4 (+ ln 2))` back
+     * unchanged. Tested STRUCTURALLY, not by the `ATOM` type, because many legitimately comparable
+     * operands are Atom-typed at compile time (an untyped function's result, an `Atom` parameter
+     * holding a grounded number) and those must keep compiling to a real comparison.
+     */
+    private fun isUnreducibleArithmetic(atom: Atom, scope: Scope): Boolean =
+        atom is Expression && arithmeticOpName(atom.atoms.firstOrNull()) != null &&
+            hasUnreducibleArithmeticOperand(atom.arguments(), scope)
+
+    /** The surface name of an arithmetic head, whether stored as [Special] or [Symbol]. */
+    private fun arithmeticOpName(head: Atom?): String? {
+        val name = when (head) {
+            is Special -> head.value
+            is Symbol -> head.name
+            else -> null
+        }
+        return name?.takeIf {
+            it == Predefined.PLUS || it == Predefined.MINUS || it == Predefined.TIMES ||
+                it == Predefined.DIVIDE || it == Predefined.DIV || it == Predefined.MOD
+        }
+    }
+
+    /**
      * D2.4 (increment 1): `==`/`!=` are grounded `(-> $t $t Bool)`, so both operands must
      * share a type. Detect a statically-known numeric-vs-`String` mismatch — the one
      * concretely-decidable grounded case — which hyperon reports as
@@ -1058,13 +1112,25 @@ class Context private constructor(
      * `.resolved` + a concrete type and codegen evaluates it), otherwise the sub-atom stays
      * inert. Pure symbols/literals/variables are left as-is.
      */
-    private fun resolveNestedCallsInData(atom: Atom, scope: Scope) {
+    private fun resolveNestedCallsInData(
+        atom: Atom,
+        scope: Scope,
+        executeSpecialHeads: Boolean = false
+    ) {
         if (atom !is Expression) return
-        val headName = (atom.atoms.firstOrNull() as? Symbol)?.name
-        if (headName != null && resolve(headName) != null) {
+        val head = atom.atoms.firstOrNull()
+        val headName = (head as? Symbol)?.name
+        // [executeSpecialHeads] additionally treats a Special-headed sub-form (arithmetic) as
+        // executable, which is what turns c1's `(ln (+ 2 2))` into `(ln 4)`: unresolved, the `(+ 2 2)`
+        // stays untyped and codegen quotes it as a thunk. OFF by default, because a Special-headed
+        // form inside genuine data must stay inert — c3's `(stv (* 0.8 (s-tv (TV …))) …)` is a data
+        // template whose `(* …)` is not reducible at that point, and executing it hands the
+        // multiplication an unbound Variable.
+        val specialIsExecutable = executeSpecialHeads && head is Special
+        if (specialIsExecutable || (headName != null && resolve(headName) != null)) {
             resolveExpression(atom, scope)
         } else {
-            atom.atoms.forEach { resolveNestedCallsInData(it, scope) }
+            atom.atoms.forEach { resolveNestedCallsInData(it, scope, executeSpecialHeads) }
         }
     }
 
@@ -1298,6 +1364,18 @@ class Context private constructor(
                             expression.arguments().forEach { resolveAtom(it, scope) }
                         } else {
                             messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                            // Report, but still treat the application as the inert data it is and
+                            // resolve the reducible sub-calls in its ARGUMENTS: an unknown head does
+                            // not suppress reduction of what it is applied to (c1 `(ln (+ 2 2))` →
+                            // `(ln 4)`). Without this the arguments were left untyped, so codegen
+                            // quoted `(+ 2 2)` as a thunk. Via [resolveNestedCallsInData], not a bare
+                            // `resolveAtom`, so genuine data — in particular a bare function NAME in
+                            // an argument slot — is left alone instead of being resolved as a
+                            // function reference against a null suggested type.
+                            expression.type = GroundedType.ATOM
+                            expression.arguments().forEach {
+                                resolveNestedCallsInData(it, scope, executeSpecialHeads = true)
+                            }
                         }
                     }
                 }
@@ -1365,13 +1443,23 @@ class Context private constructor(
                     resolveAtom(lhs, scope)
                     resolveAtom(rhs, scope)
                     propagateComparisonOperandType(lhs, rhs, scope)
-                    expression.type = GroundedType.BOOLEAN
+                    // An operand that cannot be computed leaves the comparison without a Bool
+                    // value, so the whole form stays inert data (c1 `(> 4 (+ ln 2))`). Unlike
+                    // `==`/`!=`, order comparisons have no symbolic fallback to fall back to.
+                    expression.type =
+                        if (isUnreducibleArithmetic(lhs, scope) || isUnreducibleArithmetic(rhs, scope)) {
+                            GroundedType.ATOM
+                        } else {
+                            GroundedType.BOOLEAN
+                        }
                 }
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
                     val operands = expression.arguments()
                     operands.forEach { resolveAtom(it, scope) }
-                    if (hasGroundedArithmeticTypeError(operands)) {
+                    if (hasGroundedArithmeticTypeError(operands) ||
+                        hasUnreducibleArithmeticOperand(operands, scope)
+                    ) {
                         expression.type = GroundedType.ATOM
                     } else {
                         inferArithmeticOperandTypes(atom.value, operands, scope)

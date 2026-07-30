@@ -71,6 +71,11 @@ class LowerAssertExpressionsRewriter : Rewriter {
         // Only the ACTUAL is checked here; the expected is quoted data (may legitimately contain a
         // literal `(+ 5 "S")` inside its `(Error …)`), so this never corrupts expected data.
         if (hasReducibleGroundedError(actual)) return expression
+        // An unresolved-head application whose argument is COMPUTABLE grounded arithmetic
+        // (`(ln (+ 2 2))`) is not pure symbolic data either: hyperon reduces the arguments of an
+        // inert application, yielding `(ln 4)` (c1). Quoting the term verbatim would freeze the
+        // `(+ 2 2)`; left live, codegen's applicative-order quote path evaluates it in place.
+        if (hasReducibleGroundedArithmetic(actual)) return expression
 
         return expression.copy(
             atoms = listOf(
@@ -123,6 +128,22 @@ class LowerAssertExpressionsRewriter : Rewriter {
                 arg.atoms.drop(1).any { it.type == GroundedType.STRING }
         }
 
+    /**
+     * Whether a direct argument of [expression] is grounded arithmetic that can actually be
+     * COMPUTED — every operand numeric, as in `(ln (+ 2 2))`. Deliberately checks the operands
+     * rather than the arithmetic node's own type: inside quoted data that node is stamped `ATOM`
+     * (its content is never resolved as code), so its type carries no information here. Arithmetic
+     * over a non-numeric operand — `(+ ln 2)` — is not computable and must stay inert, and is not
+     * matched.
+     */
+    private fun hasReducibleGroundedArithmetic(expression: Expression): Boolean =
+        expression.atoms.drop(1).any { arg ->
+            if (arg !is Expression) return@any false
+            val operands = arg.atoms.drop(1)
+            groundedOpName(arg.atoms.firstOrNull()) in ARITHMETIC_OPS &&
+                operands.isNotEmpty() && operands.all { it.type in NUMERIC_TYPES }
+        }
+
     /** The surface name of a grounded-op head, whether stored as [Special] or [Symbol]. */
     private fun groundedOpName(head: Atom?): String? = when (head) {
         is Special -> head.value
@@ -134,6 +155,15 @@ class LowerAssertExpressionsRewriter : Rewriter {
         private val GROUNDED_ERROR_OPS = setOf(
             Predefined.PLUS, Predefined.MINUS, Predefined.TIMES,
             Predefined.COND_EQ, Predefined.COND_NEQ,
+        )
+
+        private val ARITHMETIC_OPS = setOf(
+            Predefined.PLUS, Predefined.MINUS, Predefined.TIMES,
+            Predefined.DIVIDE, Predefined.DIV, Predefined.MOD,
+        )
+
+        private val NUMERIC_TYPES = setOf<Atom>(
+            GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE,
         )
     }
 }
