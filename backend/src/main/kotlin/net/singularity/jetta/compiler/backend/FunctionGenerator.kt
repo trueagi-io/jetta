@@ -499,8 +499,23 @@ open class FunctionGenerator(
                     if (paramIndex >= 0) {
                         generateLoadVar(mv, atom, function.params, isStatic, className)
                     } else {
-                        // True free variable — create a raw Variable for match unification.
+                        // True free variable — create a raw Variable for match unification, but
+                        // resolve it against the live bindings first. This is a VALUE position
+                        // (a quoted pattern's variables go through generateQuote/generateLoadVar
+                        // instead), and by the time it is evaluated an earlier sub-expression may
+                        // already have bound the name: e3's `(if (== (get-state (status (Goal
+                        // $goal))) active) $goal …)` binds `$goal` while reducing the condition,
+                        // and the then-branch must yield that value, not a free `$goal`. An
+                        // unbound variable resolves to itself, so unification behaviour is
+                        // unchanged.
                         generateNewVariable(mv, atom.name)
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            RuntimeNames.MATCHER,
+                            "resolveBinding",
+                            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                            false
+                        )
                     }
                 }
             }
