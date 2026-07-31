@@ -261,11 +261,14 @@ open class JettaProgram {
         @JvmStatic
         fun derefDeep(atom: Atom): Atom {
             if (tokens.isEmpty()) return atom
-            return when (atom) {
-                is net.singularity.jetta.compiler.frontend.ir.Symbol -> tokens[atom.name] ?: atom
+            // Widened to Any for the same reason as [cellOf]: a `&`-name reaching a value position
+            // is a bare String, even where the parameter is typed Atom.
+            return when (val t: Any = atom) {
+                is net.singularity.jetta.compiler.frontend.ir.Symbol -> tokens[t.name] ?: atom
+                is String -> tokens[t] ?: atom
                 is Expression -> {
                     var changed = false
-                    val mapped = atom.atoms.map { sub ->
+                    val mapped = t.atoms.map { sub: Atom ->
                         val d = derefDeep(sub)
                         if (d !== sub) changed = true
                         d
@@ -630,7 +633,9 @@ open class JettaProgram {
          */
         @JvmStatic
         fun `get-type`(atom: Atom): List<Atom> {
-            val t = TypeEngine.inferType(atom, selfAtoms())
+            // A `bind!` token denotes the atom it names, so `(get-type &state-token)` asks about
+            // the state, not about an undeclared symbol.
+            val t = TypeEngine.inferType(derefDeep(atom), selfAtoms())
             return if (t == null) emptyList() else listOf(t)
         }
 
@@ -647,7 +652,9 @@ open class JettaProgram {
          */
         @JvmStatic
         fun typeCheckError(callExpr: Atom): Atom? {
-            val err = TypeEngine.checkApp(callExpr, selfAtoms()) ?: return null
+            // Check the DEREFERENCED form (a `bind!` token has the type of the atom it names) but
+            // report the original: hyperon's error term echoes the expression as written.
+            val err = TypeEngine.checkApp(derefDeep(callExpr), selfAtoms()) ?: return null
             return TypeEngine.errorExpr(callExpr, err)
         }
 
@@ -744,12 +751,33 @@ open class JettaProgram {
         fun `get-state`(token: Atom): Atom =
             cellOf(token)?.value ?: nonReducedState("get-state", token)
 
-        /** `change-state!` — set the state's value to [newValue]; returns the state atom. */
+        /**
+         * `change-state!` — set the state's value to [newValue]; returns the state atom.
+         *
+         * A state is typed by what it was created with (`(StateMonad T)`), and hyperon rejects a
+         * write of a different type rather than silently retyping the cell: the form's VALUE
+         * becomes `(Error (change-state! …) (BadArgType 2 T <new type>))` and the cell keeps its
+         * old content. The check is [TypeEngine.checkApp] over the stdlib signature
+         * `(-> (StateMonad $t) $t (StateMonad $t))` — the tvar binds to the current content type
+         * at parameter 1 and constrains parameter 2. Untyped content is `%Undefined%`, which
+         * unifies with anything, so gradually-typed programs are unaffected.
+         */
         @JvmStatic
-        fun `change-state!`(token: Atom, newValue: Atom): Atom {
+        fun `change-state!`(token: Atom, newValue: Any?): Atom {
             val cell = cellOf(token) ?: return nonReducedState("change-state!", token)
-            cell.value = newValue
-            return Grounded(cell)
+            val value = asAtom(newValue)
+            val state: Atom = Grounded(cell)
+            val callExpr = Expression(listOf(Symbol("change-state!"), state, value))
+            TypeEngine.checkApp(callExpr, selfAtoms())?.let { return TypeEngine.errorExpr(callExpr, it) }
+            cell.value = value
+            return state
+        }
+
+        /** Coerce a runtime value to an [Atom]: unwrap a [BoundAtom], box a raw primitive. */
+        private fun asAtom(value: Any?): Atom = when (value) {
+            is BoundAtom -> asAtom(value.atom)
+            is Atom -> value
+            else -> Grounded(value)
         }
 
         /** Resolve a state token/atom to its [StateCell]: a bound Symbol via [tokens], or a state atom directly. */

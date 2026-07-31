@@ -415,7 +415,16 @@ open class FunctionGenerator(
 
                     is Symbol -> {
                         if (atom.resolved != null) {
-                            generateCall(mv, func.name, arguments, atom.resolved)
+                            // A state write is type-checked against the SURFACE application, before
+                            // its arguments reduce — that is how hyperon's error term can echo
+                            // `(change-state! (new-state 1) "S")` rather than the state the first
+                            // argument evaluates to. The runtime check inside `change-state!`
+                            // still covers what only the reduced values reveal.
+                            if (isStateWrite(atom)) {
+                                generateStateWriteWithTypeCheck(mv, atom, func.name, arguments)
+                            } else {
+                                generateCall(mv, func.name, arguments, atom.resolved)
+                            }
                         } else {
                             // D2.4 (increment 4): an inert/undefined application whose argument is
                             // a statically-known grounded type error (`(f (+ 5 "S"))`, f declared
@@ -2259,6 +2268,43 @@ open class FunctionGenerator(
         if (exit != null) mv.visitJumpInsn(Opcodes.GOTO, exit)
     }
 
+    /** Is [atom] an application of the `change-state!` builtin (the one type-checked write)? */
+    private fun isStateWrite(atom: Expression): Boolean =
+        atom.resolved?.jvmMethod?.name == CHANGE_STATE
+
+    /**
+     * `(change-state! <state> <value>)` guarded by an eval-time type check of the SURFACE form:
+     * a state is typed by what it was created with, so writing a value of another type is
+     * `(Error <the application as written> (BadArgType 2 …))` and the write does not happen.
+     * The quoted expression is what lets the error echo the original argument expressions rather
+     * than the state they reduce to. Well-typed (or gradually typed) writes fall through to the
+     * ordinary call, so nothing else changes.
+     */
+    private fun generateStateWriteWithTypeCheck(
+        mv: LocalVariablesSorter,
+        atom: Expression,
+        name: String,
+        arguments: List<Atom>,
+    ) {
+        generateQuote(mv, atom)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.JETTA_PROGRAM,
+            "typeCheckError",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+            false,
+        )
+        val wellTyped = Label()
+        val join = Label()
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitJumpInsn(Opcodes.IFNULL, wellTyped)
+        mv.visitJumpInsn(Opcodes.GOTO, join) // the Error atom on the stack IS the result
+        mv.visitLabel(wellTyped)
+        mv.visitInsn(Opcodes.POP) // drop the null
+        generateCall(mv, name, arguments, atom.resolved)
+        mv.visitLabel(join)
+    }
+
     private fun generateInertArithmeticWithTypeCheck(mv: LocalVariablesSorter, atom: Expression) {
         generateQuote(mv, atom)
         mv.visitMethodInsn(
@@ -2335,6 +2381,9 @@ open class FunctionGenerator(
             Predefined.PLUS, Predefined.MINUS, Predefined.TIMES,
             Predefined.DIVIDE, Predefined.DIV, Predefined.MOD,
         )
+
+        /** The `change-state!` builtin's runtime method name — the one type-checked state write. */
+        private const val CHANGE_STATE = "change-state!"
     }
 }
 

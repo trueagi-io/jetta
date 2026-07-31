@@ -359,9 +359,13 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "change-state!",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            // The new value is ANY, so it is REDUCED before being stored: hyperon's signature is
+            // `(-> (StateMonad $t) $t (StateMonad $t))` — the second parameter is a value, not a
+            // meta-Atom. With ATOM here `(change-state! $x (+ (get-state $x) 1))` stored the
+            // unevaluated expression, which (since it mentions `$x`) made the cell contain itself.
+            ArrowType(GroundedType.ATOM, GroundedType.ANY, GroundedType.ATOM),
             false
         )
     )
