@@ -283,6 +283,16 @@ open class JettaProgram {
         private val UNIT_ATOM: Atom = Expression(emptyList())
 
         /**
+         * `nop` — evaluate [value] for its effect and discard it, returning the unit atom `()`.
+         * The parameter is ANY, so the argument IS reduced at the call site (that is the whole
+         * point: `(nop (change-state! …))` runs the mutation); only the RESULT is thrown away,
+         * which is how hyperon's test scripts turn an effectful run into a unit-valued one.
+         */
+        @Suppress("UNUSED_PARAMETER")
+        @JvmStatic
+        fun nop(value: Any?): Atom = UNIT_ATOM
+
+        /**
          * `add-atom` — add [atom] to the space named [spaceName] as DATA (unreduced; the
          * system-function signature types the argument `Atom`, suppressing call-site
          * reduction, matching hyperon). Bound variables in the atom ARE substituted first

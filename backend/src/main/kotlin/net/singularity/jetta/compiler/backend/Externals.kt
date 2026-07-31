@@ -304,6 +304,20 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `nop` — run the argument, discard its value, yield `()`. ANY param so the argument is
+    // REDUCED (the effect happens); the unit result is what makes `!(nop (change-state! …))` a
+    // unit-valued top-level run in the hyperon test scripts.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "nop",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
     // Mutable state: new-state creates a cell, bind! names it via a token, get-state reads,
     // change-state! writes. Value/token args are ATOM (stored/looked-up as data, unreduced);
     // bind!'s value arg is ANY so `(bind! s (new-state x))` reduces the new-state first.
