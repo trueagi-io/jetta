@@ -25,7 +25,7 @@ object Assertions {
     private data class ExprKey(val atoms: List<Any?>)
 
     private fun normalize(value: Any?): Any? =
-        when (value) {
+        when (val value = JettaProgram.deref(value)) {
             is BoundAtom -> normalize(value.atom)
             is Grounded<*> -> value.value
             // A MeTTa boolean has several surface representations that must compare equal:

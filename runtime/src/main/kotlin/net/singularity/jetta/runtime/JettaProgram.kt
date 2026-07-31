@@ -246,7 +246,49 @@ open class JettaProgram {
         @JvmStatic
         fun match(space: Any?, src: Atom, dst: Atom): List<Atom> {
             val spaceObj = SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
-            return matchIn(spaceObj, src, dst)
+            // A `bind!` token inside the PATTERN or TEMPLATE denotes the atom it names (hyperon
+            // substitutes tokens at parse time; JeTTa binds at run time, so the substitution
+            // happens here). The space reference is deliberately excluded — it is resolved by
+            // name through [resolveSpaceName].
+            return matchIn(spaceObj, derefDeep(src), derefDeep(dst))
+        }
+
+        /**
+         * Replace every `bind!`-registered token in [atom] with the atom it names, recursing into
+         * sub-expressions. Guarded by an empty-registry check, so a program that never calls
+         * `bind!` — every hot benchmark — pays nothing.
+         */
+        @JvmStatic
+        fun derefDeep(atom: Atom): Atom {
+            if (tokens.isEmpty()) return atom
+            return when (atom) {
+                is net.singularity.jetta.compiler.frontend.ir.Symbol -> tokens[atom.name] ?: atom
+                is Expression -> {
+                    var changed = false
+                    val mapped = atom.atoms.map { sub ->
+                        val d = derefDeep(sub)
+                        if (d !== sub) changed = true
+                        d
+                    }
+                    if (changed) Expression(mapped) else atom
+                }
+                else -> atom
+            }
+        }
+
+        /**
+         * Shallow [derefDeep] for a single VALUE: a `&`-token reaching a value position is a bare
+         * String (codegen's space-reference convention), a quoted one is a [Symbol]. Anything the
+         * registry does not know is returned unchanged.
+         */
+        @JvmStatic
+        fun deref(value: Any?): Any? {
+            if (tokens.isEmpty()) return value
+            return when (value) {
+                is String -> tokens[value] ?: value
+                is net.singularity.jetta.compiler.frontend.ir.Symbol -> tokens[value.name] ?: value
+                else -> value
+            }
         }
 
         /**
