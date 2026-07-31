@@ -19,6 +19,10 @@ import kotlin.test.assertTrue
  *     `Atom` slot to `Expression`.
  *  3. `contains` returns `Bool` but its body is a `let`-lambda typed `Any` (an Object on the stack);
  *     coerceForReturn must coerce that reference to the primitive via `isTruthy`.
+ *  4. the predicate passed in is MULTIVALUED — its body calls a bag-returning function though it is
+ *     declared `(-> … Bool)`. Passing it by name eta-expands it into a lambda whose emitted method
+ *     returns primitive `Z`, so the body's `List` has to be coerced; the node's scalar element type
+ *     hid that a reference was on the stack.
  *
  * Each program asserts via `!(assertEqual …)`; a wrong answer throws AssertionError from `__main`,
  * so a green `invoke` IS the assertion.
@@ -78,6 +82,41 @@ class HigherOrderPredicateTest : GeneratorTestBase() {
         """
             $containsDef
             !(assertEqual (contains () is-3) False)
+        """.trimIndent()
+    )
+
+    // --- a MULTIVALUED predicate in a Bool-typed function slot --------------------------------
+
+    /**
+     * `is-one` is declared `(-> Number Bool)` but its body compares against a bag-returning call,
+     * so it is multivalued and really returns a `List`. Passing it BY NAME eta-expands it into a
+     * lambda whose method returns primitive `Z` — the `List` has to be coerced there, and a
+     * one-element bag in a boolean slot is its element.
+     */
+    private val multivaluedPredicateDef = $$"""
+        (: one (-> Number))
+        (= (one) (superpose (1)))
+        (: is-one (-> Number Bool))
+        (= (is-one $x) (== $x (one)))
+        (: holds (-> Number (-> Number Bool) Bool))
+        (= (holds $a $c) (if ($c $a) True False))
+    """.trimIndent()
+
+    @Test
+    fun `a multivalued predicate passed by name holds`() = run(
+        "HoMultivaluedTrue",
+        """
+            $multivaluedPredicateDef
+            !(assertEqual (holds 1 is-one) True)
+        """.trimIndent()
+    )
+
+    @Test
+    fun `a multivalued predicate passed by name fails`() = run(
+        "HoMultivaluedFalse",
+        """
+            $multivaluedPredicateDef
+            !(assertEqual (holds 2 is-one) False)
         """.trimIndent()
     )
 }

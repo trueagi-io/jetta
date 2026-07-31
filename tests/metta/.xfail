@@ -10,9 +10,15 @@
 # The runner skips files imported by other files in the suite (modules).
 # So entries here only need to cover files that run as standalone tests.
 
-# f1_imports now COMPILES (f1_moduleC's body resolves, and `import!` works) and
-# fails at run time instead: a higher-order Boolean lambda leaves a List where the
-# verifier wants a primitive boolean —
-#   f1_imports.lambda$9(Atom)Z @10: 'java/util/List' is not assignable to integer
-# The old expectation (a compiler NotImplementedError in f1_moduleC) is obsolete.
-f1_imports.metta            RUN_EXCEPTION:KNOWN_BUG:higher-order-bool-verify      lambda$9 returns List in a boolean slot
+# f1_imports COMPILES (f1_moduleC's body resolves, and `import!` works) and fails at run time.
+# The higher-order-Bool VerifyError is FIXED; the first assert now dies earlier, on
+#   ArrayStoreException: JettaLambda$0
+# from `((let $x (get-atoms &self) (get-type $x)))` — a one-element TUPLE whose element is a
+# bag-valued application. Quoting it as data stores the lambda object into an Atom[]; it has to
+# be LIFTED instead (the multivalued-composition box c1's tail also needs).
+#
+# Scouted with that assert disabled, f1 then reaches :56 `(match &m (= (f 2) $x) $x)` = `(g 3)`,
+# which needs two more things: the match RESULT reduced (`(if (< 2 0) …)` → `(g 3)`), and the
+# EXPECTED `(g 3)` left UNREDUCED — codegen resolves it statically to f1_moduleC.g even though
+# `g` is not in &self at that point in source order.
+f1_imports.metta            RUN_EXCEPTION:KNOWN_BUG:multivalued-tuple-lift        ArrayStoreException on `((let …))`; see notes above
