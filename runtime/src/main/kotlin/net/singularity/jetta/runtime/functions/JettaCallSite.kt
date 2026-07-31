@@ -113,6 +113,16 @@ object JettaCallSite {
     }
 
     /**
+     * Public seam onto the space-rule reducer: rewrite [atom] by the `(= atom $r)` rules of
+     * [spaceName] to its normal form. Used by grounded ops that receive an argument codegen
+     * could not reduce statically — an application whose head only becomes a rule head at RUN
+     * time (`(= (status (Goal lunch-order)) …)` installed by `add-atom`), which therefore
+     * reaches the op as inert data. A term with no applicable rule is returned unchanged.
+     */
+    @JvmStatic
+    fun reduce(spaceName: String, atom: Atom): Atom = reduceToFixedPoint(spaceName, atom)
+
+    /**
      * Canonical MeTTa evaluation: repeatedly rewrite `current` via a space rule
      * `(= current $r)` until it no longer changes (its normal form) or the
      * reduction budget / a cycle is hit. Non-Expression atoms and empty

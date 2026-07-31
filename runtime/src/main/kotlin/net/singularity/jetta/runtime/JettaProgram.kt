@@ -9,6 +9,7 @@ import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.GroundedOps
+import net.singularity.jetta.runtime.functions.JettaCallSite
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
@@ -724,7 +725,19 @@ open class JettaProgram {
                 is String -> tokens[t]
                 else -> t
             }
-            return ((resolved as? Grounded<*>)?.value as? StateCell)
+            ((resolved as? Grounded<*>)?.value as? StateCell)?.let { return it }
+            // The state may be addressed INDIRECTLY, by an expression that a `=` rule rewrites to
+            // it — hyperon's "symbolic expression wrapping a state" idiom, where
+            // `(add-atom &self (= (status (Goal $g)) <state>))` installs the rule at RUN time. The
+            // head is therefore unknown to codegen, so the argument reaches us as inert data
+            // rather than reduced. Reduce it here against the live space and retry. Miss path
+            // only: a token that already denoted a cell returned above, so the ordinary
+            // `bind!`/direct-atom cases never pay for this.
+            if (resolved is Expression && resolved.atoms.isNotEmpty()) {
+                val reduced = JettaCallSite.reduce(currentSpaceName ?: "", resolved)
+                if (reduced !== resolved) return (reduced as? Grounded<*>)?.value as? StateCell
+            }
+            return null
         }
 
         private fun nonReducedState(op: String, token: Any?): Atom {
