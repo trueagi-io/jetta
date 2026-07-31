@@ -720,6 +720,12 @@ open class JettaProgram {
                 is Boolean -> v
                 is Symbol -> v.name == "True"
                 is Grounded<*> -> v.value == true
+                // A multivalued call in a boolean slot yields a BAG. A one-element bag is that
+                // element — the ordinary case, e.g. a predicate whose body asks `get-type`
+                // (bag-returning) though it is declared `(-> Atom Bool)`. An empty bag has no
+                // value and is false; a genuinely branching bag would have to FORK the `if`,
+                // which a compiled boolean condition cannot do, so it is false here too.
+                is List<*> -> v.size == 1 && isTruthy(v[0])
                 else -> false
             }
         }

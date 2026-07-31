@@ -1719,6 +1719,12 @@ open class FunctionGenerator(
      */
     private fun stackShapeType(operand: Atom): GroundedType? {
         if (operand is Expression) {
+            // A MULTIVALUED call leaves a `List` — a reference — whatever its scalar element
+            // type says. The node keeps that element type (`is-space` is `@multivalued` but
+            // declared `(-> Atom Bool)`), so reading the node type here would claim a raw
+            // `boolean` is on the stack and skip the coercion the consumer needs. Same reality
+            // the boxing guard in [generateAtom] already accounts for.
+            if (operand.resolved?.isMultiValued == true) return GroundedType.LIST
             val head = operand.atoms.firstOrNull()
             if (head is Variable && head.type is ArrowType)
                 return (head.type as ArrowType).types.last() as? GroundedType
