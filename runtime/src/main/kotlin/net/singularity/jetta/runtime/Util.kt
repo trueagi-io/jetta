@@ -39,8 +39,14 @@ fun simpleFlatMap(f: JettaFunction, list: List<Any?>): List<Any?> {
         // back null here; treat that as the empty list. Tolerating it in the combinator (a)
         // matches the semantics and (b) avoids a thrown NullPointerException on the hot path —
         // exceptions must never be part of normal control flow.
-        @Suppress("UNCHECKED_CAST")
-        (f.apply(arrayOf(unwrapped)) as List<Any?>?)?.forEach { result.add(materialize(it)) }
+        // A branch whose result shape is only known at run time (a JIT dispatch that may reduce
+        // to a bag or to a single atom) hands back either. A scalar IS the singleton bag
+        // containing it — the same rule Assertions.normalizeActualResults applies.
+        when (val branch = f.apply(arrayOf(unwrapped))) {
+            null -> {}
+            is List<*> -> branch.forEach { result.add(materialize(it)) }
+            else -> result.add(materialize(branch))
+        }
         Matcher.pop()
     }
     return result

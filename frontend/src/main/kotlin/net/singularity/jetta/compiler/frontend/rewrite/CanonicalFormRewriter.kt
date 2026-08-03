@@ -299,11 +299,23 @@ class CanonicalFormRewriter(
         // MAP_ (collect one value per element). Consumed both by the compound-lift loop below
         // and by the `replacement`/createMaps path further down.
         val bodyCallsMultivalued = body is Expression && body.atoms.isNotEmpty() && when (val h = body.atoms[0]) {
-            // The body is a call to a multivalued user function …
-            is Symbol -> context.definedFunctions[h.name]?.func?.isMultivalued() == true
+            // The body is a call to a multivalued user function, or to a multivalued SYSTEM
+            // function (`letMatch`, `get-type`, `superpose`, …) — those return their bag
+            // directly too, so a wrap over them must flatten (d1's `(let (List $t) (get-type …)
+            // $t)` yielded `[[Number]]` when the innermost wrap map?-ed a bag-returning body).
+            is Symbol -> isMultivaluedHead(h.name)
             // … or an APPLIED lambda (a `let` body) whose own body yields a bag — the
             // application returns a List, so the wrap must flatten, not nest (List<List>).
-            is Lambda -> h.body.isNonDeterministic()
+            // The body is consulted through its DECLARED return type as well: rewriting
+            // rebuilds a node under a fresh id, so a body that was marked multivalued during
+            // collection (a system call like `(superpose …)` / `(get-type …)` at the lambda's
+            // result position) is no longer in `multivaluedAtoms` by the time we ask.
+            is Lambda -> h.body.isNonDeterministic() || h.returnType is SeqType
+            // … or a reducible `=` form (D3 increment C), dispatched through JettaCallSite:
+            // the reducer answers with a bag whose size is only known at run time (d4's
+            // `(= (Mortal Plato) T)` reduces to none). flat-map, and let the combinator take
+            // a scalar answer as its singleton bag.
+            is Special -> h.value == Predefined.PATTERN
             else -> false
         }
         // Apply compound-argument lifts INNERMOST: the compound (e.g. `(And $v1 $v2)`)
