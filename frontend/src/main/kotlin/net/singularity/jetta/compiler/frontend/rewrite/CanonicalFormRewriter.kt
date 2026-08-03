@@ -620,8 +620,17 @@ class CanonicalFormRewriter(
                     // so a bare multivalued call among them is handed over as a whole bag.
                     val childIsBarrierArg = (atom.atoms[0] as? Symbol)?.name in BARRIER_FUNCTIONS
 
+                    // A parameter declared inert-ATOM (`get-type`) receives the UN-reduced term:
+                    // rewriteExpression leaves such an argument raw, so registering a lift for a
+                    // multivalued call inside it produces a wrap with nothing to bind — the wrap
+                    // lands on whatever scope the registration bubbled to and re-evaluates the
+                    // term (`(get-type (Mortal Plato))` → a map? over `(Mortal Plato)`). Skip it.
+                    val headInertParams = headName
+                        ?.let { context.resolve(it)?.jvmMethod?.inertAtomParams } ?: emptySet()
+
                     // other specials and symbols
-                    atom.atoms.drop(1).forEach {
+                    atom.atoms.drop(1).forEachIndexed { i, it ->
+                        if (i in headInertParams) return@forEachIndexed
                         if (collectNonDeterministicAtomsRecursively(
                                 it,
                                 functionDefinition,
