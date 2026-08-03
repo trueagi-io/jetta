@@ -262,7 +262,10 @@ class CanonicalFormRewriter(
                 && atom is Expression
                 && atom.isNonDeterministic()
                 && atom.atoms.isNotEmpty()
-                && atom.atoms[0] is Symbol
+                // A Symbol head is the ordinary compound; a LAMBDA head is an applied
+                // `let` whose result is a bag (`((let $x (get-atoms &self) (get-type $x)))`
+                // — the enclosing tuple must run per element, not hold the application).
+                && (atom.atoms[0] is Symbol || atom.atoms[0] is Lambda)
             ) {
                 val v = variableCount++
                 compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
@@ -563,6 +566,16 @@ class CanonicalFormRewriter(
                                 // so a tail `!(superpose …)` gains no spurious `(map? (\$v $v) …)`.
                                 isMultivalued = true
                             }
+                        }
+                    }
+
+                    // An EXPRESSION head — `((let …))`, a one-element tuple whose element is
+                    // itself an application. `atoms.drop(1)` below never reaches it, so without
+                    // this the element's multivalued-ness is invisible and the tuple freezes as
+                    // data. Analyze it as a child of THIS tuple so it lifts here (f1).
+                    is Expression -> {
+                        if (collectNonDeterministicAtomsRecursively(f, functionDefinition, atom.id)) {
+                            isMultivalued = true
                         }
                     }
 

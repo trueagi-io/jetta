@@ -110,7 +110,11 @@ class LowerAssertExpressionsRewriter : Rewriter {
         if (expression.atoms.isEmpty()) return true
 
         return when (val head = expression.atoms[0]) {
-            is Expression -> true
+            // An Expression head is normally symbolic data (`((mortal Plato) proven-by …)`).
+            // But an APPLIED LAMBDA — what `(let …)` desugars to — is code: `((let $x E B))`
+            // must evaluate its element and yield a bag, not freeze into an Atom[] holding a
+            // lambda object (f1's ArrayStoreException). Only that shape is exempted.
+            is Expression -> head.atoms.firstOrNull() !is Lambda
             is Symbol -> expression.resolved == null
             else -> false
         }
