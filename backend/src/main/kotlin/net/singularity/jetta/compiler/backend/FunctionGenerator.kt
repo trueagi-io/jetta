@@ -2089,7 +2089,9 @@ open class FunctionGenerator(
         doReturn: Boolean
     ) {
         generateAtom(mv, arguments[0], null, false)
+        castIfNeeded(mv, arguments[0].type(), GroundedType.INT)
         generateAtom(mv, arguments[1], null, false)
+        castIfNeeded(mv, arguments[1].type(), GroundedType.INT)
         mv.visitInsn(Opcodes.IDIV)
         if (doReturn) {
             boxPrimitiveForReferenceReturn(GroundedType.INT)
@@ -2103,7 +2105,9 @@ open class FunctionGenerator(
         doReturn: Boolean
     ) {
         generateAtom(mv, arguments[0], null, false)
+        castIfNeeded(mv, arguments[0].type(), GroundedType.INT)
         generateAtom(mv, arguments[1], null, false)
+        castIfNeeded(mv, arguments[1].type(), GroundedType.INT)
         mv.visitInsn(Opcodes.IREM)
         if (doReturn) {
             boxPrimitiveForReferenceReturn(GroundedType.INT)
