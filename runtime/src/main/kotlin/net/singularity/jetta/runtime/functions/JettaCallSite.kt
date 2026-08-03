@@ -375,7 +375,19 @@ object JettaCallSite {
         if (entry.paramTypes.size != atoms.size - 1) return null
         val args = arrayOfNulls<Any?>(atoms.size - 1)
         for (i in 1 until atoms.size) args[i - 1] = atoms[i]
-        return JettaLinkRegistry.invoke(entry, args) as? Atom
+        // Speculative: this term was PRODUCED mid-reduction, so its arguments may be shapes the
+        // compiled body cannot take — `(g (+ 1 2))`, where `g`'s body unwraps its parameter as a
+        // Grounded number and the argument is still an unreduced application. That is the same
+        // "not computable over its operands" case the arity and grounded-op checks above already
+        // answer with `null` (leave inert); a mis-shaped argument only announces itself by
+        // throwing. Inert is always a valid MeTTa normal form, so absorb exactly those two.
+        return try {
+            JettaLinkRegistry.invoke(entry, args) as? Atom
+        } catch (_: ClassCastException) {
+            null
+        } catch (_: NullPointerException) {
+            null
+        }
     }
 
     /**

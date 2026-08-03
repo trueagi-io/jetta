@@ -18,14 +18,17 @@
 #
 # What remains is NOT about non-determinism — it is MODULE VISIBILITY, at :56
 #   !(assertEqual (match &m (= (f 2) $x) $x) (g 3))
-# Two independent gaps, both verified with minimal repros:
-#  1. Cross-module symbol resolution is not order-aware and not target-aware. `(import! &m M)`
-#     (a NAMED space) already makes M's compiled functions callable from &self, and an
-#     `(import! &self M)` anywhere in the file makes them callable from line 1. So the EXPECTED
-#     `(g 3)` — which must stay inert here, `g` reaching &self only at :61 — computes 103.
+# The match-result half is DONE (`matchReduceDeep`), and so is RUN-TIME visibility: a module's
+# load-time `&self` is rebound to the module's own space, so `g`'s rule no longer reaches
+# f1_imports' space before :61. Actual is now `(g (+ 1 2))`, expected computes 103. Two gaps left:
+#  1. COMPILE-TIME symbol resolution is neither target- nor order-aware — `resolvedFunctions` is
+#     one flat map filled from every compiled source. So the EXPECTED `(g 3)`, which must stay
+#     inert here, is emitted as a static call to f1_moduleC.g and computes 103.
 #     Repro: `!(import! &m f1_moduleA)` + `!(assertEqualToResult (g 3) ((g 3)))` → actual [103];
-#     with no import at all the same assert passes.
-#  2. The match RESULT is handed back unreduced: actual is the raw rule body
-#     `(if (< 2 0) (- 0 2) (g (+ 1 2)))`, where hyperon reduces it to `(g 3)` (the `if` fires,
-#     the argument is computed, and `g` stays inert because it is not in &self).
+#     with no import at all the same assert passes; with the import BELOW the assert, still 103.
+#  2. The reducer does not reduce the ARGUMENTS of an inert application, so the actual side stops
+#     at `(g (+ 1 2))` where hyperon gives `(g 3)` — the runtime counterpart of the `(ln (+ 2 2))`
+#     -> `(ln 4)` rule codegen already applies to static terms.
+# Also latent, found on the way: the registry step of the reducer can invoke a compiled function
+# with an argument shape its body cannot take; that now leaves the term inert instead of throwing.
 f1_imports.metta            ASSERT_FAIL:FEATURE_PENDING:module-visibility-order    :56 `(g 3)` reduces to 103 (cross-module symbols ignore import order/target) and the match result is unreduced; see notes above
