@@ -123,6 +123,16 @@ object JettaCallSite {
     fun reduce(spaceName: String, atom: Atom): Atom = reduceToFixedPoint(spaceName, atom)
 
     /**
+     * Public seam onto the FULL reducer — [reduceToFixedPoint] plus special-form execution and
+     * multi-rule union, i.e. the same evaluator [dispatch] uses, but handed a term rather than a
+     * call site and answering with the whole bag. Used where an arbitrary term arrives as data
+     * and must be evaluated: a `match` whose TEMPLATE is a bare variable binds it to a rule body
+     * (`(if (< 2 0) (- 0 2) (g (+ 1 2)))`) that hyperon evaluates before returning.
+     */
+    @JvmStatic
+    fun reduceBag(spaceName: String, atom: Atom): List<Atom> = reduceToBag(spaceName, atom, 0)
+
+    /**
      * Canonical MeTTa evaluation: repeatedly rewrite `current` via a space rule
      * `(= current $r)` until it no longer changes (its normal form) or the
      * reduction budget / a cycle is hit. Non-Expression atoms and empty

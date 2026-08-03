@@ -93,6 +93,20 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `matchReduceDeep` — as above, but each result goes through the FULL evaluator. The
+    // rewriter routes a `match` whose TEMPLATE is a bare VARIABLE here: the value bound to it
+    // is arbitrary, and for the `(= <head> $x)` query it is a rule BODY that hyperon evaluates.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchReduceDeep",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(

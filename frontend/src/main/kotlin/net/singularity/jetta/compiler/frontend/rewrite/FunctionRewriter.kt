@@ -749,6 +749,24 @@ class FunctionRewriter(
             )
         }
 
+        // A RULE-BODY query — `(match &m (= (f 2) $x) $x)`, pattern `(= <lhs> $x)` with the same
+        // variable as the whole template. What `$x` binds to is a rule body, and hyperon does not
+        // hand it back as data: the enclosing form evaluates it, so `(if (< 2 0) (- 0 2)
+        // (g (+ 1 2)))` is seen as `(g 3)`. JeTTa's match returns an inert Atom and nothing
+        // downstream reduces it, so route to `matchReduceDeep`, which runs each result through
+        // the full evaluator. Deliberately narrow: only this pattern shape, so a `match` over
+        // ordinary DATA facts keeps returning its bindings verbatim.
+        if (templateIsRuleBodyVariable(expression.atoms[2], template)) {
+            return expression.copy(
+                listOf(
+                    Symbol("matchReduceDeep"),
+                    expression.atoms[1],
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(template)
+                )
+            )
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -771,6 +789,24 @@ class FunctionRewriter(
      * arithmetic is invisible to [templateHasReducibleCall] (which only sees Symbol heads), so
      * this is the sole path that reduces them.
      */
+    /**
+     * Is this a rule-BODY query — pattern `(= <lhs> $x)` whose template is that same `$x`? Then
+     * the match answers with a rule body, which the enclosing form evaluates in hyperon. Both
+     * spellings of the `=` head are accepted (a [Special] after canonicalisation, a [Symbol] as
+     * written).
+     */
+    private fun templateIsRuleBodyVariable(pattern: Atom, template: Atom): Boolean {
+        if (template !is Variable) return false
+        if (pattern !is Expression || pattern.atoms.size != 3) return false
+        val head = when (val h = pattern.atoms[0]) {
+            is Special -> h.value
+            is Symbol -> h.name
+            else -> return false
+        }
+        if (head != Predefined.PATTERN) return false
+        return (pattern.atoms[2] as? Variable)?.name == template.name
+    }
+
     private fun templateIsGroundedOp(atom: Atom): Boolean {
         if (atom !is Expression || atom.atoms.size != 3) return false
         val op = when (val h = atom.atoms[0]) {

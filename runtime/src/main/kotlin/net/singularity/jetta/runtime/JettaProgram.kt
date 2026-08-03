@@ -428,6 +428,24 @@ open class JettaProgram {
             match(space, src, dst).map { reduceGrounded(it) }
 
         /**
+         * `matchReduceDeep` — like [matchReduce], but each result goes through the FULL
+         * evaluator (space rules, special forms, multi-rule union) before the grounded-op pass.
+         * Used when the TEMPLATE is a bare VARIABLE: what it binds to is arbitrary, and when the
+         * query is over `(= <head> $x)` it is a rule BODY, which hyperon evaluates.
+         * `(match &self (= (h 2) $x) $x)` over `(= (h 2) (if (< 2 0) (- 0 2) (+ 1 2)))` must
+         * answer `3`, not the `if` term. Reduction runs in the CURRENT program's space, not the
+         * queried one — the queried space supplies the rule, the caller's context evaluates it.
+         */
+        @JvmStatic
+        fun matchReduceDeep(space: Any?, src: Atom, dst: Atom): List<Atom> {
+            val here = currentSpaceName ?: ""
+            return match(space, src, dst).flatMap { result ->
+                JettaCallSite.reduceBag(here, if (result is BoundAtom) result.atom else result)
+                    .map { reduceGrounded(it) }
+            }
+        }
+
+        /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
          * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
          * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —
