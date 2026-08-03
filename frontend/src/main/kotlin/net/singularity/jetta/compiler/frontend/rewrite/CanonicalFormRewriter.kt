@@ -624,6 +624,17 @@ class CanonicalFormRewriter(
                             }
                     val childScope = if (isMvCompound) {
                         reducedScopeId
+                    } else if (barrierArg) {
+                        // Close the lift at a barrier ARGUMENT boundary. A barrier
+                        // (assertEqual/collapse/…) consumes the WHOLE bag of each argument, so
+                        // the argument must produce that bag ITSELF. The `barrierArg` rule above
+                        // already says so for a BARE multivalued call (it is handed over whole);
+                        // a COMPOUND argument — `(+ (superpose (1 2 3)) 1)`, `(+ 1 (bin))`, an
+                        // applied `let` — needs the same discipline, and only a scope pinned here
+                        // gives it: otherwise the registration bubbles past the barrier and the
+                        // map?/flat-map? wraps the ASSERTION, calling it once per element and
+                        // comparing a singleton against the expected bag (c1 :116/:121/:162).
+                        atom.id
                     } else if (headName != null && context.definedFunctions[headName] != null) {
                         atom.id
                     } else reducedScopeId
