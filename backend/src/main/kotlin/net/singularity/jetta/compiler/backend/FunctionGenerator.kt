@@ -2077,7 +2077,10 @@ open class FunctionGenerator(
         generateAtom(mv, arguments[1], null, false)
         castIfNeeded(mv, arguments[1].type(), GroundedType.DOUBLE)
         mv.visitInsn(Opcodes.DDIV)
-        if (doReturn) generateReturn(mv)
+        if (doReturn) {
+            boxPrimitiveForReferenceReturn(GroundedType.DOUBLE)
+            generateReturn(mv)
+        }
     }
 
     private fun generateDiv(
@@ -2088,7 +2091,10 @@ open class FunctionGenerator(
         generateAtom(mv, arguments[0], null, false)
         generateAtom(mv, arguments[1], null, false)
         mv.visitInsn(Opcodes.IDIV)
-        if (doReturn) generateReturn(mv)
+        if (doReturn) {
+            boxPrimitiveForReferenceReturn(GroundedType.INT)
+            generateReturn(mv)
+        }
     }
 
     private fun generateMod(
@@ -2099,7 +2105,10 @@ open class FunctionGenerator(
         generateAtom(mv, arguments[0], null, false)
         generateAtom(mv, arguments[1], null, false)
         mv.visitInsn(Opcodes.IREM)
-        if (doReturn) generateReturn(mv)
+        if (doReturn) {
+            boxPrimitiveForReferenceReturn(GroundedType.INT)
+            generateReturn(mv)
+        }
     }
 
     /**
@@ -2377,7 +2386,26 @@ open class FunctionGenerator(
             operation()
             maxStack++
         }
-        if (doReturn) generateReturn(mv)
+        if (doReturn) {
+            boxPrimitiveForReferenceReturn(type)
+            generateReturn(mv)
+        }
+    }
+
+    /**
+     * A grounded-arithmetic body in RETURN position leaves a raw primitive on the stack; when
+     * the enclosing function/lambda is declared to return a REFERENCE (Atom/Any), that primitive
+     * must be boxed into a `Grounded` — otherwise ARETURN sees an int (VerifyError). The
+     * arithmetic paths return early rather than falling through [generateAtom]'s tail, so they
+     * never reach [coerceForReturn]; mirror its BOX branch here. First needed by the lift
+     * `(\ ($v:Atom) (+ $v 1))` that a barrier argument like `(+ (superpose (1 2 3)) 1)` produces.
+     */
+    private fun boxPrimitiveForReferenceReturn(type: GroundedType) {
+        (function as? FunctionDefinition)?.let { if (it.isMultivalued()) return } // List path
+        val rt = function.returnType ?: return
+        if (rt is GroundedType && rt.isGroundedValue()) return
+        if (!type.isGroundedValue()) return
+        wrapValueOnStackInGrounded(type)
     }
 
     companion object {
