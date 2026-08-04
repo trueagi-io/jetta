@@ -455,17 +455,25 @@ open class JettaProgram {
          */
         private fun reduceGrounded(atom: Atom): Atom {
             val inner = if (atom is BoundAtom) atom.atom else atom
-            if (inner !is Expression || inner.atoms.size != 3) return atom
-            val op = when (val h = inner.atoms[0]) {
-                is Symbol -> h.name
-                is net.singularity.jetta.compiler.frontend.ir.Special -> h.value
-                else -> return atom
+            if (inner !is Expression || inner.atoms.isEmpty()) return atom
+            // Applicative order: reduce the ARGUMENTS whatever the head is. An unreducible head
+            // does not freeze what it is applied to — hyperon answers `(ln 4)` for `(ln (+ 2 2))`,
+            // and f1 :56 needs the same of `(g (+ 1 2))` once `g` is (correctly) not visible.
+            // Codegen already applies this rule to STATIC terms; this is its runtime counterpart.
+            val reduced = inner.atoms.map { reduceGrounded(it) }
+            if (reduced.size == 3) {
+                val op = when (val h = reduced[0]) {
+                    is Symbol -> h.name
+                    is net.singularity.jetta.compiler.frontend.ir.Special -> h.value
+                    else -> null
+                }
+                // apply returns null when [op] is not a grounded operator OR an operand is not a
+                // number — both mean "not computable", so fall through to the rebuilt term.
+                if (op != null) GroundedOps.apply(op, reduced[1], reduced[2])?.let { return it }
             }
-            val x = reduceGrounded(inner.atoms[1])
-            val y = reduceGrounded(inner.atoms[2])
-            // apply returns null when [op] is not a grounded operator OR an operand is not a
-            // number — both mean "leave inert" here, so a single null check covers both.
-            return GroundedOps.apply(op, x, y) ?: atom
+            // Nothing computed: keep the original atom (with its BoundAtom envelope) when no
+            // argument moved, so an inert term is returned identically to before.
+            return if (reduced == inner.atoms) atom else Expression(reduced)
         }
 
         /**

@@ -16,19 +16,18 @@
 # instead of freezing as an Atom[] holding a lambda. The `contains`/`is-space` and the first
 # `import!` asserts pass too.
 #
-# What remains is NOT about non-determinism — it is MODULE VISIBILITY, at :56
-#   !(assertEqual (match &m (= (f 2) $x) $x) (g 3))
-# The match-result half is DONE (`matchReduceDeep`), and so is RUN-TIME visibility: a module's
-# load-time `&self` is rebound to the module's own space, so `g`'s rule no longer reaches
-# f1_imports' space before :61. Actual is now `(g (+ 1 2))`, expected computes 103. Two gaps left:
-#  1. COMPILE-TIME symbol resolution is neither target- nor order-aware — `resolvedFunctions` is
-#     one flat map filled from every compiled source. So the EXPECTED `(g 3)`, which must stay
-#     inert here, is emitted as a static call to f1_moduleC.g and computes 103.
-#     Repro: `!(import! &m f1_moduleA)` + `!(assertEqualToResult (g 3) ((g 3)))` → actual [103];
-#     with no import at all the same assert passes; with the import BELOW the assert, still 103.
-#  2. The reducer does not reduce the ARGUMENTS of an inert application, so the actual side stops
-#     at `(g (+ 1 2))` where hyperon gives `(g 3)` — the runtime counterpart of the `(ln (+ 2 2))`
-#     -> `(ln 4)` rule codegen already applies to static terms.
-# Also latent, found on the way: the registry step of the reducer can invoke a compiled function
-# with an argument shape its body cannot take; that now leaves the term inert instead of throwing.
-f1_imports.metta            ASSERT_FAIL:FEATURE_PENDING:module-visibility-order    :56 `(g 3)` reduces to 103 (cross-module symbols ignore import order/target) and the match result is unreduced; see notes above
+# :56 — the `(match &m (= (f 2) $x) $x)` = `(g 3)` assertion — now PASSES. It needed four things,
+# all landed: the match result evaluated (`matchReduceDeep`), RUN-TIME visibility (a module's
+# load-time `&self` rebound to the module's own space), COMPILE-TIME ordered visibility (a `!`-run
+# resolves only against modules imported into `&self` before it), and applicative reduction of an
+# inert application's arguments (`(g (+ 1 2))` -> `(g 3)`).
+#
+# The file now stops at **:65**, `!(assertEqual (f 2) 103)`, which is AFTER `import! &self
+# f1_moduleA` (:61) — so `f` IS visible and IS called. It answers `(g (+ 1 2))` because inside
+# f1_moduleA's OWN body, `(g (+ 1 $x))` never resolved to f1_moduleC.g: moduleA's `f` is emitted
+# as `(= (f $x:Atom) … (g (+ 1 $x)):Atom):Any`, losing its declared `(-> Number Number)` too.
+# PRE-EXISTING and unrelated to visibility — verified byte-for-byte identical in moduleA's `.jir`
+# at a904e68, before the visibility work. Next question for this file: why a callee from a
+# module that IS imported (moduleC into moduleA, at moduleA's own run 1) fails to resolve inside
+# an ordinary function of the importing module, when the same name resolves fine in a `!`-run.
+f1_imports.metta            ASSERT_FAIL:FEATURE_PENDING:cross-module-callee-in-module-body    :65 `(f 2)` -> `(g (+ 1 2))`; moduleA's own body never resolved `g`. See notes above

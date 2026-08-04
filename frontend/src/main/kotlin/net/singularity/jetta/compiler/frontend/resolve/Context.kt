@@ -1055,12 +1055,79 @@ class Context private constructor(
     }
 
     private fun resolveSource(source: ParsedSource) {
-        source.code.forEach {
-            when (it) {
-                is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)
-                else -> TODO("it=$it")
+        val self = source.getJvmClassName()
+        val schedule = importSchedule(source)
+        gatedModules = schedule.values.mapTo(mutableSetOf()) { it.second }
+        try {
+            source.code.forEach {
+                when (it) {
+                    is FunctionDefinition -> {
+                        // A `!`-run sees only what has been imported into `&self` BEFORE it.
+                        // Everything else — an ordinary function, hoisted and resolved at call
+                        // time — keeps the unbounded view.
+                        visibleOwners = runOrdinal(it.name)
+                            ?.let { n -> visibleOwnersAt(self, schedule, n) }
+                        resolveFunctionDefinition(self, it)
+                    }
+
+                    else -> TODO("it=$it")
+                }
+            }
+        } finally {
+            visibleOwners = null
+            gatedModules = emptySet()
+        }
+    }
+
+    /**
+     * The source's `import!` directives keyed by the ordinal of the `!`-run that performs them.
+     * `FunctionRewriter` has already split every top-level `!`-form into `__main_<k>` in source
+     * order, so the ordinal IS the program order — no separate bookkeeping is needed. Each entry
+     * is (target space, imported module); the target is `&self` as written, a named space, or —
+     * for a directive spliced out of an imported module — that module's own name (see
+     * `ImportResolutionPass.rebindSelf`).
+     */
+    private fun importSchedule(source: ParsedSource): Map<Int, Pair<String, String>> = buildMap {
+        source.code.forEach { atom ->
+            val def = atom as? FunctionDefinition ?: return@forEach
+            val ordinal = runOrdinal(def.name) ?: return@forEach
+            val body = def.body as? Expression ?: return@forEach
+            if (body.atoms.size != 3) return@forEach
+            if ((body.atoms[0] as? Symbol)?.name != Visibility.IMPORT) return@forEach
+            val target = (body.atoms[1] as? Symbol)?.name ?: return@forEach
+            val module = (body.atoms[2] as? Symbol)?.name ?: return@forEach
+            put(ordinal, target to module)
+        }
+    }
+
+    /** `__main_7` -> 7; any other function (including `__main` itself) -> null. */
+    private fun runOrdinal(name: String): Int? =
+        if (name.startsWith(Visibility.RUN_PREFIX)) name.removePrefix(Visibility.RUN_PREFIX).toIntOrNull() else null
+
+    /**
+     * Which modules a run at [ordinal] may resolve against: [self], plus the transitive closure
+     * of the imports performed STRICTLY BEFORE it. Transitive because an import copies the source
+     * module's space as it stands, and a module has by then imported its own dependencies into
+     * itself — f1's `g` lives in moduleC, which moduleA imports into itself at run 4, and moduleA
+     * reaches `&self` at run 10, so `g` is resolvable from run 11 on and not at run 9. An import
+     * into a NAMED space contributes nothing to `&self` unless that space is itself reachable.
+     */
+    private fun visibleOwnersAt(
+        self: String,
+        schedule: Map<Int, Pair<String, String>>,
+        ordinal: Int,
+    ): Set<String> {
+        val visible = mutableSetOf(self)
+        val edges = schedule.filterKeys { it < ordinal }.values
+        var changed = true
+        while (changed) {
+            changed = false
+            edges.forEach { (target, module) ->
+                val targetName = if (target == Visibility.SELF) self else target
+                if (targetName in visible && visible.add(module)) changed = true
             }
         }
+        return visible
     }
 
     fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
@@ -1348,6 +1415,20 @@ class Context private constructor(
                         }
                     }
                 } else {
+                    // A name that resolves but is NOT YET VISIBLE here (its module is imported
+                    // into `&self` further down the file) must lose any stamp an earlier pass
+                    // left on it. The first resolution rounds run while `__main` is still one
+                    // monolithic run — there is no ordinal to gate on — so `(g 3)` gets a
+                    // `.resolved` then; this pass runs after the split and must retract it, or
+                    // codegen emits the static call anyway (f1 :56).
+                    // The stale TYPE has to go with it: the earlier pass stamped the callee's
+                    // return type (`Int` for `g`), and codegen would then emit an inert
+                    // Expression while promising a primitive on the stack (VerifyError).
+                    // Un-resolved application = data = ATOM.
+                    if (isShadowedByVisibility(atom.name)) {
+                        expression.resolved = null
+                        expression.type = GroundedType.ATOM
+                    }
                     // Always track as unresolved so subsequent passes can retry
                     unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
                     if (definedFunctions[atom.name] == null) {
@@ -1667,7 +1748,44 @@ class Context private constructor(
 
     fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolvedFunctions[name]
+            ?.takeIf { isOwnerVisible(it.owner) }
             ?.let { ResolvedSymbol(it.toJvm(), it.func.arrowType, it.func.isMultivalued()) }
+
+    /**
+     * Ordered module visibility — the compile-time twin of the runtime watermark.
+     *
+     * A cross-module symbol means nothing until its module has been imported into `&self`, and
+     * `import!` is order-sensitive, so a name that resolves inside one `!`-run need not resolve
+     * inside an earlier one. [visibleOwners] is the set in effect for the definition being
+     * resolved right now; `null` means "unbounded" — every non-run context (an ordinary function,
+     * which is hoisted and resolved at call time, and every caller outside [resolveSource]).
+     */
+    private var visibleOwners: Set<String>? = null
+
+    /**
+     * The modules this source actually names in an `import!`. ONLY these are gated: an owner the
+     * file never imports keeps the permissive pre-existing behaviour, which several other callers
+     * depend on — the REPL compiles each input as its own class, so a function from an earlier
+     * line has a different owner and no import schedule mentions it, and `compileMultipleSources`
+     * may be handed unrelated files that have always seen each other.
+     */
+    private var gatedModules: Set<String> = emptySet()
+
+    private fun isOwnerVisible(owner: String): Boolean {
+        val visible = visibleOwners ?: return true
+        return owner in visible || owner !in gatedModules
+    }
+
+    /** True when [name] would resolve but its owning module is not visible at this point. */
+    private fun isShadowedByVisibility(name: String): Boolean =
+        systemFunctions[name] == null &&
+            resolvedFunctions[name]?.let { !isOwnerVisible(it.owner) } == true
+
+    private object Visibility {
+        const val SELF = "&self"
+        const val IMPORT = "import!"
+        const val RUN_PREFIX = "${FunctionRewriter.MAIN}_"
+    }
 
     private fun ResolvedSymbol.arrowType(): ArrowType = arrowType ?: jvmMethod.arrowType()
 
