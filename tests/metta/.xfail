@@ -22,12 +22,21 @@
 # resolves only against modules imported into `&self` before it), and applicative reduction of an
 # inert application's arguments (`(g (+ 1 2))` -> `(g 3)`).
 #
-# The file now stops at **:65**, `!(assertEqual (f 2) 103)`, which is AFTER `import! &self
-# f1_moduleA` (:61) — so `f` IS visible and IS called. It answers `(g (+ 1 2))` because inside
-# f1_moduleA's OWN body, `(g (+ 1 $x))` never resolved to f1_moduleC.g: moduleA's `f` is emitted
-# as `(= (f $x:Atom) … (g (+ 1 $x)):Atom):Any`, losing its declared `(-> Number Number)` too.
-# PRE-EXISTING and unrelated to visibility — verified byte-for-byte identical in moduleA's `.jir`
-# at a904e68, before the visibility work. Next question for this file: why a callee from a
-# module that IS imported (moduleC into moduleA, at moduleA's own run 1) fails to resolve inside
-# an ordinary function of the importing module, when the same name resolves fine in a `!`-run.
-f1_imports.metta            ASSERT_FAIL:FEATURE_PENDING:cross-module-callee-in-module-body    :65 `(f 2)` -> `(g (+ 1 2))`; moduleA's own body never resolved `g`. See notes above
+# The file now stops at **:65**, `!(assertEqual (f 2) 103)`. That one line had TWO independent
+# pre-existing causes; the first is fixed, the second is what fails now.
+#
+#  1. FIXED — the module compile queue was sorted by PATH, so f1_moduleA was resolved before
+#     f1_moduleC and its `(g (+ 1 $x))` resolved to nothing and was emitted as inert data. The
+#     queue is now ordered by the import graph. Repro of the general bug (both directions):
+#     a module `amid` importing `zdep` failed while the same pair named `cmid`/`bdep` worked.
+#
+#  2. `Number` is not a type. `FunctionRewriter.asType()` has no entry for it, so
+#     `(: g (-> Number Number))` erases to `(-> Atom Int)` — and an `Atom` PARAMETER carries
+#     hyperon's meta-type semantics "do not reduce the argument" (FunctionGenerator ~:1428). So
+#     `g` is handed the unreduced `(+ 1 2)` and its body's `Grounded` unwrap throws
+#     ClassCastException. Nothing to do with imports; one file reproduces it:
+#       (: r (-> Number Number))  (= (r $x) (+ $x 100))  !(assertEqual (r (+ 1 2)) 103)
+#     The same file with `(: r (-> Int Int))` passes. The fix is a real `Number` type that erases
+#     to a reference like `Atom` but is NOT the meta-Atom, so the argument is evaluated and
+#     arrives as a `Grounded` number.
+f1_imports.metta            RUN_EXCEPTION:FEATURE_PENDING:number-type-erases-to-meta-atom    :65 `(f 2)` -> CCE inside f1_moduleC.g, handed the unreduced `(+ 1 2)`. See notes above
