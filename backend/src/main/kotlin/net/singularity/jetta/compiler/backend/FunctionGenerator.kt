@@ -1426,24 +1426,25 @@ open class FunctionGenerator(
                 // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
                 generateQuote(mv, arg)
             } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
-                if (arg is Expression) {
-                    // An arithmetic/grounded APPLICATION reaching an Atom-typed parameter is
-                    // DATA, not a computation — the ATOM meta-type suppresses reduction (hyperon).
-                    // Quote it inert rather than evaluating it, even though its resolved type is a
-                    // grounded value. This is what lets `(get-type (+ 5 "4"))` type-check the
-                    // ill-typed expression (→ `()`) instead of evaluating `5 + "4"` and crashing.
-                    // (A reducible user-function application — e.g. `(get-type (drop …))` — is not
-                    // grounded-value-typed and so still reduces here; suppressing THAT needs a
-                    // per-builtin meta-type distinction, out of scope for get-type's D0/D1.)
-                    generateQuote(mv, arg)
-                } else {
-                    // A grounded VALUE LITERAL (Int/Double/String/…) passed to an Atom-typed
-                    // parameter must be wrapped in a Grounded: a bare box (Integer) is not an Atom
-                    // subtype, so the verifier rejects `Integer` where `Atom` is expected. Routine
-                    // in higher-order code — `(apply inc 5)` where `apply`'s param is Atom. Load
-                    // the raw value, box it, wrap in Grounded (which IS an Atom).
-                    generateGroundedValueArg(mv, arg, argType)
-                }
+                // A grounded VALUE reaching an `Atom`-typed parameter is evaluated, boxed and
+                // wrapped in a `Grounded` — which IS an Atom, where a bare box (Integer) is not,
+                // so the verifier needs the wrapper. Both a literal (`(apply inc 5)`) and a
+                // computed application (`(g (+ 1 $x))`) take this path.
+                //
+                // A computed one used to be QUOTED here instead, on the grounds that hyperon's
+                // meta-type `Atom` suppresses argument reduction. That reads the meta-ness off the
+                // JVM DESCRIPTOR — and `FunctionRewriter.asType()` erases every type it does not
+                // know to `Atom`, so the rule fired for `Number`, `Nat`, `Either`, … as well:
+                // `(: g (-> Number Number))` was handed the un-reduced `(+ 1 2)` and its body's
+                // `Grounded` unwrap threw (f1_imports :65, and in one file
+                // `(: r (-> Number Number)) (= (r $x) (+ $x 100)) !(assertEqual (r (+ 1 2)) 103)`).
+                // Reducing is right for every erased type and wrong only for a parameter the user
+                // really declared `Atom` — and `get-type`, the one place inertness is load-bearing,
+                // is already handled precisely above by [JvmMethod.inertAtomParams]. Recording
+                // "declared literally Atom" as a fact of the DECLARATION, rather than inferring it
+                // from the erased descriptor, is the fix that would serve both; until then this
+                // side of the trade is the one that matches the reference interpreter more often.
+                generateGroundedValueArg(mv, arg, argType)
             } else {
                 generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
             }
