@@ -1697,6 +1697,11 @@ open class FunctionGenerator(
                     "(Ljava/lang/Object;)Z",
                     false
                 )
+            } else if (actual == GroundedType.ANY) {
+                // An `Any` (Object) slot may hold a bare box as well as a `Grounded` — see
+                // [unwrapReferenceToPrimitive]. `(: f (-> Number Number))` erases its parameter to
+                // Object, and `(< $x 0)` used to cast it straight to `Grounded` (f1_moduleA :13).
+                unwrapReferenceToPrimitive(mv, target)
             } else {
                 unwrapGroundedToPrimitive(mv, target)
             }
@@ -2061,7 +2066,12 @@ open class FunctionGenerator(
         if ((type == GroundedType.ATOM || type == GroundedType.ANY) &&
             requiredType is GroundedType && requiredType.isGroundedValue()
         ) {
-            unwrapGroundedToPrimitive(mv, requiredType)
+            // An `Any` (Object) slot may hold the bare box a call site produced from a computed
+            // primitive as well as a `Grounded` — `(: r (-> Any Any))` over `(r (+ 1 2))` passed
+            // an `Integer` and the direct `Grounded` cast threw. `Atom` slots hold Atoms by
+            // construction and keep the direct unwrap, so the hot path is unchanged.
+            if (type == GroundedType.ANY) unwrapReferenceToPrimitive(mv, requiredType)
+            else unwrapGroundedToPrimitive(mv, requiredType)
             return
         }
         TODO("castIfNeeded $type -> $requiredType")

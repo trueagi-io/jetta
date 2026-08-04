@@ -164,6 +164,25 @@ fun unwrapGroundedToPrimitive(mv: MethodVisitor, type: GroundedType) {
     unboxIfNeeded(mv, type)
 }
 
+/**
+ * Read an `Object`-typed reference as a primitive [type], accepting either envelope: a `Grounded`
+ * wrapping the value, or the bare box a call site produced from a computed primitive. That is the
+ * `Any` calling convention — `(: r (-> Any Any))` / `(: r (-> Number Number))` — where
+ * `(r (+ 1 2))` boxes an `Integer` into the slot while a value arriving as data is `Grounded`.
+ * [unwrapGroundedToPrimitive] stays the path for `Atom`-typed slots, which hold Atoms by
+ * construction; keeping the two apart leaves that (hot) path byte-identical.
+ */
+fun unwrapReferenceToPrimitive(mv: MethodVisitor, type: GroundedType) {
+    mv.visitMethodInsn(
+        Opcodes.INVOKESTATIC,
+        "net/singularity/jetta/runtime/Convert",
+        "unwrapValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+        false
+    )
+    unboxIfNeeded(mv, type)
+}
+
 fun unboxIfNeeded(mv: MethodVisitor, type: GroundedType?) {
     when (type) {
         GroundedType.INT -> {
