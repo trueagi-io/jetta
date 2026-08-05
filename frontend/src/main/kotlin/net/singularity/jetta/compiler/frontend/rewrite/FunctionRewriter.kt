@@ -546,6 +546,12 @@ class FunctionRewriter(
     )
 
     private val specials = listOf(
+        // A user-written `quote` must become the SPECIAL form, not stay a Symbol. Internally
+        // generated quotes are already `PredefinedAtoms.QUOTE` (a Special) and every pass keys
+        // off that; a Symbol head instead fell through to the unresolved-head path, which is the
+        // DATA-CONSTRUCTOR path — and a data constructor evaluates its arguments in applicative
+        // order. So `(quote (+ 1 2))` reduced to `(quote 3)`, exactly what quoting must prevent.
+        Predefined.QUOTE,
         Predefined.DIV,
         Predefined.MOD,
         Predefined.NOT,
