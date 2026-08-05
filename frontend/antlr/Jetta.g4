@@ -315,7 +315,11 @@ RPAREN
 //     token, but two-or-more colons start an IDENT.
 // The leading '!' for statement-level evaluation (see `run`) is unaffected
 // because '!' is not in the start-character class.
+//   * '\'' INSIDE a name, so the prime convention `$type'` / `$params'` is one token. The
+//     reference stdlib.metta uses it throughout, and without it `$type'` lexed as `$type`
+//     followed by a QUOTE that swallowed the next atom. Only in the continuation class: a
+//     name still cannot START with a quote, so the `'(a b)` quote syntax is untouched.
 IDENT
-    : [a-zA-Z_&.%,] [a-zA-Z0-9_\-%*]* [!?]?
-    | ':' ':' [a-zA-Z0-9_\-%*]* [!?]?
+    : [a-zA-Z_&.%,] [a-zA-Z0-9_\-%*']* [!?]?
+    | ':' ':' [a-zA-Z0-9_\-%*']* [!?]?
     ;

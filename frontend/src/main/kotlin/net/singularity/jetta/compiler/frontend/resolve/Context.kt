@@ -1407,8 +1407,12 @@ class Context private constructor(
             is Symbol -> {
                 val resolved = resolve(atom.name)
                 val expectedArity = resolved?.arrowType()?.let { it.types.size - 1 }
+                // The guard used to require `definedFunctions[atom.name] != null`, i.e. it only
+                // covered USER-defined callees. A system function has no entry there, so an
+                // over-applied one walked straight into `arrowType.types[index]` below and threw
+                // IndexOutOfBounds (hit while parsing the reference `stdlib.metta`). Arity is a
+                // property of the resolved symbol, whoever owns it.
                 if (resolved != null && expectedArity != null &&
-                    definedFunctions[atom.name] != null &&
                     expression.arguments().size != expectedArity
                 ) {
                     // Arity mismatch on a user-defined function: an under-application
