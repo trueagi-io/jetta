@@ -1764,7 +1764,7 @@ class Context private constructor(
         systemFunctions[name] ?: resolveUserFunction(name)
 
     private fun resolveUserFunction(name: String): ResolvedSymbol? {
-        val primary = resolvedFunctions[name]?.takeIf { isOwnerVisible(it.owner) } ?: return null
+        val primary = primaryOwner(name) ?: return null
         val alternatives = visibleAlternativeOwners(name, primary)
         if (alternatives.isEmpty()) {
             return ResolvedSymbol(primary.toJvm(), primary.func.arrowType, primary.func.isMultivalued())
@@ -1777,6 +1777,22 @@ class Context private constructor(
             ArrowType(it.types.dropLast(1) + SeqType(it.types.last()))
         }
         return ResolvedSymbol(primary.toJvm(), arrowType, true, alternatives.map { it.toJvm() })
+    }
+
+    /**
+     * The owner a call to [name] links against: the single-owner entry when it is visible here,
+     * otherwise ANY visible owner of that name.
+     *
+     * The fallback matters because `resolvedFunctions` keeps only the LAST module compiled, which
+     * need not be the one in scope: with two modules defining `h`, importing only the other one
+     * left the call inert, since the sole candidate the table offered was invisible. Reached only
+     * under ordered visibility (inside a `!`-run) and only when a second owner exists, so the
+     * one-name-one-method case is untouched.
+     */
+    private fun primaryOwner(name: String): SymbolDef? {
+        val recorded = resolvedFunctions[name] ?: return null
+        if (isOwnerVisible(recorded.owner)) return recorded
+        return functionOwners[name].orEmpty().firstOrNull { isOwnerVisible(it.owner) }
     }
 
     /**
@@ -1838,10 +1854,11 @@ class Context private constructor(
         return owner in visible || owner !in gatedModules
     }
 
-    /** True when [name] would resolve but its owning module is not visible at this point. */
+    /** True when [name] is defined but NO module defining it is visible at this point. */
     private fun isShadowedByVisibility(name: String): Boolean =
         systemFunctions[name] == null &&
-            resolvedFunctions[name]?.let { !isOwnerVisible(it.owner) } == true
+            resolvedFunctions[name] != null &&
+            primaryOwner(name) == null
 
     private object Visibility {
         const val SELF = "&self"
