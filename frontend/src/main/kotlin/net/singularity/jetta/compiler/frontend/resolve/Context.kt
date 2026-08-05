@@ -29,6 +29,7 @@ class Context private constructor(
     private val resolvedFunctions: MutableMap<String, SymbolDef>,
     private val functions: MutableMap<String, FunctionDefinition>,
     private val systemFunctions: MutableMap<String, ResolvedSymbol>,
+    private val functionOwners: MutableMap<String, List<SymbolDef>>,
 ) {
     constructor(
         messageCollector: MessageCollector,
@@ -37,7 +38,7 @@ class Context private constructor(
         space: Space,
     ) : this(
         messageCollector, mapImpl, flatMapImpl, space,
-        mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(),
+        mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(),
     )
 
     private val logger = Logger.getLogger(Context::class.java)
@@ -76,6 +77,7 @@ class Context private constructor(
         OverlayMap(resolvedFunctions),
         OverlayMap(functions),
         OverlayMap(systemFunctions),
+        OverlayMap(functionOwners),
     )
 
     fun getSpace(): Space {
@@ -167,9 +169,20 @@ class Context private constructor(
         signature = func.getSignature()
     )
 
+    /**
+     * Record [owner] among ALL the modules that define [func]'s name, beside the single-owner
+     * `resolvedFunctions` (whose last writer wins). Keyed by owner, so the repeated resolution
+     * rounds over one source refresh that module's entry instead of appending to it.
+     */
+    private fun recordFunctionOwner(owner: String, func: FunctionDefinition) {
+        val current = functionOwners[func.name].orEmpty()
+        functionOwners[func.name] = current.filterNot { it.owner == owner } + SymbolDef(owner, func)
+    }
+
     private fun addResolvedFunction(owner: String, func: FunctionDefinition) {
         logger.debug { "Registered function: ${func.name} :: ${func.arrowType ?: "untyped"} (owner=$owner)" }
         resolvedFunctions[func.name] = SymbolDef(owner, func)
+        recordFunctionOwner(owner, func)
         main?.let {
             val lastCall = when (it.body) {
                 is Expression -> (it.body as Expression).atoms.last()
@@ -195,6 +208,7 @@ class Context private constructor(
                 .map { it as FunctionDefinition }
         external.forEach {
             resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
+            recordFunctionOwner(source.getJvmClassName(), it)
         }
     }
 
@@ -1747,9 +1761,57 @@ class Context private constructor(
                 (atoms[0] as? Special)?.value == Predefined.SEQ
 
     fun resolve(name: String): ResolvedSymbol? =
-        systemFunctions[name] ?: resolvedFunctions[name]
-            ?.takeIf { isOwnerVisible(it.owner) }
-            ?.let { ResolvedSymbol(it.toJvm(), it.func.arrowType, it.func.isMultivalued()) }
+        systemFunctions[name] ?: resolveUserFunction(name)
+
+    private fun resolveUserFunction(name: String): ResolvedSymbol? {
+        val primary = resolvedFunctions[name]?.takeIf { isOwnerVisible(it.owner) } ?: return null
+        val alternatives = visibleAlternativeOwners(name, primary)
+        if (alternatives.isEmpty()) {
+            return ResolvedSymbol(primary.toJvm(), primary.func.arrowType, primary.func.isMultivalued())
+        }
+        // More than one visible module defines this name: the call answers with the union of
+        // their results, so its type gains a bag and it counts as multivalued from here on
+        // (`MarkMultivaluedFunctionsRewriter` reads `isMultiValued` off the resolved symbol, and
+        // `Expression.type` is stamped from this arrow type).
+        val arrowType = primary.func.arrowType?.let {
+            ArrowType(it.types.dropLast(1) + SeqType(it.types.last()))
+        }
+        return ResolvedSymbol(primary.toJvm(), arrowType, true, alternatives.map { it.toJvm() })
+    }
+
+    /**
+     * The OTHER visible modules that define [name] — empty in the ordinary one-name-one-method
+     * case. `import!` copies each module's `(= …)` rules into `&self`, so when two imported
+     * modules both define `dup` the reference interpreter keeps both rules and unions their
+     * answers (f1_imports :114). JeTTa compiles each module separately, so the union has to be
+     * built at the call site out of the several compiled methods.
+     *
+     * Deliberately narrow — every condition here is load-bearing:
+     *  - only inside a `!`-run ([visibleOwners] non-null), and only over owners in that run's
+     *    visible set. [isOwnerVisible] is permissive for an owner no `import!` names (the REPL
+     *    compiles every input as its own class, `compileMultipleSources` may be handed unrelated
+     *    files); unioning across those would turn a plain redefinition into non-determinism.
+     *  - the primary owner must be in that set too, for the same reason.
+     *  - identical JVM descriptor, because the union evaluates the arguments ONCE and feeds the
+     *    same values to every owner.
+     *  - scalar owners only: each call contributes one element to the bag. A multivalued owner
+     *    would return a bag of its own, which is a concatenation, not an element.
+     *  - a value to contribute at all, so nothing that returns `void`.
+     */
+    private fun visibleAlternativeOwners(name: String, primary: SymbolDef): List<SymbolDef> {
+        val visible = visibleOwners ?: return emptyList()
+        if (primary.owner !in visible) return emptyList()
+        if (primary.func.arrowType == null || primary.func.isMultivalued()) return emptyList()
+        val descriptor = primary.func.getJvmDescriptor()
+        if (descriptor.endsWith(")V")) return emptyList()
+        return functionOwners[name].orEmpty().filter {
+            it.owner != primary.owner &&
+                it.owner in visible &&
+                it.func.arrowType != null &&
+                !it.func.isMultivalued() &&
+                it.func.getJvmDescriptor() == descriptor
+        }
+    }
 
     /**
      * Ordered module visibility — the compile-time twin of the runtime watermark.

@@ -1406,26 +1406,54 @@ open class FunctionGenerator(
         resolved: ResolvedSymbol?
     ) {
         val (jvmSymbol, _) = resolved ?: throw UnresolvedSymbolError(functionName)
+        if (resolved.alternatives.isNotEmpty()) {
+            generateMultiOwnerCall(mv, jvmSymbol, resolved.alternatives, arguments)
+            return
+        }
         arguments.forEachIndexed { index, arg ->
-            val argType = arg.type
-            if (jvmSymbol.isParameterBooleanType(index) && arg is Symbol &&
-                (arg.name == "True" || arg.name == "False")
-            ) {
-                // A MeTTa boolean literal (`True`/`False`) passed to a `Bool` (primitive `Z`)
-                // parameter — push the primitive constant, not the Symbol object, which the
-                // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
-                // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
-                generateLoadBoolean(arg.name == "True")
-            } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression) {
-                // A FULLY-INERT Atom parameter (e.g. `get-type`): the argument must reach the
-                // method un-reduced, so quote the whole term structurally (evalCalls=false ⇒ no
-                // nested sub-call is evaluated). This is what makes `(get-type (Cons 0 (Cons 1
-                // Nil)))` and `(get-type (drop (Cons 1 Nil)))` type-check the un-reduced
-                // application; the plain-`generateAtom` path below would instead take the
-                // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
-                // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
-                generateQuote(mv, arg)
-            } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
+            generateArgument(mv, jvmSymbol, index, arg)
+        }
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            jvmSymbol.owner,
+            jvmSymbol.name,
+            jvmSymbol.descriptor,
+            false
+        )
+        // If the called function returns void but we're inside a context that
+        // needs a value on the stack (e.g., a lambda body), push null as a
+        // placeholder so the stack isn't empty for areturn.
+        if (jvmSymbol.descriptor.endsWith(")V")) {
+            mv.visitInsn(Opcodes.ACONST_NULL)
+        }
+    }
+
+    /** Emit argument [index] of a call to [jvmSymbol], coerced to that parameter's shape. */
+    private fun generateArgument(
+        mv: LocalVariablesSorter,
+        jvmSymbol: JvmMethod,
+        index: Int,
+        arg: Atom,
+    ) {
+        val argType = arg.type
+        if (jvmSymbol.isParameterBooleanType(index) && arg is Symbol &&
+            (arg.name == "True" || arg.name == "False")
+        ) {
+            // A MeTTa boolean literal (`True`/`False`) passed to a `Bool` (primitive `Z`)
+            // parameter — push the primitive constant, not the Symbol object, which the
+            // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
+            // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
+            generateLoadBoolean(arg.name == "True")
+        } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression) {
+            // A FULLY-INERT Atom parameter (e.g. `get-type`): the argument must reach the
+            // method un-reduced, so quote the whole term structurally (evalCalls=false ⇒ no
+            // nested sub-call is evaluated). This is what makes `(get-type (Cons 0 (Cons 1
+            // Nil)))` and `(get-type (drop (Cons 1 Nil)))` type-check the un-reduced
+            // application; the plain-`generateAtom` path below would instead take the
+            // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
+            // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
+            generateQuote(mv, arg)
+        } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 // A grounded VALUE reaching an `Atom`-typed parameter is evaluated, boxed and
                 // wrapped in a `Grounded` — which IS an Atom, where a bare box (Integer) is not,
                 // so the verifier needs the wrapper. Both a literal (`(apply inc 5)`) and a
@@ -1443,25 +1471,80 @@ open class FunctionGenerator(
                 // is already handled precisely above by [JvmMethod.inertAtomParams]. Recording
                 // "declared literally Atom" as a fact of the DECLARATION, rather than inferring it
                 // from the erased descriptor, is the fix that would serve both; until then this
-                // side of the trade is the one that matches the reference interpreter more often.
-                generateGroundedValueArg(mv, arg, argType)
-            } else {
-                generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
-            }
+            // side of the trade is the one that matches the reference interpreter more often.
+            generateGroundedValueArg(mv, arg, argType)
+        } else {
+            generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
         }
+    }
+
+    /**
+     * A call whose name several visible modules define: invoke EVERY owner and collect the
+     * results into one bag, which is how the reference interpreter answers a name carrying more
+     * than one `(= …)` rule (f1_imports :114 — `dup` from two imported modules gives `(12 102)`).
+     * The resolver only ever hands us owners that share [primary]'s descriptor and are scalar
+     * (see `Context.visibleAlternativeOwners`), so one evaluation of the arguments serves them
+     * all and each call contributes exactly one element.
+     *
+     * The arguments go into locals rather than being re-emitted per owner: they must be evaluated
+     * ONCE, or an argument with an effect (`(dup (add-atom! …))`) would perform it N times.
+     */
+    private fun generateMultiOwnerCall(
+        mv: LocalVariablesSorter,
+        primary: JvmMethod,
+        alternatives: List<JvmMethod>,
+        arguments: List<Atom>,
+    ) {
+        val paramTypes = Type.getArgumentTypes(primary.descriptor)
+        val argSlots = arguments.mapIndexed { index, arg ->
+            generateArgument(mv, primary, index, arg)
+            val type = paramTypes[index]
+            val slot = mv.newLocal(type)
+            mv.visitVarInsn(type.getOpcode(Opcodes.ISTORE), slot)
+            slot to type
+        }
+        val owners = listOf(primary) + alternatives
+        val returnType = Type.getReturnType(primary.descriptor)
+        val bag = mv.newLocal(Type.getObjectType("[Ljava/lang/Object;"))
+        generateLoadInt(owners.size)
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
+        mv.visitVarInsn(Opcodes.ASTORE, bag)
+        owners.forEachIndexed { index, owner ->
+            mv.visitVarInsn(Opcodes.ALOAD, bag)
+            generateLoadInt(index)
+            argSlots.forEach { (slot, type) -> mv.visitVarInsn(type.getOpcode(Opcodes.ILOAD), slot) }
+            mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner.owner, owner.name, owner.descriptor, false)
+            boxJvmPrimitive(returnType)
+            mv.visitInsn(Opcodes.AASTORE)
+        }
+        mv.visitVarInsn(Opcodes.ALOAD, bag)
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
-            jvmSymbol.owner,
-            jvmSymbol.name,
-            jvmSymbol.descriptor,
+            "java/util/Arrays",
+            "asList",
+            "([Ljava/lang/Object;)Ljava/util/List;",
             false
         )
-        // If the called function returns void but we're inside a context that
-        // needs a value on the stack (e.g., a lambda body), push null as a
-        // placeholder so the stack isn't empty for areturn.
-        if (jvmSymbol.descriptor.endsWith(")V")) {
-            mv.visitInsn(Opcodes.ACONST_NULL)
+    }
+
+    /**
+     * Box the primitive on top of the stack for storage in an `Object[]`, driven by the JVM
+     * [type] rather than a MeTTa type (the sibling [generateBoxingIfNeeded] works off a
+     * `GroundedType`). A reference is already storable and is left alone.
+     */
+    private fun boxJvmPrimitive(type: Type) {
+        val (owner, desc) = when (type.sort) {
+            Type.INT -> "java/lang/Integer" to "(I)Ljava/lang/Integer;"
+            Type.BOOLEAN -> "java/lang/Boolean" to "(Z)Ljava/lang/Boolean;"
+            Type.DOUBLE -> "java/lang/Double" to "(D)Ljava/lang/Double;"
+            Type.LONG -> "java/lang/Long" to "(J)Ljava/lang/Long;"
+            Type.FLOAT -> "java/lang/Float" to "(F)Ljava/lang/Float;"
+            Type.CHAR -> "java/lang/Character" to "(C)Ljava/lang/Character;"
+            Type.SHORT -> "java/lang/Short" to "(S)Ljava/lang/Short;"
+            Type.BYTE -> "java/lang/Byte" to "(B)Ljava/lang/Byte;"
+            else -> return
         }
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, owner, "valueOf", desc, false)
     }
 
     /**

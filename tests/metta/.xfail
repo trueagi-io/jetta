@@ -10,34 +10,6 @@
 # The runner skips files imported by other files in the suite (modules).
 # So entries here only need to cover files that run as standalone tests.
 
-# f1_imports COMPILES and runs. The multivalued-tuple-lift blocker is FIXED: the first assert's
-# `((let $x (get-atoms &self) (get-type $x)))` now lifts into
-#   flat-map?(\$v. map?(\$e. ($e), ((\ ($x) (get-type $x)) $v)), (get-atoms &self))
-# instead of freezing as an Atom[] holding a lambda. The `contains`/`is-space` and the first
-# `import!` asserts pass too.
-#
-# :56 — the `(match &m (= (f 2) $x) $x)` = `(g 3)` assertion — now PASSES. It needed four things,
-# all landed: the match result evaluated (`matchReduceDeep`), RUN-TIME visibility (a module's
-# load-time `&self` rebound to the module's own space), COMPILE-TIME ordered visibility (a `!`-run
-# resolves only against modules imported into `&self` before it), and applicative reduction of an
-# inert application's arguments (`(g (+ 1 2))` -> `(g 3)`).
-#
-# :65 passes too, along with everything up to the diamond import. It had two independent
-# pre-existing causes, both now fixed: the module compile queue was sorted by PATH (so f1_moduleA
-# resolved before f1_moduleC and its `(g (+ 1 $x))` was emitted as inert data), and a computed
-# argument reaching a parameter whose declared type merely ERASES to `Atom` was frozen by the
-# meta-type rule (`(: g (-> Number Number))` got the un-reduced `(+ 1 2)`).
-#
-# The file now stops at **:114**, and the two later repeats of the same assertion:
-#   !(assertEqualToResult (dup 2) (12 102))
-# `dup` is defined in BOTH imported modules — f1_moduleA's answers `(g 2)` = 102, f1_moduleB's
-# answers `(+ 2 10)` = 12 — and hyperon UNIONS them: a name declared in several imported modules
-# is non-deterministic. JeTTa keeps one owner per name (`Context.resolvedFunctions` is a flat
-# name -> SymbolDef map, last writer wins — here f1_moduleB, hence the actual `[12]`), so the
-# call compiles to a single static invocation.
-#
-# What it needs: a call whose name has more than one VISIBLE owner must dispatch over all of them
-# and union the results, i.e. become multivalued. The visible-owner set is already computed per
-# `!`-run for ordered visibility (Context.visibleOwnersAt), so the information is in place; what
-# is missing is a multi-owner symbol table and a bag-returning call shape for that case.
-f1_imports.metta            ASSERT_FAIL:FEATURE_PENDING:multi-module-same-name-nondeterminism    :114 `(dup 2)` -> [12], expected [12 102]; one owner kept per name. See notes above
+# Empty: f1_imports was the last entry and now PASSES — its final blocker was a name defined by
+# more than one imported module (`dup`), which the reference interpreter answers with the union of
+# both rules. Such a call now dispatches over every visible owner and collects one bag.
