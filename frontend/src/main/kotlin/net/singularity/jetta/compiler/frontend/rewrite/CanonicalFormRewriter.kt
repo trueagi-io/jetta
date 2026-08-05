@@ -97,7 +97,7 @@ class CanonicalFormRewriter(
                 if (atom.atoms.isEmpty()) {
                     return atom
                 }
-                if (!root && atom.atoms[0].isIf() && atom.checkIsNonDeterministicRecursively()) {
+                if (!root && atom.isIfForm() && atom.checkIsNonDeterministicRecursively()) {
                     val functionName = mkFunctionName(functionCount++)
                     val (params, arrowType) = extractVariables(atom)
                     val def = FunctionDefinition(
@@ -143,18 +143,33 @@ class CanonicalFormRewriter(
         val variables = mutableMapOf<String, Variable>()
         extractVariablesRecursively(atom, variables)
         val variablesList = variables.values.toList()
-        return variablesList to ArrowType(variablesList.map { it.type!! } + atom.type!!)
+        // A captured variable — or the lifted `if` itself — may carry no inferred type: nothing
+        // in the arm pinned it to a grounded value, which is routine once the arm holds plain
+        // data. Atom is the dynamic top used everywhere else for exactly this ("unresolved
+        // application = data = ATOM"), and it is what the extracted function must promise, since
+        // an untyped slot is passed as a reference.
+        return variablesList to ArrowType(
+            variablesList.map { it.type ?: GroundedType.ATOM } + (atom.type ?: GroundedType.ATOM)
+        )
     }
 
     private fun mkFunctionName(i: Int): String = "__f$i"
 
     private fun Atom.isIf(): Boolean = (this is Special && this.value == Predefined.IF)
 
+    /**
+     * A COMPLETE `if` — head plus condition and both arms. Every site that reacts to an `if`
+     * below goes on to read `atoms[1..3]`, so a partially applied one (`(if $c)`, on its way to
+     * a higher-order function) must be left alone as ordinary data instead of destructured.
+     * See [isMisappliedSpecial], which the resolver and codegen apply to the same forms.
+     */
+    private fun Expression.isIfForm(): Boolean = atoms[0].isIf() && !isMisappliedSpecial()
+
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {
             is Expression -> {
                 if (atom.atoms.isEmpty()) atom
-                else if (atom.atoms[0].isIf()) rewriteIf(atom)
+                else if (atom.isIfForm()) rewriteIf(atom)
                 else rewriteExpression(atom)
             }
 
@@ -594,7 +609,7 @@ class CanonicalFormRewriter(
                     else -> {}
                 }
 
-                if (atom.atoms[0].isIf()) {
+                if (atom.isIfForm()) {
                     isMultivalued = isMultivalued or collectNonDeterministicAtomsRecursively(
                         atom.atoms[1],
                         functionDefinition,

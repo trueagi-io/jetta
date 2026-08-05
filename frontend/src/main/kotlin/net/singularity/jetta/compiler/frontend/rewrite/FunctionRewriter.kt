@@ -562,7 +562,9 @@ class FunctionRewriter(
      */
     private fun isFunctionCall(atom: Atom): Boolean {
         if (atom !is Expression) return false
-        val head = atom.atoms[0]
+        // The empty expression `()` is ordinary data — MeTTa's nil-like value, and a routine
+        // operand (`(== $list ())`). It has no head to look up.
+        val head = atom.atoms.firstOrNull() ?: return false
         return head is Symbol && patterns.containsKey(head.name)
     }
 

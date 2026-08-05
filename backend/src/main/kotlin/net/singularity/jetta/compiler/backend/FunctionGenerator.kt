@@ -260,6 +260,15 @@ open class FunctionGenerator(
                     if (doReturn) mv.visitInsn(Opcodes.ARETURN)
                     return
                 }
+                // A grounded operator short of its operands is a partial application, which is
+                // DATA — the resolver already typed it Atom, and every operator branch below
+                // destructures a fixed shape. Quote it, so it reaches the runtime intact and can
+                // be completed by variable-head dispatch.
+                if (atom.isMisappliedSpecial()) {
+                    generateQuote(mv, atom)
+                    if (doReturn) mv.visitInsn(Opcodes.ARETURN)
+                    return
+                }
                 val func = atom.atoms[0]
                 val arguments = atom.atoms.drop(1)
 

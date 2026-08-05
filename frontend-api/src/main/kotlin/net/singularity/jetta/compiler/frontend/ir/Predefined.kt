@@ -43,6 +43,34 @@ object PredefinedAtoms {
     val QUOTE = Special(Predefined.QUOTE)
 }
 
+/**
+ * True when this expression applies a grounded operator to a number of operands it cannot take.
+ * Almost always a PARTIAL APPLICATION on its way to a higher-order function — `(mymap (== 1) …)`
+ * passes `==` with one operand, to be completed later by variable-head dispatch.
+ *
+ * Such a form is DATA. Every place that reacts to a grounded operator — the resolver's `Special`
+ * branches, `CanonicalFormRewriter`'s `if` handling, codegen's operator dispatch — immediately
+ * destructures a fixed shape, so each has to agree on when the shape is absent; that is why this
+ * lives beside [Predefined] rather than in any one pass. Operators not listed are variadic and
+ * have no shape to check (`seq`, `run-seq!`, `map?`, `quote`, the annotation heads).
+ */
+fun Expression.isMisappliedSpecial(): Boolean {
+    val op = (atoms.firstOrNull() as? Special)?.value ?: return false
+    val operands = atoms.size - 1
+    return when (op) {
+        Predefined.IF -> operands != 3
+        Predefined.NOT -> operands != 1
+        Predefined.COND_EQ, Predefined.COND_NEQ,
+        Predefined.COND_LT, Predefined.COND_GT, Predefined.COND_LE, Predefined.COND_GE,
+        Predefined.DIVIDE, Predefined.DIV, Predefined.MOD,
+        Predefined.AND, Predefined.OR, Predefined.XOR -> operands != 2
+        // `+`/`-`/`*` fold over their whole operand list, so any arity from two up is in shape;
+        // codegen emits the first two and folds the rest. One operand is a partial application.
+        Predefined.PLUS, Predefined.MINUS, Predefined.TIMES -> operands < 2
+        else -> false
+    }
+}
+
 fun Atom.isBooleanExpression(): Boolean =
     if (this is Special) {
         when (this.value) {

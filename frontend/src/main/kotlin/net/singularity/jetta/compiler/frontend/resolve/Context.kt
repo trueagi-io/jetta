@@ -1303,13 +1303,28 @@ class Context private constructor(
                     }
                     return
                 }
-                if (suggestedType != def.func.arrowType) {
-                    messageCollector.add(IncompatibleTypesMessage(suggestedType!!, def.func.arrowType!!, atom.position))
+                // A function's NAME in a value position — passed to a higher-order function, or
+                // sitting in a data slot. It eta-expands into `(\ params (f params))` below.
+                //
+                // An incompatibility can only be reported when there is something to compare:
+                // both a type expected here and a declared arrow type. Neither is guaranteed —
+                // an argument slot typed `Atom`, or any value position with no expectation at
+                // all, gives no suggested type, and an untyped callee has no arrow type — and
+                // asserting them threw instead (the `!!`s this replaces).
+                val declared = def.func.arrowType
+                if (suggestedType != null && declared != null && suggestedType != declared) {
+                    messageCollector.add(IncompatibleTypesMessage(suggestedType, declared, atom.position))
+                    return
+                }
+                if (declared == null) {
+                    // Nothing to build a typed reference from. The name stays a plain atom and
+                    // the application it ends up in is reduced by runtime dispatch.
+                    atom.type = GroundedType.ATOM
                     return
                 }
                 val wrapper = Lambda(
                     def.func.params,
-                    def.func.arrowType,
+                    declared,
                     Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position),
                     position = atom.position
                 )
@@ -1364,6 +1379,7 @@ class Context private constructor(
 
     private fun createLambdaTypeInfo(parentScope: Scope, lambda: Lambda): Scope = parentScope.join(lambda)
 
+
     private fun resolveExpression(expression: Expression, scope: Scope) {
         logger.trace { "Resolving expression: $expression" }
         if (!scope.isProvided &&
@@ -1376,6 +1392,15 @@ class Context private constructor(
         if (expression.atoms.isEmpty()) {
             // Empty `()` — pure data. Used by `(quote ())` and similar.
             expression.type = GroundedType.ATOM
+            return
+        }
+        // A grounded operator applied to the wrong number of operands is DATA, not a call — the
+        // Special branches below each destructure a fixed shape and would otherwise throw. Same
+        // policy as the arity guard on a user-defined function below: leave the form inert,
+        // resolve what is inside it, and let the runtime reduce the completed application.
+        if (expression.isMisappliedSpecial()) {
+            expression.type = GroundedType.ATOM
+            expression.arguments().forEach { resolveAtom(it, scope) }
             return
         }
         when (val atom = expression.atoms[0]) {
