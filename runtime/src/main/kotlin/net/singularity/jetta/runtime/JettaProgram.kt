@@ -508,6 +508,33 @@ open class JettaProgram {
             else Expression(Symbol("Error"), atom, Symbol("cdr-atom expects a non-empty expression"))
         }
 
+        /**
+         * `decons-atom` — split a non-empty expression into head and tail, as a TWO-element
+         * expression: `(decons-atom (Cons X Nil))` → `(Cons (X Nil))`. Note the shape — it is
+         * not the flat expression, which is what makes it the exact inverse of [cons-atom] and
+         * lets `(unify ($head $tail) …)` destructure the result. The reference `stdlib.metta`
+         * defines `car-atom` and `cdr-atom` in terms of this one.
+         */
+        @JvmStatic
+        fun `decons-atom`(atom: Atom): Atom {
+            val e = if (atom is BoundAtom) atom.atom else atom
+            return if (e is Expression && e.atoms.isNotEmpty())
+                Expression(e.atoms[0], Expression(atoms = e.atoms.drop(1)))
+            else Expression(Symbol("Error"), atom, Symbol("decons-atom expects a non-empty expression"))
+        }
+
+        /**
+         * `cons-atom` — prepend an atom to an expression: `(cons-atom a (b c))` → `(a b c)`.
+         * The inverse of [decons-atom]; a non-expression tail is an error.
+         */
+        @JvmStatic
+        fun `cons-atom`(head: Atom, tail: Atom): Atom {
+            val h = if (head is BoundAtom) head.atom else head
+            val t = if (tail is BoundAtom) tail.atom else tail
+            return if (t is Expression) Expression(atoms = listOf(h) + t.atoms)
+            else Expression(Symbol("Error"), tail, Symbol("cons-atom expects an expression as its second argument"))
+        }
+
         // ---- Documentation: get-doc / help! ------------------------------------------------
         // `@doc` and `:` forms reach the running "self" space as ordinary facts (see
         // FunctionRewriter's TYPE/ANNOTATION branches). get-doc queries them and assembles the

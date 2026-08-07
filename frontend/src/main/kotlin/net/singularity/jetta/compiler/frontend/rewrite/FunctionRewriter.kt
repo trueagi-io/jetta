@@ -541,6 +541,9 @@ class FunctionRewriter(
     // `+`/`*`) and must be promoted to their Special form. Aliases map an alternate
     // surface spelling to a canonical Predefined name — hyperon writes modulo as `%`,
     // which the lexer sees as an IDENT rather than a token.
+    /** hyperon's minimal-MeTTa sequencing primitive; rewritten onto `let` (see below). */
+    private val CHAIN_KEYWORD = "chain"
+
     private val specialAliases = mapOf(
         "%" to Predefined.MOD
     )
@@ -961,8 +964,33 @@ class FunctionRewriter(
         // (pattern/template wrapped in quote), then rewritten AGAIN when JIT-eval
         // re-runs the pipeline → double-quoted pattern that matches nothing. The quoted
         // form must reach eval exactly as the user wrote it.
-        if (func == PredefinedAtoms.QUOTE) return expression
+        // Match the NAME, not just the Special: a `quote` written in the source is still a Symbol
+        // at this point (it becomes a Special further down, in `mkSpecialFromSymbol`), so keying
+        // on `PredefinedAtoms.QUOTE` alone let a source-written quote's contents be rewritten.
+        // The head is normalised to the Special HERE, because returning early skips the conversion
+        // below — and a Symbol head would leave the form on codegen's data-constructor path, which
+        // evaluates its arguments (the very thing quoting must prevent).
+        if (func == PredefinedAtoms.QUOTE || (func is Symbol && func.name == Predefined.QUOTE)) {
+            return expression.copy(atoms = listOf(PredefinedAtoms.QUOTE) + expression.atoms.drop(1))
+        }
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
+        // `chain` is `let` with the binding evaluated: `(chain X $v T)` binds $v to the value of X
+        // and yields T. Rewriting it onto `let` reuses the whole tested binding path instead of
+        // adding a second one. DIVERGENCE: hyperon's `chain` takes ONE reduction step, where `let`
+        // evaluates fully. Same answer whenever the bound expression reaches a value in one step
+        // (every use in the reference `stdlib.metta` and in the corpus), different for a program
+        // that relies on stepwise control — which is the point of `chain` in minimal MeTTa.
+        if (func is Symbol && func.name == CHAIN_KEYWORD && expression.atoms.size == 4) {
+            return rewriteAtom(
+                Expression(
+                    Symbol(LetRewriter.LET_KEYWORD, position = func.position),
+                    expression.atoms[2],
+                    expression.atoms[1],
+                    expression.atoms[3],
+                    position = expression.position,
+                )
+            )
+        }
         if (func is Symbol && func.name == "case" && expression.atoms.size == 3) return rewriteCaseCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {

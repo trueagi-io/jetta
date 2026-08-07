@@ -228,6 +228,32 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `decons-atom` / `cons-atom` — the split/prepend pair the reference stdlib builds its list
+    // operations on (`car-atom`, `cdr-atom`, `foldl-atom`, … are all defined in MeTTa in terms of
+    // `decons-atom`). `decons-atom` yields the TWO-element `(head (tail…))` shape, not the flat
+    // expression, which is what makes the two exact inverses.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "decons-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "cons-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // `car-atom` / `cdr-atom` — head and tail of an expression (`(car-atom (a b c))` → `a`,
     // `(cdr-atom (a b c))` → `(b c)`). Argument is ATOM so a bound list variable arrives as
     // its Expression value; result is an Atom (an element, or a tail Expression). Pure and
