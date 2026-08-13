@@ -1738,10 +1738,13 @@ open class FunctionGenerator(
             // All reference-typed returns share ARETURN. Lambdas returning
             // lambdas (ArrowType return — common in higher-order code like
             // d2_higherfunc's `curry`) end up here.
+            GroundedType.EXPRESSION -> {
+                narrowReturnToExpression(mv)
+                mv.visitInsn(Opcodes.ARETURN)
+            }
             GroundedType.ATOM,
             GroundedType.LIST,
             GroundedType.STRING,
-            GroundedType.EXPRESSION,
             GroundedType.SPACE,
             GroundedType.ANY,
             GroundedType.NOTHING,
@@ -1749,6 +1752,25 @@ open class FunctionGenerator(
             is ArrowType -> mv.visitInsn(Opcodes.ARETURN)
             else -> TODO("type=${function.returnType} of $function")
         }
+    }
+
+    /**
+     * The return-side twin of [narrowArgumentToExpression]: a body whose static type is the erased
+     * `Atom` (or `Any`, or nothing at all) under a declared `Expression` return needs the cast
+     * `ARETURN` will not infer, or the method fails verification and takes its whole class with it.
+     *
+     * The reference `stdlib.metta` redefines `cdr-atom` as `(: cdr-atom (-> Expression Expression))`
+     * over `decons-atom` + `unify`, and that body resolves to `Atom` — the value really is an
+     * Expression, only the inferred type is the top. As on the argument side, a grounded VALUE
+     * (primitive or String) is a genuine mismatch rather than an erasure artefact and is left to
+     * fail, and a `SeqType` body belongs to the multivalued path that already returned above.
+     */
+    private fun narrowReturnToExpression(mv: MethodVisitor) {
+        val bodyType = function.body.type
+        if (bodyType == GroundedType.EXPRESSION) return
+        if (bodyType is SeqType) return
+        if (bodyType is GroundedType && bodyType.isGroundedValue()) return
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Expression")
     }
 
     private fun containsVariable(atom: Atom): Boolean = when (atom) {
