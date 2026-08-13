@@ -11,6 +11,47 @@ import org.objectweb.asm.commons.LocalVariablesSorter
  * [net.singularity.jetta.compiler.frontend.ir.Atom] reference. Such a value must be boxed
  * and wrapped in a `Grounded` to live inside quoted/Atom-typed data.
  */
+/** A type whose parameter slot physically holds a JVM primitive, so `ALOAD` cannot read it. */
+private fun GroundedType.isPrimitiveSlot(): Boolean = when (this) {
+    GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE, GroundedType.BOOLEAN -> true
+    else -> false
+}
+
+/** The top reference types any Atom fits into — where a primitive has to be wrapped to fit. */
+private fun Atom?.isBroadRef(): Boolean = this == GroundedType.ATOM || this == GroundedType.ANY
+
+/**
+ * Load a primitive parameter slot and leave it on the stack as an `Atom`: box it, then wrap the
+ * box in a `Grounded`. `NEW`/`DUP` come first so the boxed value lands in argument position with
+ * no temporary local. The trailing `null, 2, null` are the synthetic default-argument constructor's
+ * position, mask and marker — the same shape `FunctionGenerator.wrapValueOnStackInGrounded` emits.
+ */
+private fun loadPrimitiveSlotAsGrounded(mv: MethodVisitor, type: GroundedType, slot: Int) {
+    val (loadOpcode, boxOwner, boxDescriptor) = when (type) {
+        GroundedType.INT -> Triple(Opcodes.ILOAD, "java/lang/Integer", "(I)Ljava/lang/Integer;")
+        GroundedType.BOOLEAN -> Triple(Opcodes.ILOAD, "java/lang/Boolean", "(Z)Ljava/lang/Boolean;")
+        GroundedType.LONG -> Triple(Opcodes.LLOAD, "java/lang/Long", "(J)Ljava/lang/Long;")
+        GroundedType.DOUBLE -> Triple(Opcodes.DLOAD, "java/lang/Double", "(D)Ljava/lang/Double;")
+        else -> throw IllegalArgumentException("not a primitive slot: $type")
+    }
+    val grounded = "net/singularity/jetta/compiler/frontend/ir/Grounded"
+    mv.visitTypeInsn(Opcodes.NEW, grounded)
+    mv.visitInsn(Opcodes.DUP)
+    mv.visitVarInsn(loadOpcode, slot)
+    mv.visitMethodInsn(Opcodes.INVOKESTATIC, boxOwner, "valueOf", boxDescriptor, false)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitInsn(Opcodes.ICONST_2)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitMethodInsn(
+        Opcodes.INVOKESPECIAL,
+        grounded,
+        "<init>",
+        "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;" +
+            "ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+        false
+    )
+}
+
 fun GroundedType.isGroundedValue(): Boolean = when (this) {
     GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE,
     GroundedType.BOOLEAN, GroundedType.STRING -> true
@@ -100,6 +141,20 @@ fun generateLoadVar(
     if (index >= 0 && slotIsBroadRef && usage == GroundedType.EXPRESSION) {
         mv.visitVarInsn(Opcodes.ALOAD, index + offset)
         mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Expression")
+        return
+    }
+    // The reconciliation the other way round: the slot holds a PRIMITIVE and this use site wants
+    // the broad `Atom`/`Any` reference. A `let`-bound number referenced inside data is the case —
+    // `(let $a (+ $n 1) (let $x (superpose ($a $a)) $x))`, where the lift makes the outer `let` a
+    // lambda whose parameter is `Int` while the `$a`s inside the tuple resolved to `Atom`. ALOAD
+    // over an int slot is not a wrong value, it is an unverifiable method ("Bad local variable
+    // type"), so nothing downstream gets a chance to fix it up. Load the primitive and present it
+    // as the Atom the use site asked for: box, then wrap in `Grounded`.
+    //
+    // A `String` slot is deliberately not included: it is already a reference, so the load itself
+    // verifies, and wrapping it here would change how existing string paths reach Atom positions.
+    if (index >= 0 && usage.isBroadRef() && slotType is GroundedType && slotType.isPrimitiveSlot()) {
+        loadPrimitiveSlotAsGrounded(mv, slotType, index + offset)
         return
     }
 

@@ -1,6 +1,7 @@
 package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.backend.utils.toClasses
+import net.singularity.jetta.runtime.JettaProgram
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -67,5 +68,33 @@ class MultivaluedInLetTest : GeneratorTestBase() {
             net.singularity.jetta.compiler.frontend.ir.Atom::class.java, returnType,
             "wrap returns the value it was given, not a bag"
         )
+    }
+
+    /**
+     * One `let` deeper, and run rather than inspected: the outer `let` becomes a lambda whose
+     * parameter slot is `Int` (bound to `(+ $n 1)`) while the `$a`s inside the `superpose` tuple
+     * resolved to `Atom`. Reading an int slot with `ALOAD` is not a wrong value but an unverifiable
+     * method, so this could not load until `generateLoadVar` learned to box-and-wrap a primitive
+     * slot for a broad-reference use site.
+     */
+    @Test
+    fun `a bag over a numeric binding one let deeper`() {
+        compile(
+            "MarkThroughNestedLet.metta",
+            """
+                (: pick3 (-> Number Number))
+                (= (pick3 ${'$'}n)
+                  (let ${'$'}a (+ ${'$'}n 1)
+                    (let ${'$'}x (superpose (${'$'}a ${'$'}a)) ${'$'}x)))
+                !(assertEqualToResult (pick3 1) (2 2))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { registerExternals(it) }.let { (result, messageCollector) ->
+            messageCollector.list().forEach(::println)
+            assertTrue(messageCollector.list().isEmpty(), "no diagnostics expected")
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("MarkThroughNestedLet")
+            classes["MarkThroughNestedLet"]!!.getMethod("__main").invoke(null)
+        }
     }
 }
