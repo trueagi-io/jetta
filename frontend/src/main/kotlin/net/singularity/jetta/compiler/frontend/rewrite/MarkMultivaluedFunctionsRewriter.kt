@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
+import net.singularity.jetta.compiler.frontend.ir.Lambda
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
@@ -51,6 +52,18 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                 // consume the whole bag of results of their arguments, so a multivalued
                 // call inside them must NOT propagate multivaluedness to the caller.
                 if ((atom.atoms[0] as? Symbol)?.name in BARRIER_FUNCTIONS) return false
+                // A `let` is an IMMEDIATELY APPLIED lambda by the time this pass runs (LetRewriter
+                // and LambdaRewriter are both upstream), so a multivalued call in a `let` BODY sat
+                // in a position this pass never visited — it descended into arguments only. The
+                // enclosing function was then left scalar while its body produced a bag, and the
+                // descriptor and the body disagreed: `areturn` of a `List` against a declared
+                // `Expression` return, which is a VerifyError at class load. The reference
+                // `stdlib.metta` is written almost entirely in `chain`, i.e. in `let`s.
+                //
+                // Only a lambda in HEAD position is followed. A lambda in an argument slot is a
+                // VALUE — the enclosing function returns the function object, and whatever bag its
+                // body would produce belongs to whoever eventually applies it.
+                (atom.atoms[0] as? Lambda)?.let { if (checkAtom(it.body, func)) return true }
                 (atom.atoms[0] as? Symbol)?.let {
                     functions[it.name]?.let { def ->
                         if (def.isMultivalued()) {
