@@ -308,15 +308,16 @@ fun Lambda.capturedVariables(): List<Variable> {
                 }
             }
 
-            is Lambda -> {
-                when (val body = atom.body) {
-                    is Expression -> body.atoms.forEach {
-                        collect(params + atom.params, it)
-                    }
-
-                    else -> collect(params, atom.body)
-                }
-            }
+            // A nested lambda's OWN parameters are bound inside it, so they are not captures of
+            // the enclosing one. Both shapes of body have to say so: the non-Expression case used
+            // to pass `params` alone, which made `(\ ($b) $b)` — precisely what the innermost
+            // `let` of a nested `let` collapses to — report `$b` as captured by the lambda around
+            // it. The enclosing method then had a phantom leading capture parameter, and at the
+            // creation site `generateLoadVar` could not find `$b` among its own parameters and
+            // pushed the IR `Variable` object instead: "Type 'Variable' is not assignable to
+            // integer" at the `invokedynamic`, at class load. Nested `let`/`chain` — how the whole
+            // reference `stdlib.metta` is written — could not compile because of it.
+            is Lambda -> collect(params + atom.params, atom.body)
 
             else -> {}
         }
