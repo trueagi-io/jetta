@@ -544,6 +544,14 @@ class FunctionRewriter(
     /** hyperon's minimal-MeTTa sequencing primitive; rewritten onto `let` (see below). */
     private val CHAIN_KEYWORD = "chain"
 
+    /**
+     * minimal MeTTa's explicit evaluation bracket. `(function X)` reduces X one step at a time
+     * until it becomes `(return $v)`, and yields that `$v`. Both halves are rewritten away — see
+     * the identity rewrite below.
+     */
+    private val FUNCTION_KEYWORD = "function"
+    private val RETURN_KEYWORD = "return"
+
     private val specialAliases = mapOf(
         "%" to Predefined.MOD
     )
@@ -990,6 +998,24 @@ class FunctionRewriter(
                     position = expression.position,
                 )
             )
+        }
+        // `function`/`return` are minimal MeTTa's evaluation bracket: `(function X)` reduces X one
+        // step at a time until it becomes `(return $v)`, then yields `$v`. The bracket exists to
+        // express WHEN to stop stepping — and JeTTa does not step: wherever it evaluates, it
+        // evaluates to a value. So both halves carry no information here and become the identity,
+        // leaving the `chain`s inside them as the `let`s they already rewrite to. This is what
+        // turns the reference `stdlib.metta`'s bodies from data (`function` was an unknown head,
+        // so the whole body compiled as a constructor) into ordinary compiled code.
+        //
+        // Same trade as `chain`, and the same divergence: identical answers whenever the body
+        // reaches its `return` — every use in that file — and different for a program that uses
+        // the bracket for stepwise control, which is the point of it in minimal MeTTa. As with
+        // `chain`, a user-defined function of the same name is shadowed by this rewrite; hyperon
+        // reserves both names too.
+        if (func is Symbol && expression.atoms.size == 2 &&
+            (func.name == FUNCTION_KEYWORD || func.name == RETURN_KEYWORD)
+        ) {
+            return rewriteAtom(expression.atoms[1])
         }
         if (func is Symbol && func.name == "case" && expression.atoms.size == 3) return rewriteCaseCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
