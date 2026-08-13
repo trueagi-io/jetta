@@ -1487,8 +1487,14 @@ class Context private constructor(
                             expression.type = GroundedType.ATOM
                             expression.arguments().forEach { resolveAtom(it, scope) }
                         } else {
-                            messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
-                            // Report, but still treat the application as the inert data it is and
+                            // An unresolved head is DATA. The reference interpreter has no notion
+                            // of an unresolved symbol at all — a head with no `=` rule leaves the
+                            // application inert — so this is reported only where JeTTa cannot
+                            // REPRESENT that: see [demandsGroundedResult].
+                            if (demandsGroundedResult(scope)) {
+                                messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                            }
+                            // Reported or not, treat the application as the inert data it is and
                             // resolve the reducible sub-calls in its ARGUMENTS: an unknown head does
                             // not suppress reduction of what it is applied to (c1 `(ln (+ 2 2))` →
                             // `(ln 4)`). Without this the arguments were left untyped, so codegen
@@ -1888,6 +1894,36 @@ class Context private constructor(
         systemFunctions[name] == null &&
             resolvedFunctions[name] != null &&
             primaryOwner(name) == null
+
+    /**
+     * Does the result of the enclosing scope have to be a CONCRETE JVM value, one that an
+     * inert Expression cannot stand in for?
+     *
+     * This gates the "can not resolve symbol" diagnostic on an unresolved application head.
+     * A head with no definition is data in MeTTa — nothing to report — but a declared `Int`
+     * return is an `ireturn`, and handing it a quoted Expression means a VerifyError at load
+     * time instead of a wrong answer. So the message survives exactly where the program is
+     * unrepresentable rather than merely symbolic: `(: bar (-> Int)) (= (bar) (foo 1 2))`
+     * keeps it, while `(: undefined-doc-function-type (-> Expression Type))` returning the
+     * data tuple `(%Undefined%)` (reference `stdlib.metta`) does not.
+     *
+     * The condition this replaces keyed on the enclosing function's PARAMS — some param typed
+     * `Atom`, or a `Match` body. That rested on type erasure rather than on meaning: `Number`,
+     * `Type` and user types are absent from [GroundedType] and erase to `ATOM`, so they were
+     * silently accepted, while `Expression`, `Bool` and `String` — no less data-carrying —
+     * were not. An untyped or `Atom`/`Any`/`Expression`-returning scope is unaffected either
+     * way; it is representable, so it stays silent.
+     */
+    private fun demandsGroundedResult(scope: Scope): Boolean =
+        when (scope.functionDefinition.returnType) {
+            GroundedType.INT,
+            GroundedType.LONG,
+            GroundedType.DOUBLE,
+            GroundedType.BOOLEAN,
+            GroundedType.STRING -> true
+
+            else -> false
+        }
 
     private object Visibility {
         const val SELF = "&self"
