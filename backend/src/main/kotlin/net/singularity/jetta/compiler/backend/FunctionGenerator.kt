@@ -1484,7 +1484,40 @@ open class FunctionGenerator(
             generateGroundedValueArg(mv, arg, argType)
         } else {
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
+            narrowArgumentToExpression(mv, jvmSymbol, index, argType)
         }
+    }
+
+    /**
+     * An argument that is statically WIDER than an `Expression` parameter needs the cast the
+     * verifier will not infer for us.
+     *
+     * The value on the stack really is an `Expression` at runtime — a destructured pattern
+     * binding, a quoted term, an `Atom`-returning call — but its static type is the erased `Atom`
+     * (or `Object`), and `INVOKESTATIC` against a `…/ir/Expression;` parameter is then rejected at
+     * CLASS-LOAD time: nothing about it is recoverable later, the whole class fails verification.
+     * That is what the reference `stdlib.metta` hit — `switch-internal`, declared
+     * `(-> Atom Expression Atom)`, calls `(switch-minimal $atom $tail)` with the `$tail` it
+     * destructured out of `(($pattern $template) $tail)`, which is an `Atom` local.
+     *
+     * Only the widening direction is bridged here, and only for `Expression`: the cast is a
+     * statement that the value already has that type and the descriptor knows it better than the
+     * inferred type does. A grounded VALUE (primitive or String) reaching the same parameter is a
+     * genuine type error rather than an erasure artefact — `CHECKCAST` cannot rescue an `int` on
+     * the stack — so it is left to fail as before, and a `SeqType` (a `List` of results) is a
+     * different bridge entirely.
+     */
+    private fun narrowArgumentToExpression(
+        mv: LocalVariablesSorter,
+        jvmSymbol: JvmMethod,
+        index: Int,
+        argType: Atom?
+    ) {
+        if (!jvmSymbol.isParameterExpressionType(index)) return
+        if (argType == GroundedType.EXPRESSION) return
+        if (argType is SeqType) return
+        if (argType is GroundedType && argType.isGroundedValue()) return
+        mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Expression")
     }
 
     /**

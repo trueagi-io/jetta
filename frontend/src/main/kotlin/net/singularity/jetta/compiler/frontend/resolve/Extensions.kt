@@ -157,6 +157,9 @@ fun JvmMethod.isParameterInertAtom(index: Int) = index in inertAtomParams
 fun JvmMethod.isParameterBooleanType(index: Int) =
     descriptor.parseDescriptor()[index] == "Z"
 
+fun JvmMethod.isParameterExpressionType(index: Int) =
+    descriptor.parseDescriptor()[index] == "Lnet/singularity/jetta/compiler/frontend/ir/Expression;"
+
 private fun toType(jvmType: String): Atom =
     when (jvmType) {
         "I" -> GroundedType.INT
