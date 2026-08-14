@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
+import net.singularity.jetta.compiler.frontend.resolve.messages.ShadowedByBuiltinMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LowerAssertExpressionsRewriter
@@ -896,7 +897,34 @@ class Context private constructor(
         resolveSource(postprocessed)
         validateExecutableCalls(postprocessed)
         defaultUntypedToAtom(postprocessed)
+        markDefinitionsShadowedByRuntime(postprocessed)
         return postprocessed
+    }
+
+    /**
+     * A `=` rule whose name JeTTa grounds natively can never be reached as a CALL: [resolve]
+     * consults [systemFunctions] first, so every call site — in this module and in any importer —
+     * links to the builtin. Compiling a method for it anyway is dead code that can still fail
+     * verification, and verification is never local: one bad method takes the whole class with it.
+     *
+     * The reference `stdlib.metta` redefines a dozen such names on top of hyperon's Rust primitives
+     * (`cdr-atom`, `car-atom`, `case`, `collapse`, `empty`, `quote`, `nop`, `assertEqual`, `help!`,
+     * …), and one of them cannot be represented at all: `help!` is written there at two arities,
+     * which merge into a single method whose body loads a parameter its descriptor does not declare.
+     *
+     * Marking them is not new policy — the resolver has always preferred the builtin, so no call
+     * site changes meaning. The rule itself still reaches the SPACE as an ordinary `(= …)` atom, so
+     * the reflective path (`match &self (= …)`, runtime dispatch) sees exactly what it saw before.
+     * Only the unreachable JVM method disappears. Reported as a WARNING, because a user who writes
+     * such a rule expecting it to be called deserves to know it will not be.
+     */
+    private fun markDefinitionsShadowedByRuntime(source: ParsedSource) {
+        source.code.filterIsInstance<FunctionDefinition>().forEach {
+            if (systemFunctions[it.name] != null && !it.isShadowedByRuntime()) {
+                it.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
+                messageCollector.add(ShadowedByBuiltinMessage(it.name, it.position))
+            }
+        }
     }
 
     /**

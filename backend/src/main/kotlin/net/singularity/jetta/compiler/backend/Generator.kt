@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ParsedSource
 import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.frontend.resolve.getJvmDescriptor
+import net.singularity.jetta.compiler.frontend.resolve.isShadowedByRuntime
 import net.singularity.jetta.compiler.frontend.resolve.getSignature
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
@@ -80,7 +81,11 @@ class Generator(
 
         source.code.forEach { node ->
             when (node) {
-                is FunctionDefinition -> {
+                // A definition shadowed by a builtin of the same name is not emitted: no call site
+                // can link to it (resolution prefers the builtin), and an unreachable method can
+                // still fail verification — which kills the whole class. The rule stays in the
+                // space, so the reflective path is unchanged. See Context.markDefinitionsShadowedByRuntime.
+                is FunctionDefinition -> if (node.isShadowedByRuntime()) Unit else {
                     val access = Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC
                     val desc = node.getJvmDescriptor()
                     // A memoized function is emitted as a wrapper `name` (memo cache keyed on
@@ -309,6 +314,9 @@ class Generator(
         val result = mutableMapOf<String, Lambda>()
         source.code.forEach {
             val def = (it as FunctionDefinition)
+            // Skip the bodies of shadowed definitions — their lambdas would be emitted as dead
+            // methods that can fail verification on their own.
+            if (def.isShadowedByRuntime()) return@forEach
             when (val body = def.body) {
                 is Expression -> findLambdas(body, result)
                 is Match -> {

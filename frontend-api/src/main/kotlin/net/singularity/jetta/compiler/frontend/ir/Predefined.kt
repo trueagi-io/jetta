@@ -40,6 +40,13 @@ object PredefinedAtoms {
     val FLAT_MAP_ = Special(Predefined.FLAT_MAP_)
     val MULTIVALUED = Symbol("multivalued")
     val EXPORT = Symbol("export")
+
+    /**
+     * Marks a `=` rule whose name JeTTa grounds natively: resolution prefers the builtin, so the
+     * definition is unreachable as a CALL and codegen emits no method for it. The rule itself is
+     * still a space atom, so the reflective path is unaffected.
+     */
+    val SHADOWED_BY_RUNTIME = Symbol("shadowed-by-runtime")
     val QUOTE = Special(Predefined.QUOTE)
 }
 
