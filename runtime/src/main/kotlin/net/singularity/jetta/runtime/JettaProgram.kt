@@ -751,6 +751,53 @@ open class JettaProgram {
             return out
         }
 
+        /**
+         * `unifyMatch <names> <a> <b> <then> <else>` — the runtime of minimal MeTTa's
+         * `(unify $a $b $then $else)`, lowered by `FunctionRewriter`. [a] and [b] arrive as
+         * UNREDUCED data (both are meta-type `Atom` in hyperon too) and are unified
+         * symmetrically — either side may be the pattern, which is how the reference stdlib
+         * writes it (`(unify $list ($head $tail) …)` and `(unify ($head $tail) $ht …)` both
+         * occur). On success the bindings are read back and passed positionally to [thenBranch];
+         * on failure [elseBranch] (0-arg) is applied. Both branches are lambdas so that only the
+         * taken one is evaluated.
+         *
+         * [names] carries the [thenBranch] parameter names as an `Expression` of `Symbol`s, in
+         * the lambda's parameter order. They cannot be recovered from [a]/[b] at runtime: codegen
+         * resolves an in-scope pattern variable to its VALUE (see `generateQuote`'s `Variable`
+         * arm), and that value may itself contain variables — the reference `let*` unifies
+         * `($pattern $atom)` against a pair that still holds the user's `$v1`. Collecting names
+         * from the atoms, as [letMatch] can afford to, would pick those up and shift every
+         * positional argument. Symbols rather than Variables for the same reason in reverse: a
+         * quoted `Variable` whose name matches an enclosing slot would be emitted as that slot's
+         * value, losing the name.
+         */
+        @JvmStatic
+        fun unifyMatch(
+            names: Atom,
+            a: Atom,
+            b: Atom,
+            thenBranch: JettaFunction,
+            elseBranch: JettaFunction,
+        ): List<Atom> {
+            val left = if (a is BoundAtom) a.atom else a
+            val right = if (b is BoundAtom) b.atom else b
+            val s = HashMap<String, Atom>()
+            if (!TypeEngine.unify(left, right, s)) return branchResult(elseBranch.apply(emptyArray()))
+            val params = (if (names is BoundAtom) names.atom else names).let { n ->
+                (n as? Expression)?.atoms?.mapNotNull { (it as? Symbol)?.name } ?: emptyList()
+            }
+            val args = Array<Any?>(params.size) { i -> TypeEngine.resolve(Variable(params[i]), s) }
+            return branchResult(thenBranch.apply(args))
+        }
+
+        /** Normalise a branch lambda's result to the `List<Atom>` bag every JeTTa result is shaped as. */
+        private fun branchResult(res: Any?): List<Atom> = when (res) {
+            is List<*> -> res.mapNotNull { it as? Atom }
+            is Atom -> listOf(res)
+            null -> emptyList()
+            else -> listOf(Grounded(res))
+        }
+
         /** Collect the variable names in [a] in document order (deduplicated by [out]'s type). */
         private fun collectVarNames(a: Atom, out: MutableSet<String>) {
             when (a) {

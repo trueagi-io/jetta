@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -36,7 +37,15 @@ class ExpressionReturnCoercionTest : GeneratorTestBase() {
         }
     }
 
-    /** The `cdr-atom` shape: a `let` over a grounded op, then an unresolved head as the result. */
+    /**
+     * The `cdr-atom` shape: a `let` over a grounded op, then a `unify` as the result.
+     *
+     * `unify` used to be an unknown head here, so the whole body compiled as inert DATA — which is
+     * what made this the return-coercion case. Now that `unify` is lowered onto the multivalued
+     * `unifyMatch` helper the body is a real call and the function returns a result BAG, so the
+     * `Expression`-return cast this file exists for is pinned by the first test alone. What this one
+     * still pins is the reference shape compiling and computing the tail end to end.
+     */
     @Test
     fun `the reference cdr-atom shape returns through a let`() {
         val code = """
@@ -45,10 +54,13 @@ class ExpressionReturnCoercionTest : GeneratorTestBase() {
               (let _ht (decons-atom _atom) (unify (_x _tail) _ht _tail (Error _atom "empty"))))
             (= (caller) (mycdr (A B)))
         """.trimIndent().d()
-        compile("ExpressionReturnCdr.metta", code) { registerExternals(it) }.let { (result, mc) ->
-            assertTrue(mc.list().isEmpty(), "no diagnostics expected: ${mc.list()}")
-            val out = result[0].getClass().getMethod("caller").invoke(null)
-            assertTrue(out is Expression, "expected an Expression, got ${out?.javaClass}")
-        }
+        compile("ExpressionReturnCdr.metta", code, mapImpl, flatMapImpl) { registerExternals(it) }
+            .let { (result, mc) ->
+                assertTrue(mc.list().isEmpty(), "no diagnostics expected: ${mc.list()}")
+                val out = result[0].getClass().getMethod("caller").invoke(null)
+                val bag = out as? List<*> ?: error("expected a result bag, got ${out?.javaClass}")
+                assertEquals(1, bag.size, "expected one result, got $bag")
+                assertEquals("(B)", bag[0].toString(), "expected the tail (B), got ${bag[0]}")
+            }
     }
 }

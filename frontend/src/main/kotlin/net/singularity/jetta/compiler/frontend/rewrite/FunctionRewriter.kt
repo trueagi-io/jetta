@@ -552,6 +552,14 @@ class FunctionRewriter(
     private val FUNCTION_KEYWORD = "function"
     private val RETURN_KEYWORD = "return"
 
+    /**
+     * minimal MeTTa's unification branch, lowered onto the `unifyMatch` runtime helper by
+     * [lowerUnify] — the one primitive here that is NOT rewritten away, because a failed match
+     * has to reach an else-branch.
+     */
+    private val UNIFY_KEYWORD = "unify"
+    private val UNIFY_MATCH_KEYWORD = "unifyMatch"
+
     private val specialAliases = mapOf(
         "%" to Predefined.MOD
     )
@@ -953,6 +961,145 @@ class FunctionRewriter(
         return Expression(Symbol(LetRewriter.LET_KEYWORD), caseVar, scrutinee, acc)
     }
 
+    /**
+     * Lower minimal MeTTa's `(unify $a $b $then $else)` onto the runtime [unifyMatch] helper —
+     * `(unifyMatch (names…) $a $b (\ (names…) $then) (\ () $else))`.
+     *
+     * `unify` is a four-way form: the two atoms are unified SYMMETRICALLY (the reference stdlib
+     * writes the pattern on either side — `(unify $list ($head $tail) …)` and
+     * `(unify ($head $tail) $ht …)` both occur), and only the taken branch is evaluated, hence
+     * two lambdas rather than two arguments.
+     *
+     * The whole difficulty is the then-branch's PARAMETER LIST: the variables the unification
+     * binds. Codegen already draws the line for the atoms themselves — inside an inert argument
+     * `generateQuote` loads an in-scope variable's VALUE and emits a genuinely free one as
+     * `Variable` data — so a pattern built from bound values (hyperon's `if-decons-expr`, whose
+     * `$head`/`$tail` are meta-type `Variable` PARAMETERS) needs nothing special. What codegen
+     * cannot decide is which names the branch body must receive positionally: exactly the ones
+     * NOT already in scope, since an in-scope name must stay a capture of the enclosing slot.
+     * Listing it as a parameter instead would shadow that slot with an unbound `Variable`.
+     *
+     * Scope is therefore threaded explicitly here, top-down, before the ordinary rewrite: an
+     * over-approximating pre-pass cannot work, because a `unify`'s own pattern variables are
+     * binders for its then-branch while being ordinary in-scope values for a `unify` NESTED in
+     * that branch — which is precisely how the reference `let*` is written.
+     *
+     * DIVERGENCE, deliberate: the then-branch is a compiled lambda, so it is EVALUATED with the
+     * bindings but not SUBSTITUTED into. That is invisible unless the branch is a runtime-built
+     * template that shares variable names with the unified pair (hyperon's `switch-internal`
+     * passes `$template` through). Substituting into a template and then evaluating it is the
+     * runtime-compilation path, not this one.
+     */
+    private fun lowerUnify(expression: Expression, scope: Set<String>): Atom {
+        val a = expression.atoms[1]
+        val b = expression.atoms[2]
+        val thenBranch = expression.atoms[3]
+        val elseBranch = expression.atoms[4]
+        val bound = (varNamesIn(a) + varNamesIn(b)).distinct().filter { it !in scope }
+        val inner = scope + bound
+        val params = Expression(bound.map { Variable(it) }, position = expression.position)
+        return Expression(
+            listOf(
+                Symbol(UNIFY_MATCH_KEYWORD, position = expression.position),
+                // The parameter NAMES, as Symbols: the runtime helper needs them to pass the
+                // bindings positionally, and a quoted Symbol never collapses to a slot the way a
+                // quoted Variable would. See JettaProgram.unifyMatch.
+                Expression(bound.map { Symbol(it) }, position = expression.position),
+                lowerUnifyForms(a, scope),
+                lowerUnifyForms(b, scope),
+                Expression(
+                    listOf(Special(Predefined.LAMBDA), params, lowerUnifyForms(thenBranch, inner)),
+                    position = thenBranch.position,
+                ),
+                Expression(
+                    listOf(
+                        Special(Predefined.LAMBDA),
+                        Expression(emptyList(), position = elseBranch.position),
+                        lowerUnifyForms(elseBranch, scope),
+                    ),
+                    position = elseBranch.position,
+                ),
+            ),
+            position = expression.position,
+        )
+    }
+
+    /** Variable names in [atom], in document order. */
+    private fun varNamesIn(atom: Atom): List<String> {
+        val out = mutableListOf<String>()
+        fun go(a: Atom) {
+            when (a) {
+                is Variable -> out.add(a.name)
+                is Expression -> a.atoms.forEach(::go)
+                else -> {}
+            }
+        }
+        go(atom)
+        return out.distinct()
+    }
+
+    /**
+     * Rewrite every `unify` form in [atom] with [scope] carrying the variable names bound around
+     * it. Binder forms (`let`, `let*`, `chain`, a lambda, and `unify`'s own then-branch) extend
+     * the scope for their body only; `quote`d data is left untouched.
+     */
+    private fun lowerUnifyForms(atom: Atom, scope: Set<String>): Atom {
+        if (atom !is Expression || atom.atoms.isEmpty()) return atom
+        val head = atom.atoms[0]
+        val name = (head as? Symbol)?.name
+        if (head == PredefinedAtoms.QUOTE || name == Predefined.QUOTE) return atom
+        if (name == UNIFY_KEYWORD && atom.atoms.size == 5) return lowerUnify(atom, scope)
+        if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    atom.atoms[1],
+                    lowerUnifyForms(atom.atoms[2], scope),
+                    lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[1])),
+                )
+            )
+        }
+        // `(chain X $v T)` binds `$v` in T only. Handled here as written, before the rewrite onto
+        // `let` further down, so a `unify` in either position sees the right scope.
+        if (name == CHAIN_KEYWORD && atom.atoms.size == 4) {
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    lowerUnifyForms(atom.atoms[1], scope),
+                    atom.atoms[2],
+                    lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[2])),
+                )
+            )
+        }
+        if (name == LetRewriter.LETSTAR_KEYWORD && atom.atoms.size == 3) {
+            val bindings = atom.atoms[1] as? Expression ?: return atom
+            var acc = scope
+            val rewrittenBindings = bindings.atoms.map { pair ->
+                if (pair !is Expression || pair.atoms.size != 2) return@map pair
+                val value = lowerUnifyForms(pair.atoms[1], acc)
+                acc = acc + varNamesIn(pair.atoms[0])
+                pair.copy(atoms = listOf(pair.atoms[0], value))
+            }
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    bindings.copy(atoms = rewrittenBindings),
+                    lowerUnifyForms(atom.atoms[2], acc),
+                )
+            )
+        }
+        if (head is Special && head.value == Predefined.LAMBDA && atom.atoms.size == 3) {
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    atom.atoms[1],
+                    lowerUnifyForms(atom.atoms[2], scope + varNamesIn(atom.atoms[1])),
+                )
+            )
+        }
+        return atom.copy(atoms = atom.atoms.map { lowerUnifyForms(it, scope) })
+    }
+
     private fun rewriteAssertionCall(expression: Expression): Expression {
         if (expression.atoms.size != 3) return expression
         return expression.copy(
@@ -1062,7 +1209,11 @@ class FunctionRewriter(
                     // it (else -1 = always-visible, no guard). `factCount` here == the storeIndex
                     // this fact will get (addAsFact ++s it just below), matching the run watermark.
                     val ordinal = if (runs.isNotEmpty()) factCount else -1
-                    list.add(Pattern(pattern, rewriteAtom(expression.atoms[2]), ordinal))
+                    // `unify` is lowered in its own top-down pass first: it is the one form whose
+                    // rewrite depends on which variables are already in scope, and the clause head
+                    // is what seeds that scope. See [lowerUnify].
+                    val body = lowerUnifyForms(expression.atoms[2], varNamesIn(pattern).toSet())
+                    list.add(Pattern(pattern, rewriteAtom(body), ordinal))
                 }
                 // Every `(= lhs rhs)` is ALSO an equality fact in the space, whether or
                 // not its head compiles to a JVM function. This is the reference
@@ -1119,7 +1270,8 @@ class FunctionRewriter(
         // Snapshot the facts-declared-above count BEFORE rewriting the run body (rewriting never
         // adds facts, but keep the read at the source-order point for clarity).
         runWatermarks.add(factCount)
-        runs.add(rewriteAtom(run.expression))
+        // A run has no enclosing clause, so every variable in a `unify` it contains is free.
+        runs.add(rewriteAtom(lowerUnifyForms(run.expression, emptySet())))
     }
 
     /**

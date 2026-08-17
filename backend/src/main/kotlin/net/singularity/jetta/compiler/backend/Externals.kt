@@ -498,4 +498,29 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `unifyMatch` — the runtime of minimal MeTTa's `(unify $a $b $then $else)`, emitted by
+    // FunctionRewriter. Args 0-2 (the then-branch parameter names, and the two atoms to unify)
+    // are INERT: hyperon declares `unify` as `(-> Atom Atom Atom Atom %Undefined%)`, so neither
+    // side is reduced, and either side may be the pattern. Args 3-4 are lambdas so only the taken
+    // branch is evaluated. Multivalued (`SeqType`) like `letMatch`, so the branch result composes
+    // with the surrounding result bag. See JettaProgram.unifyMatch.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "unifyMatch",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;",
+                inertAtomParams = setOf(0, 1, 2)
+            ),
+            ArrowType(
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                SeqType(GroundedType.ATOM),
+            ),
+            true
+        )
+    )
 }

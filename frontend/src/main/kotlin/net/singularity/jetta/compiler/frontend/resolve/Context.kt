@@ -1308,7 +1308,14 @@ class Context private constructor(
                 atom.arrowType = atom.arrowType ?: suggestedType as? ArrowType
                 atom.type = atom.arrowType ?: suggestedType
                 atom.params.forEachIndexed { index, variable ->
-                    variable.type = atom.arrowType?.types?.get(index)
+                    // A lambda can legitimately have MORE parameters than its suggested arrow type
+                    // declares: the branch lambdas of `letMatch` / `unifyMatch` take one argument
+                    // per variable in the PATTERN, a count no system-function declaration can
+                    // state. Those parameters carry bindings read out of a match, so `Atom` is
+                    // their type. Indexing blindly threw ArrayIndexOutOfBounds and killed the
+                    // whole compile (a 4-variable `unify` pattern is enough — the reference
+                    // stdlib's `get-doc` uses one).
+                    variable.type = atom.arrowType?.types?.getOrNull(index) ?: GroundedType.ATOM
                 }
                 val lambdaTypeInfo = createLambdaTypeInfo(scope, atom)
                 resolveAtom(atom.body, lambdaTypeInfo)
