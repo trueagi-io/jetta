@@ -483,7 +483,16 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "letMatch",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;"
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;",
+                // The pattern is DATA and must reach the matcher exactly as written. Without this
+                // it took the ordinary `generateAtom` path, where a VARIABLE-HEADED pattern —
+                // `($head $tail)`, the dominant shape in the reference stdlib — is compiled as a
+                // var-head DISPATCH call (`JettaCallSite`) instead of an inert Expression: the
+                // "pattern" was dispatched at runtime and `letMatch` unified against its result,
+                // so every such match silently produced an empty bag. A symbol-headed pattern
+                // (`(P $a $b)`) escaped only because an unresolved Symbol head already lands on
+                // the data-constructor path.
+                inertAtomParams = setOf(0)
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ANY, ArrowType(GroundedType.ATOM, GroundedType.ATOM), SeqType(GroundedType.ATOM)),
             true
