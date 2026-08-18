@@ -35,9 +35,16 @@ fun registerExternals(context: Context) {
         ResolvedSymbol(
             JvmMethod(
                 owner = RuntimeNames.IO,
-                name = "println",
-                descriptor = "(Ljava/lang/Object;)V"
-            ), null, false
+                // The reference interpreter's name, bang included — hyperon's stdlib documents
+                // `println!` and nothing called `println`. Registered under the bare name, every
+                // hyperon-written `(println! …)` was an unresolved head and compiled as inert data:
+                // silent, undiagnosed, exit 0. See IO.
+                name = "println!",
+                // Returns the unit expression `()`, not void: the reference stdlib sequences prints
+                // as `(let () (println! …) NEXT)`, and a void result has nothing to hand a value
+                // position (`boxIfNeeded` met `Unit` and crashed the compiler).
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ), ArrowType(GroundedType.ANY, GroundedType.ATOM), false
         )
     )
     context.addSystemFunction(
@@ -87,6 +94,20 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "matchReduce",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `matchReduceDeep` — as above, but each result goes through the FULL evaluator. The
+    // rewriter routes a `match` whose TEMPLATE is a bare VARIABLE here: the value bound to it
+    // is arbitrary, and for the `(= <head> $x)` query it is a rule BODY that hyperon evaluates.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchReduceDeep",
                 descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
@@ -156,9 +177,14 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "add-atom",
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                // The space is Object, like `match`'s: it can arrive INDIRECTLY, as the value of a
+                // variable rather than a literal `&name` lowered to a String. `JettaProgram`
+                // resolves either shape through `resolveSpaceName`. The reference stdlib passes it
+                // that way throughout — `(= (add-reduct $dst $atom) (add-atom $dst $atom))` — and a
+                // `String` parameter rejected the `Atom` at CLASS LOAD, taking the class with it.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
         )
     )
@@ -167,9 +193,10 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "remove-atom",
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                // Object space — see `add-atom` above.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
         )
     )
@@ -178,9 +205,10 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "get-atoms",
-                descriptor = "(Ljava/lang/String;)Ljava/util/List;"
+                // Object space — see `add-atom` above.
+                descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
             true
         )
     )
@@ -211,6 +239,32 @@ fun registerExternals(context: Context) {
                 descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `decons-atom` / `cons-atom` — the split/prepend pair the reference stdlib builds its list
+    // operations on (`car-atom`, `cdr-atom`, `foldl-atom`, … are all defined in MeTTa in terms of
+    // `decons-atom`). `decons-atom` yields the TWO-element `(head (tail…))` shape, not the flat
+    // expression, which is what makes the two exact inverses.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "decons-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "cons-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
             false
         )
     )
@@ -304,6 +358,20 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `nop` — run the argument, discard its value, yield `()`. ANY param so the argument is
+    // REDUCED (the effect happens); the unit result is what makes `!(nop (change-state! …))` a
+    // unit-valued top-level run in the hyperon test scripts.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "nop",
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM),
+            false
+        )
+    )
     // Mutable state: new-state creates a cell, bind! names it via a token, get-state reads,
     // change-state! writes. Value/token args are ATOM (stored/looked-up as data, unreduced);
     // bind!'s value arg is ANY so `(bind! s (new-state x))` reduces the new-state first.
@@ -345,9 +413,13 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "change-state!",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            // The new value is ANY, so it is REDUCED before being stored: hyperon's signature is
+            // `(-> (StateMonad $t) $t (StateMonad $t))` — the second parameter is a value, not a
+            // meta-Atom. With ATOM here `(change-state! $x (+ (get-state $x) 1))` stored the
+            // unevaluated expression, which (since it mentions `$x`) made the cell contain itself.
+            ArrowType(GroundedType.ATOM, GroundedType.ANY, GroundedType.ATOM),
             false
         )
     )
@@ -398,9 +470,12 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/functions/JettaJit",
                 name = "eval",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                // Object, not Atom: the argument may arrive as an already-evaluated result BAG,
+                // which is the reference stdlib's shape throughout (`(eval (get-metatype …))`).
+                // `JettaJit.eval` passes such a bag through and compiles only genuine data.
+                descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
             true
         )
     )
@@ -425,9 +500,110 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "letMatch",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;"
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Ljava/lang/Object;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;",
+                // The pattern is DATA and must reach the matcher exactly as written. Without this
+                // it took the ordinary `generateAtom` path, where a VARIABLE-HEADED pattern —
+                // `($head $tail)`, the dominant shape in the reference stdlib — is compiled as a
+                // var-head DISPATCH call (`JettaCallSite`) instead of an inert Expression: the
+                // "pattern" was dispatched at runtime and `letMatch` unified against its result,
+                // so every such match silently produced an empty bag. A symbol-headed pattern
+                // (`(P $a $b)`) escaped only because an unresolved Symbol head already lands on
+                // the data-constructor path.
+                inertAtomParams = setOf(0)
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ANY, ArrowType(GroundedType.ATOM, GroundedType.ATOM), SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `sealed` — rename every variable in the second argument except those listed in the first,
+    // giving a template locally scoped variables. Both arguments INERT: the operation is on the
+    // terms as written. `atom-subst` — plain substitution; written natively because the reference
+    // definition relies on `chain` binding the variable that a VALUE names, which our `chain`→`let`
+    // lowering cannot express, so this shadows that rule. Both scalar.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "sealed",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "atom-subst",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0, 1, 2)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `get-metatype` — which of MeTTa's four kinds of atom the argument is (Symbol / Variable /
+    // Expression / Grounded), as opposed to `get-type`, which reads the `:` declarations. The
+    // argument is INERT so `(get-metatype (+ 1 2))` is `Expression`, not the metatype of `3`.
+    // Scalar: exactly one metatype per atom.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-metatype",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `ifEqual` — the runtime of minimal MeTTa's `(if-equal $a $b $then $else)`, emitted by
+    // FunctionRewriter. Same shape as `unifyMatch` below minus the bindings: the two atoms are
+    // INERT (hyperon does not reduce them either) and compared STRUCTURALLY, and the branches are
+    // lambdas so the untaken one — often an `(Error …)` — is not evaluated.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "ifEqual",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                SeqType(GroundedType.ATOM),
+            ),
+            true
+        )
+    )
+    // `unifyMatch` — the runtime of minimal MeTTa's `(unify $a $b $then $else)`, emitted by
+    // FunctionRewriter. Args 0-2 (the then-branch parameter names, and the two atoms to unify)
+    // are INERT: hyperon declares `unify` as `(-> Atom Atom Atom Atom %Undefined%)`, so neither
+    // side is reduced, and either side may be the pattern. Args 3-4 are lambdas so only the taken
+    // branch is evaluated. Multivalued (`SeqType`) like `letMatch`, so the branch result composes
+    // with the surrounding result bag. See JettaProgram.unifyMatch.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "unifyMatch",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;",
+                inertAtomParams = setOf(0, 1, 2)
+            ),
+            ArrowType(
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                SeqType(GroundedType.ATOM),
+            ),
             true
         )
     )

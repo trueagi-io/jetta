@@ -56,4 +56,104 @@ class StateTokenTest : GeneratorTestBase() {
             !(assertEqual (get-state (ref)) 2)
         """.trimIndent()
     )
+
+    // --- e3_match_states: a state addressed by a RUNTIME-installed rule ---------------------
+
+    /**
+     * The hyperon idiom of addressing a state through a symbolic expression rather than a token:
+     * `add-atom` installs `(= (status (Goal lunch-order)) <cell>)` while the program runs, so
+     * `status` is not a rule head codegen ever saw and `(status (Goal lunch-order))` reaches
+     * `get-state` as inert data. `cellOf` reduces it against the live space.
+     */
+    @Test
+    fun `get-state reduces an expression addressed by a runtime-installed rule`() = run(
+        "StateIndirectGet",
+        $$"""
+            (= (new-goal-status! $goal $status)
+                (let $new-state (new-state $status)
+                     (add-atom &self (= (status (Goal $goal)) $new-state))))
+            !(new-goal-status! lunch-order inactive)
+            !(assertEqual (get-state (status (Goal lunch-order))) inactive)
+        """.trimIndent()
+    )
+
+    /** The same indirection is writable: `change-state!` mutates the cell the rule names. */
+    @Test
+    fun `change-state! writes through a runtime-installed rule`() = run(
+        "StateIndirectChange",
+        $$"""
+            (= (new-goal-status! $goal $status)
+                (let $new-state (new-state $status)
+                     (add-atom &self (= (status (Goal $goal)) $new-state))))
+            !(new-goal-status! lunch-order inactive)
+            !(nop (change-state! (status (Goal lunch-order)) active))
+            !(assertEqual (get-state (status (Goal lunch-order))) active)
+        """.trimIndent()
+    )
+
+    /** `nop` runs its argument for the effect and yields the unit atom `()`. */
+    @Test
+    fun `nop runs its argument and returns unit`() = run(
+        "StateNop",
+        $$"""
+            !(bind! &c (new-state 1))
+            !(assertEqual (nop (change-state! &c 2)) ())
+            !(assertEqual (get-state &c) 2)
+        """.trimIndent()
+    )
+
+    /**
+     * A `bind!` token inside a match PATTERN denotes the atom it names — hyperon substitutes
+     * tokens at parse time, JeTTa at match time. Combined with value-based state equality, a
+     * pattern carrying one state atom finds the space atom carrying a different cell with the
+     * same content.
+     */
+    @Test
+    fun `a bound token inside a match pattern denotes its atom`() = run(
+        "StateTokenInPattern",
+        $$"""
+            (= (new-goal-status! $goal $status)
+                (let $new-state (new-state $status)
+                     (add-atom &self (= (status (Goal $goal)) $new-state))))
+            !(new-goal-status! lunch-order inactive)
+            !(new-goal-status! meditation inactive)
+            !(nop (change-state! (status (Goal lunch-order)) active))
+            !(bind! &state-active (new-state active))
+            !(nop (change-state! &state-active inactive))
+            !(assertEqual
+                (match &self (= (status (Goal $goal)) &state-active) $goal)
+                meditation)
+        """.trimIndent()
+    )
+
+    /** Two distinct cells holding equal values are equal states (hyperon's documented rule). */
+    @Test
+    fun `states with equal content are equal atoms`() = run(
+        "StateValueEquality",
+        $$"""
+            !(bind! &tok (new-state (A B)))
+            (= (get-token) &tok)
+            !(assertEqual (get-token) (new-state (A B)))
+        """.trimIndent()
+    )
+
+    /**
+     * A free variable in a VALUE position resolves against the bindings an earlier sub-expression
+     * installed: reducing the `if` condition binds `$goal`, and the then-branch must yield that
+     * value rather than a free `$goal`.
+     */
+    @Test
+    fun `a free variable in a value position sees a binding made by the condition`() = run(
+        "StateFreeVarValue",
+        $$"""
+            (= (new-goal-status! $goal $status)
+                (let $new-state (new-state $status)
+                     (add-atom &self (= (status (Goal $goal)) $new-state))))
+            !(new-goal-status! lunch-order inactive)
+            !(nop (change-state! (status (Goal lunch-order)) active))
+            !(assertEqual
+                (if (== (get-state (status (Goal $goal))) active) $goal (superpose ()))
+                lunch-order)
+        """.trimIndent()
+    )
 }

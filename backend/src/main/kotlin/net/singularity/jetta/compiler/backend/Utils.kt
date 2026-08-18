@@ -11,6 +11,47 @@ import org.objectweb.asm.commons.LocalVariablesSorter
  * [net.singularity.jetta.compiler.frontend.ir.Atom] reference. Such a value must be boxed
  * and wrapped in a `Grounded` to live inside quoted/Atom-typed data.
  */
+/** A type whose parameter slot physically holds a JVM primitive, so `ALOAD` cannot read it. */
+private fun GroundedType.isPrimitiveSlot(): Boolean = when (this) {
+    GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE, GroundedType.BOOLEAN -> true
+    else -> false
+}
+
+/** The top reference types any Atom fits into — where a primitive has to be wrapped to fit. */
+private fun Atom?.isBroadRef(): Boolean = this == GroundedType.ATOM || this == GroundedType.ANY
+
+/**
+ * Load a primitive parameter slot and leave it on the stack as an `Atom`: box it, then wrap the
+ * box in a `Grounded`. `NEW`/`DUP` come first so the boxed value lands in argument position with
+ * no temporary local. The trailing `null, 2, null` are the synthetic default-argument constructor's
+ * position, mask and marker — the same shape `FunctionGenerator.wrapValueOnStackInGrounded` emits.
+ */
+private fun loadPrimitiveSlotAsGrounded(mv: MethodVisitor, type: GroundedType, slot: Int) {
+    val (loadOpcode, boxOwner, boxDescriptor) = when (type) {
+        GroundedType.INT -> Triple(Opcodes.ILOAD, "java/lang/Integer", "(I)Ljava/lang/Integer;")
+        GroundedType.BOOLEAN -> Triple(Opcodes.ILOAD, "java/lang/Boolean", "(Z)Ljava/lang/Boolean;")
+        GroundedType.LONG -> Triple(Opcodes.LLOAD, "java/lang/Long", "(J)Ljava/lang/Long;")
+        GroundedType.DOUBLE -> Triple(Opcodes.DLOAD, "java/lang/Double", "(D)Ljava/lang/Double;")
+        else -> throw IllegalArgumentException("not a primitive slot: $type")
+    }
+    val grounded = "net/singularity/jetta/compiler/frontend/ir/Grounded"
+    mv.visitTypeInsn(Opcodes.NEW, grounded)
+    mv.visitInsn(Opcodes.DUP)
+    mv.visitVarInsn(loadOpcode, slot)
+    mv.visitMethodInsn(Opcodes.INVOKESTATIC, boxOwner, "valueOf", boxDescriptor, false)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitInsn(Opcodes.ICONST_2)
+    mv.visitInsn(Opcodes.ACONST_NULL)
+    mv.visitMethodInsn(
+        Opcodes.INVOKESPECIAL,
+        grounded,
+        "<init>",
+        "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/SourcePosition;" +
+            "ILkotlin/jvm/internal/DefaultConstructorMarker;)V",
+        false
+    )
+}
+
 fun GroundedType.isGroundedValue(): Boolean = when (this) {
     GroundedType.INT, GroundedType.LONG, GroundedType.DOUBLE,
     GroundedType.BOOLEAN, GroundedType.STRING -> true
@@ -102,6 +143,20 @@ fun generateLoadVar(
         mv.visitTypeInsn(Opcodes.CHECKCAST, "net/singularity/jetta/compiler/frontend/ir/Expression")
         return
     }
+    // The reconciliation the other way round: the slot holds a PRIMITIVE and this use site wants
+    // the broad `Atom`/`Any` reference. A `let`-bound number referenced inside data is the case —
+    // `(let $a (+ $n 1) (let $x (superpose ($a $a)) $x))`, where the lift makes the outer `let` a
+    // lambda whose parameter is `Int` while the `$a`s inside the tuple resolved to `Atom`. ALOAD
+    // over an int slot is not a wrong value, it is an unverifiable method ("Bad local variable
+    // type"), so nothing downstream gets a chance to fix it up. Load the primitive and present it
+    // as the Atom the use site asked for: box, then wrap in `Grounded`.
+    //
+    // A `String` slot is deliberately not included: it is already a reference, so the load itself
+    // verifies, and wrapping it here would change how existing string paths reach Atom positions.
+    if (index >= 0 && usage.isBroadRef() && slotType is GroundedType && slotType.isPrimitiveSlot()) {
+        loadPrimitiveSlotAsGrounded(mv, slotType, index + offset)
+        return
+    }
 
     when (variable.type) {
         GroundedType.INT,
@@ -159,6 +214,25 @@ fun unwrapGroundedToPrimitive(mv: MethodVisitor, type: GroundedType) {
         "net/singularity/jetta/compiler/frontend/ir/Grounded",
         "getValue",
         "()Ljava/lang/Object;",
+        false
+    )
+    unboxIfNeeded(mv, type)
+}
+
+/**
+ * Read an `Object`-typed reference as a primitive [type], accepting either envelope: a `Grounded`
+ * wrapping the value, or the bare box a call site produced from a computed primitive. That is the
+ * `Any` calling convention — `(: r (-> Any Any))` / `(: r (-> Number Number))` — where
+ * `(r (+ 1 2))` boxes an `Integer` into the slot while a value arriving as data is `Grounded`.
+ * [unwrapGroundedToPrimitive] stays the path for `Atom`-typed slots, which hold Atoms by
+ * construction; keeping the two apart leaves that (hot) path byte-identical.
+ */
+fun unwrapReferenceToPrimitive(mv: MethodVisitor, type: GroundedType) {
+    mv.visitMethodInsn(
+        Opcodes.INVOKESTATIC,
+        "net/singularity/jetta/runtime/Convert",
+        "unwrapValue",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
         false
     )
     unboxIfNeeded(mv, type)
@@ -289,15 +363,16 @@ fun Lambda.capturedVariables(): List<Variable> {
                 }
             }
 
-            is Lambda -> {
-                when (val body = atom.body) {
-                    is Expression -> body.atoms.forEach {
-                        collect(params + atom.params, it)
-                    }
-
-                    else -> collect(params, atom.body)
-                }
-            }
+            // A nested lambda's OWN parameters are bound inside it, so they are not captures of
+            // the enclosing one. Both shapes of body have to say so: the non-Expression case used
+            // to pass `params` alone, which made `(\ ($b) $b)` — precisely what the innermost
+            // `let` of a nested `let` collapses to — report `$b` as captured by the lambda around
+            // it. The enclosing method then had a phantom leading capture parameter, and at the
+            // creation site `generateLoadVar` could not find `$b` among its own parameters and
+            // pushed the IR `Variable` object instead: "Type 'Variable' is not assignable to
+            // integer" at the `invokedynamic`, at class load. Nested `let`/`chain` — how the whole
+            // reference `stdlib.metta` is written — could not compile because of it.
+            is Lambda -> collect(params + atom.params, atom.body)
 
             else -> {}
         }

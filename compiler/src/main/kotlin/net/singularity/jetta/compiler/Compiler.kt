@@ -87,10 +87,16 @@ class Compiler(
         // Phase 2: build a deterministic compilation queue. Imported modules are placed
         // BEFORE user sources so their function definitions are registered with the shared
         // Context (via addExternalFunctions) before any user source's resolver runs and
-        // tries to look those symbols up. Within each group, sort by canonical path so
-        // build outputs are reproducible across machines.
-        val allSources: List<ParsedSource> =
-            cache.resolved.entries.sortedBy { it.key.toString() }.map { it.value } + userParsed
+        // tries to look those symbols up.
+        //
+        // That argument applies BETWEEN imported modules just as much: a module whose body calls
+        // an imported function must be resolved after the module that defines it, or the call
+        // resolves to nothing and is emitted as inert data. Sorting the queue by path alone got
+        // that right only by luck of the filename — f1_moduleA came before f1_moduleC, so
+        // moduleA's `(g (+ 1 $x))` was left unresolved and `(f 2)` answered `(g 3)` instead of
+        // 103 (f1_imports :65). Order by the import graph, tie-breaking on canonical path so
+        // build outputs stay reproducible across machines.
+        val allSources: List<ParsedSource> = dependencyOrder(cache) + userParsed
 
         // Run the rewriter chain per-source, wiring a fresh ownAtomsCollector for each so
         // we can serialize per-module spaces below. The shared `context.getSpace()` still
@@ -206,6 +212,33 @@ class Compiler(
 
     private fun canonicalPath(source: ParsedSource): Path =
         Paths.get(source.filename).toAbsolutePath().normalize()
+
+    /**
+     * The imported modules in dependency order — every module after the ones it imports.
+     *
+     * [ModuleCompilationCache.imports] already holds the edges (importer -> imported), recorded
+     * for every `import!` regardless of its target space, so this is a depth-first post-order walk
+     * over that graph. Roots and each node's children are visited in canonical-path order, which
+     * keeps the result reproducible and reduces to the old path sort when nothing imports anything.
+     * A cycle cannot form — [ImportResolutionPass] rejects one — but the `visiting` guard keeps
+     * this total anyway rather than recursing forever if that ever changes.
+     */
+    private fun dependencyOrder(cache: ModuleCompilationCache): List<ParsedSource> {
+        val ordered = mutableListOf<ParsedSource>()
+        val done = mutableSetOf<Path>()
+        val visiting = mutableSetOf<Path>()
+
+        fun visit(path: Path) {
+            if (path in done || !visiting.add(path)) return
+            cache.imports[path]?.sortedBy { it.toString() }?.forEach { visit(it) }
+            visiting.remove(path)
+            done.add(path)
+            cache.resolved[path]?.let { ordered.add(it) }
+        }
+
+        cache.resolved.keys.sortedBy { it.toString() }.forEach { visit(it) }
+        return ordered
+    }
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
 

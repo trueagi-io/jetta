@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.frontend.ir.SourcePosition
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
+import net.singularity.jetta.compiler.frontend.resolve.messages.ShadowedByBuiltinMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.UndefinedVariableMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.CyclicImportMessage
 import net.singularity.jetta.compiler.frontend.rewrite.messages.ExpectVariableButFoundMessage
@@ -20,6 +21,8 @@ class DefaultMessageRenderer : MessageRenderer {
             is CannotResolveSymbolMessage -> "Can not resolve symbol ${message.symbol}"
             is IncompatibleTypesMessage -> "Incompatible types: required ${message.requiredType} but found ${message.foundType}"
             is UndefinedVariableMessage -> "Undefined variable ${message.name}"
+            is ShadowedByBuiltinMessage ->
+                "Definition of ${message.name} is shadowed by the builtin of the same name and is not compiled"
             is ParseErrorMessage -> "Parse error: ${message.message}"
             is ExpectVariableButFoundMessage -> "Expect variable but found ${message.atom}"
             is ExpectVariableOrConstantButFoundMessage -> "Expect variable or constant but found ${message.atom}"

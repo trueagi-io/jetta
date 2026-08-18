@@ -284,4 +284,51 @@ class MatchNestedEvalTest : GeneratorTestBase() {
             )
         }
     }
+
+    /**
+     * A RULE-BODY query — pattern `(= <lhs> $x)` with `$x` as the whole template — answers with a
+     * rule body, which hyperon evaluates in the enclosing form rather than handing back as data.
+     * `match` used to return the body verbatim: `(match &self (= (h 2) $x) $x)` gave
+     * `(if (< 2 0) (- 0 2) (+ 1 2))` instead of `3`. Routed to `matchReduceDeep`, whose full
+     * evaluator executes the `if` and then the arithmetic.
+     */
+    @Test
+    fun `a rule-body match template is evaluated`() {
+        compile(
+            "RuleBodyTemplate.metta",
+            $$"""
+                (= (h 2) (if (< 2 0) (- 0 2) (+ 1 2)))
+                !(assertEqual (match &self (= (h 2) $x) $x) 3)
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { registerExternals(it) }.let { (result, messageCollector) ->
+            messageCollector.list().forEach(::println)
+            assertTrue(messageCollector.list().isEmpty())
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("RuleBodyTemplate")
+            classes["RuleBodyTemplate"]!!.getMethod("__main").invoke(null)
+        }
+    }
+
+    /**
+     * An unreducible head does not freeze what it is applied to: hyperon answers `(ln 4)` for
+     * `(ln (+ 2 2))`, and the same must hold for a term the reducer meets at RUN time. Codegen
+     * already applies this rule to static terms; here `(nope (+ 1 2))` arrives as a rule body,
+     * so only the runtime reducer can do it. f1 :56 is exactly this, with `g` in place of `nope`.
+     */
+    @Test
+    fun `an inert head still gets its arguments reduced`() {
+        compile(
+            "InertHeadArgs.metta",
+            $$"""
+                (= (h 2) (if (< 2 0) (- 0 2) (nope (+ 1 2))))
+                !(assertEqual (match &self (= (h 2) $x) $x) (nope 3))
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { registerExternals(it) }.let { (result, messageCollector) ->
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("InertHeadArgs")
+            classes["InertHeadArgs"]!!.getMethod("__main").invoke(null)
+        }
+    }
 }

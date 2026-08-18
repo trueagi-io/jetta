@@ -118,17 +118,17 @@ class ParserTest : BaseFrontendTest() {
 
     @Test
     fun `parse a string`() {
-        justParse("""(println "Hello")""")
+        justParse("""(println! "Hello")""")
     }
 
     @Test
     fun `parse an empty string`() {
-        justParse("""(println "")""")
+        justParse("""(println! "")""")
     }
 
     @Test
     fun `parse special characters in the string`() {
-       justParse("""(println "Hello\n\tworld")""")
+       justParse("""(println! "Hello\n\tworld")""")
     }
 
     @Test
@@ -376,5 +376,34 @@ class ParserTest : BaseFrontendTest() {
         // for type annotations is unaffected.
         val head = expr.atoms[0]
         assertEquals("class net.singularity.jetta.compiler.frontend.ir.Special", head.javaClass.toString())
+    }
+
+    /**
+     * The PRIME convention — `$type'`, `$params'` — is used throughout the reference
+     * `stdlib.metta`. A quote is a token of its own, so without `'` in the identifier
+     * CONTINUATION class `$type'` lexed as `$type` followed by a QUOTE that swallowed the next
+     * atom, and the file could not be parsed at all. A name still cannot START with a quote, so
+     * `'(a b)` is unaffected — the last assertion pins that.
+     */
+    @Test
+    fun primeInNames() {
+        val parser = createParserFacade()
+        val messageCollector = MessageCollector()
+        val program = parser.parse(
+            Source(
+                "Prime.metta",
+                """
+                (let ${'$'}type' (cdr-atom ${'$'}type) (foo ${'$'}type'))
+                (bar' baz'qux)
+                (keep '(a b))
+                """.trimIndent()
+            ),
+            messageCollector
+        )
+        assertTrue(messageCollector.list().isEmpty(), "messages: ${messageCollector.list()}")
+        assertEquals(
+            "[(let ${'$'}type' (cdr-atom ${'$'}type) (foo ${'$'}type')), (bar' baz'qux), (keep (quote (a b)))]",
+            program.code.toString()
+        )
     }
 }

@@ -13,13 +13,17 @@ between compile time and call time. The behavioural reference is the Rust
 interpreter [`trueagi-io/hyperon-experimental`](https://github.com/trueagi-io/hyperon-experimental);
 JeTTa aims to produce byte-for-byte identical answers on its test suite.
 
-- **Version:** `0.7.0` · **License:** MIT · **Runtime:** Java 17+
+- **Version:** `0.8.0` · **License:** MIT · **Runtime:** Java 17+
 
 > **Status.** JeTTa is under active development. The fundamentals — symbols,
-> pattern match, equality, chaining, non-determinism, spaces, mutable state and
-> module imports — work today, and as of `0.7.0` so does most of the type system:
-> GADTs, dependent types, type propagation and inference all pass. The current
-> frontier is mutable state, grounded values / PLN, and higher-order currying.
+> pattern match, equality, chaining, non-determinism, spaces, module imports and
+> most of the type system (GADTs, dependent types, propagation, inference) — work
+> today, and as of `0.8.0` so do mutable spaces and state cells. New in this
+> release: hyperon's own `stdlib.metta` **compiles and links** as a library, so
+> stdlib entries written in MeTTa come from the reference file rather than being
+> reimplemented. The current frontier is the minimal-MeTTa runner plumbing the
+> rest of that file stands on (`metta`, `collapse-bind`, `context-space`),
+> grounded values / PLN, and higher-order currying.
 > See [correctness](#compatibility--correctness) below.
 
 ---
@@ -56,7 +60,7 @@ Create a file `hello.metta`:
 (= (greet $x) (Hello $x))
 
 ; Lines starting with `!` are *runs* — they execute.
-!(println (greet MeTTa))
+!(println! (greet MeTTa))
 ```
 
 Compile it to a directory, then run the generated program:
@@ -73,7 +77,7 @@ That's the whole loop. A few things worth knowing:
 
 - **`!expr` runs, a plain expression does not.** A top-level expression without
   `!` is added to the program's knowledge base (its *space*); only `!expr` forms
-  execute. To *see* a result in a compiled program, print it (`!(println …)`) or
+  execute. To *see* a result in a compiled program, print it (`!(println! …)`) or
   assert on it (`!(assertEqual …)`) — the generated `main` returns the last run's
   value but does not auto-print it. (The REPL, below, does print every result.)
 - **`-Djetta.dataDir=out`** tells the running program where to find the space
@@ -191,17 +195,17 @@ kept under `docs/`).
 ## Compatibility & correctness
 
 Every program is checked against `hyperon-experimental` for the same answer.
-Group-by-group coverage of the reference topic suite (`a`–`g`) — **15 of 22
-topic tests pass** as of `0.7.0`:
+Group-by-group coverage of the reference topic suite (`a`–`g`) — **19 of 22
+topic tests pass** as of `0.8.0`:
 
 | Group | Feature | Pass | Status |
 | --- | --- | --- | --- |
 | a | symbols / match | 3 / 3 | ✅ full |
 | b | equality · chaining · non-det | 5 / 6 | core done · inert constructors left |
-| c | grounded values · spaces · PLN | 1 / 3 | spaces done · grounded ops / PLN next |
-| d | types (GADT · dependent · propagation · auto) | 4 / 5 | was 0 / 5 · only currying left |
-| e | mutation / states | 1 / 3 | KB-write done · state cells next |
-| f | modules / imports | 0 / 1 | `import!` works · needs higher-order |
+| c | grounded values · spaces · PLN | 2 / 3 | spaces + grounded ops done · PLN next |
+| d | types (GADT · dependent · propagation · auto) | 4 / 5 | only currying left |
+| e | mutation / states | 3 / 3 | ✅ full · KB writes + state cells |
+| f | modules / imports | 1 / 1 | ✅ full · runtime-ordered `import!` |
 | g | doc atoms (`get-doc` / `help!`) | 1 / 1 | ✅ full |
 
 Run the suite yourself with `./gradlew :test-runner:run`; it writes a per-test

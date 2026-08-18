@@ -129,6 +129,14 @@ fun FunctionDefinition.getSignature(): String? {
 fun FunctionDefinition.isMultivalued(): Boolean =
     annotations.find { (it as? Symbol)?.name == "multivalued" } != null
 
+/**
+ * Is this definition shadowed by a builtin of the same name? See
+ * [net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms.SHADOWED_BY_RUNTIME] — codegen skips
+ * such a definition, because no call site can link to it.
+ */
+fun FunctionDefinition.isShadowedByRuntime(): Boolean =
+    annotations.find { it == PredefinedAtoms.SHADOWED_BY_RUNTIME } != null
+
 fun FunctionDefinition.isExport(): Boolean =
     annotations.find { (it as? Symbol)?.name == "export" } != null
 
@@ -156,6 +164,9 @@ fun JvmMethod.isParameterInertAtom(index: Int) = index in inertAtomParams
 
 fun JvmMethod.isParameterBooleanType(index: Int) =
     descriptor.parseDescriptor()[index] == "Z"
+
+fun JvmMethod.isParameterExpressionType(index: Int) =
+    descriptor.parseDescriptor()[index] == "Lnet/singularity/jetta/compiler/frontend/ir/Expression;"
 
 private fun toType(jvmType: String): Atom =
     when (jvmType) {

@@ -13,6 +13,7 @@ import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
+import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
@@ -56,6 +57,13 @@ object JettaJit {
      */
     private val cache = ConcurrentHashMap<String, CompiledEval>()
 
+    /**
+     * Heads that BIND the variables under them, so an atom carrying variables is still a runnable
+     * program — a `match` pattern being the case reflective eval exists for. Everything else with a
+     * variable in it is treated as a template; see [isRunnableProgram].
+     */
+    private val BINDING_HEADS = setOf("match", "let", "let*", "chain", "unify", "case", "collapse")
+
     private class CompiledEval(val clazz: Class<*>, val entryMethod: String)
 
     /**
@@ -66,20 +74,73 @@ object JettaJit {
      * arrive inert (e.g. via `(quote …)`), never pre-reduced.
      */
     @JvmStatic
-    fun eval(code: Atom): List<Atom> {
+    fun eval(code: Any?): List<Atom> {
+        // An argument that is already a RESULT BAG means the call site evaluated it — JeTTa reduces
+        // eagerly wherever it reduces at all, so there is nothing left for `eval` to do and it is
+        // the identity. Same trade as `chain` / `function` / `return`: minimal MeTTa's stepping
+        // brackets carry no information for a compiler that does not step. The reference stdlib
+        // writes `(eval (get-metatype $atom))`, `(eval (if-equal …))`, `(eval (switch-minimal …))`
+        // — always a call, never data — and each arrived here as a `List` against a parameter typed
+        // `Atom`, which stored a List into the synthetic rule's `Atom[]` (ArrayStoreException in
+        // [compile]). `eval` still COMPILES a genuinely inert argument, which is the case it exists
+        // for: a program built at run time and handed over as data.
+        if (code is List<*>) return normalize(code)
+        val atom = code as? Atom ?: return normalize(code)
+        // …and anything that is not a runnable PROGRAM is likewise handed back as it stands. See
+        // [isRunnableProgram]: this is where the reference stdlib's `eval`s land, since each of them
+        // steps something a compiled call already reduced.
+        if (!isRunnableProgram(atom)) return listOf(atom)
         val env = JitEnvRegistry.current()
         // The structural cache is sound only for the env-less (system-only) path: with
         // a forked env the result depends on WHICH program is running (owner classes)
         // and on its current rule set, which mutates on redefinition. Env-aware caching
         // + SwitchPoint invalidation is the follow-up; for now recompile per env-eval.
         val compiled =
-            if (env == null) cache.getOrPut(cacheKey(code)) { compile(code, null) }
-            else compile(code, env)
+            if (env == null) cache.getOrPut(cacheKey(atom)) { compile(atom, null) }
+            else compile(atom, env)
         val raw = compiled.clazz.getMethod(compiled.entryMethod).invoke(null)
         return normalize(raw)
     }
 
     private fun cacheKey(code: Atom): String = code.toString()
+
+    /**
+     * Whether [atom] is something this compiler can RUN, as opposed to a value or a template it
+     * should hand back unchanged. Three conditions, each of which the reference `stdlib.metta`
+     * reaches on an ordinary call:
+     *
+     *  * an APPLICATION, i.e. an `Expression`. A `Grounded` or a `Symbol` is already a value, and
+     *    compiling one is not merely wasteful but impossible — a synthetic rule whose body is a bare
+     *    number has no type to infer (`NotImplementedError: atom=4` out of the resolver).
+     *  * whose HEAD is a `Symbol` or a `Special`. An expression headed by a number is DATA — a
+     *    tuple, which is what `map-atom`'s recursion returns and then steps: `(eval (map-atom …))`
+     *    was asked to run `(3 4)` as a program.
+     *  * and either CLOSED or headed by a form that BINDS its own variables. A variable with no
+     *    binder has no value to give it and no slot to read it from: the atom is a TEMPLATE.
+     *    `(eval (sealed ($var) $map))` returns the user's `(+ $v 1)` to be substituted into later,
+     *    and compiling that produced arithmetic over a `Variable` (ClassCastException inside the
+     *    JIT-compiled body). A `match` pattern is the opposite case — its variables are bound by the
+     *    match, and running it is the whole point of reflective eval — so [BINDING_HEADS] are exempt.
+     *
+     * Deciding this here rather than in the rewriter is what keeps `(eval (snippet))` working, where
+     * `snippet` RETURNS CODE: its value is a closed application, so it is compiled — which is the
+     * whole point of the primitive.
+     */
+    private fun isRunnableProgram(atom: Atom): Boolean {
+        if (atom !is Expression) return false
+        val head = atom.atoms.firstOrNull() ?: return false
+        if (head !is Symbol && head !is Special) return false
+        val headName = (head as? Symbol)?.name ?: (head as? Special)?.value
+        if (headName in BINDING_HEADS) return true
+        return !hasVariable(atom)
+    }
+
+    /** Whether [atom] mentions a variable anywhere — see [isRunnableProgram]. */
+    private fun hasVariable(atom: Atom): Boolean = when (atom) {
+        is Variable -> true
+        is Expression -> atom.atoms.any { hasVariable(it) }
+        else -> false
+    }
 
     /**
      * Compile `code` as the body of a synthetic 0-arg function `(= (__evalN) code)`

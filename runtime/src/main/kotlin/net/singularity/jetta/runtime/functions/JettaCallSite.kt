@@ -113,6 +113,26 @@ object JettaCallSite {
     }
 
     /**
+     * Public seam onto the space-rule reducer: rewrite [atom] by the `(= atom $r)` rules of
+     * [spaceName] to its normal form. Used by grounded ops that receive an argument codegen
+     * could not reduce statically — an application whose head only becomes a rule head at RUN
+     * time (`(= (status (Goal lunch-order)) …)` installed by `add-atom`), which therefore
+     * reaches the op as inert data. A term with no applicable rule is returned unchanged.
+     */
+    @JvmStatic
+    fun reduce(spaceName: String, atom: Atom): Atom = reduceToFixedPoint(spaceName, atom)
+
+    /**
+     * Public seam onto the FULL reducer — [reduceToFixedPoint] plus special-form execution and
+     * multi-rule union, i.e. the same evaluator [dispatch] uses, but handed a term rather than a
+     * call site and answering with the whole bag. Used where an arbitrary term arrives as data
+     * and must be evaluated: a `match` whose TEMPLATE is a bare variable binds it to a rule body
+     * (`(if (< 2 0) (- 0 2) (g (+ 1 2)))`) that hyperon evaluates before returning.
+     */
+    @JvmStatic
+    fun reduceBag(spaceName: String, atom: Atom): List<Atom> = reduceToBag(spaceName, atom, 0)
+
+    /**
      * Canonical MeTTa evaluation: repeatedly rewrite `current` via a space rule
      * `(= current $r)` until it no longer changes (its normal form) or the
      * reduction budget / a cycle is hit. Non-Expression atoms and empty
@@ -355,7 +375,19 @@ object JettaCallSite {
         if (entry.paramTypes.size != atoms.size - 1) return null
         val args = arrayOfNulls<Any?>(atoms.size - 1)
         for (i in 1 until atoms.size) args[i - 1] = atoms[i]
-        return JettaLinkRegistry.invoke(entry, args) as? Atom
+        // Speculative: this term was PRODUCED mid-reduction, so its arguments may be shapes the
+        // compiled body cannot take — `(g (+ 1 2))`, where `g`'s body unwraps its parameter as a
+        // Grounded number and the argument is still an unreduced application. That is the same
+        // "not computable over its operands" case the arity and grounded-op checks above already
+        // answer with `null` (leave inert); a mis-shaped argument only announces itself by
+        // throwing. Inert is always a valid MeTTa normal form, so absorb exactly those two.
+        return try {
+            JettaLinkRegistry.invoke(entry, args) as? Atom
+        } catch (_: ClassCastException) {
+            null
+        } catch (_: NullPointerException) {
+            null
+        }
     }
 
     /**

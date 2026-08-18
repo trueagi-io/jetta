@@ -167,11 +167,11 @@ class ImportResolutionPassTest {
 
     @Test
     fun `imported runs are spliced at the import position on first load`(@TempDir tmp: Path) {
-        write(tmp, "utils.metta", "!(println from-utils)")
+        write(tmp, "utils.metta", "!(println! from-utils)")
         write(tmp, "main.metta", """
-            !(println before)
+            !(println! before)
             !(import! &self utils)
-            !(println after)
+            !(println! after)
         """)
 
         val r = runPass(tmp, "main.metta")
@@ -190,7 +190,7 @@ class ImportResolutionPassTest {
         // C's Run must appear in main's transformed source exactly once
         // (idempotent load: subsequent imports of an already-loaded module
         // are no-ops for `!`-Runs).
-        write(tmp, "C.metta", "!(println from-C)")
+        write(tmp, "C.metta", "!(println! from-C)")
         write(tmp, "A.metta", "!(import! &self C)")
         write(tmp, "B.metta", "!(import! &self C)")
         write(tmp, "main.metta", """
@@ -222,5 +222,32 @@ class ImportResolutionPassTest {
         val symbols = r.transformed.code.filterIsInstance<Expression>()
             .map { (it.atoms[0] as Symbol).name }
         assertEquals(listOf("Fact", "Fact"), symbols)
+    }
+
+    /**
+     * A module's load-time effects belong to the MODULE's space, not the importer's. Spliced
+     * verbatim, `mid`'s own `!(import! &self inner)` ran against the importer at run time — so
+     * `inner`'s atoms landed in `main`'s `&self` even though `main` only imported `mid` into a
+     * NAMED space. That is f1_imports' `g`, reachable from line 1. `&self` is rebound to the
+     * module's own name as the Run is spliced.
+     */
+    @Test
+    fun `a spliced run's &self is rebound to the module's own space`(@TempDir tmp: Path) {
+        write(tmp, "inner.metta", "(= (bar) 7)")
+        write(tmp, "mid.metta", """
+            !(import! &self inner)
+            (= (foo) 5)
+        """)
+        write(tmp, "main.metta", "!(import! &m mid)")
+
+        val r = runPass(tmp, "main.metta")
+        assertTrue(r.messages.list().isEmpty(), r.messages.list().toString())
+
+        val imports = r.transformed.code.filter { isImportRun(it) }.map { it as Run }
+        // main's own directive, unchanged, then mid's spliced one with `&self` -> `mid`.
+        assertEquals(2, imports.size, "expected main's import! plus mid's spliced one")
+        assertEquals("&m", (imports[0].expression.atoms[1] as Symbol).name)
+        assertEquals("mid", (imports[1].expression.atoms[1] as Symbol).name)
+        assertEquals("inner", (imports[1].expression.atoms[2] as Symbol).name)
     }
 }

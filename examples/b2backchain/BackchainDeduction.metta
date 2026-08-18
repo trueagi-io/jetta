@@ -37,4 +37,4 @@
 ; True & True = True
 (= (And T T) T)
 
-!(println (deduce (Evaluation (mortal Plato))))
+!(println! (deduce (Evaluation (mortal Plato))))

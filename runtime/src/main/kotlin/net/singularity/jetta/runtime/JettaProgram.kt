@@ -1,5 +1,6 @@
 package net.singularity.jetta.runtime
 
+import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
@@ -9,6 +10,7 @@ import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.GroundedOps
+import net.singularity.jetta.runtime.functions.JettaCallSite
 import net.singularity.jetta.runtime.functions.JettaFunction
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
@@ -245,7 +247,52 @@ open class JettaProgram {
         @JvmStatic
         fun match(space: Any?, src: Atom, dst: Atom): List<Atom> {
             val spaceObj = SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
-            return matchIn(spaceObj, src, dst)
+            // A `bind!` token inside the PATTERN or TEMPLATE denotes the atom it names (hyperon
+            // substitutes tokens at parse time; JeTTa binds at run time, so the substitution
+            // happens here). The space reference is deliberately excluded — it is resolved by
+            // name through [resolveSpaceName].
+            return matchIn(spaceObj, derefDeep(src), derefDeep(dst))
+        }
+
+        /**
+         * Replace every `bind!`-registered token in [atom] with the atom it names, recursing into
+         * sub-expressions. Guarded by an empty-registry check, so a program that never calls
+         * `bind!` — every hot benchmark — pays nothing.
+         */
+        @JvmStatic
+        fun derefDeep(atom: Atom): Atom {
+            if (tokens.isEmpty()) return atom
+            // Widened to Any for the same reason as [cellOf]: a `&`-name reaching a value position
+            // is a bare String, even where the parameter is typed Atom.
+            return when (val t: Any = atom) {
+                is net.singularity.jetta.compiler.frontend.ir.Symbol -> tokens[t.name] ?: atom
+                is String -> tokens[t] ?: atom
+                is Expression -> {
+                    var changed = false
+                    val mapped = t.atoms.map { sub: Atom ->
+                        val d = derefDeep(sub)
+                        if (d !== sub) changed = true
+                        d
+                    }
+                    if (changed) Expression(mapped) else atom
+                }
+                else -> atom
+            }
+        }
+
+        /**
+         * Shallow [derefDeep] for a single VALUE: a `&`-token reaching a value position is a bare
+         * String (codegen's space-reference convention), a quoted one is a [Symbol]. Anything the
+         * registry does not know is returned unchanged.
+         */
+        @JvmStatic
+        fun deref(value: Any?): Any? {
+            if (tokens.isEmpty()) return value
+            return when (value) {
+                is String -> tokens[value] ?: value
+                is net.singularity.jetta.compiler.frontend.ir.Symbol -> tokens[value.name] ?: value
+                else -> value
+            }
         }
 
         /**
@@ -283,7 +330,17 @@ open class JettaProgram {
         private val UNIT_ATOM: Atom = Expression(emptyList())
 
         /**
-         * `add-atom` — add [atom] to the space named [spaceName] as DATA (unreduced; the
+         * `nop` — evaluate [value] for its effect and discard it, returning the unit atom `()`.
+         * The parameter is ANY, so the argument IS reduced at the call site (that is the whole
+         * point: `(nop (change-state! …))` runs the mutation); only the RESULT is thrown away,
+         * which is how hyperon's test scripts turn an effectful run into a unit-valued one.
+         */
+        @Suppress("UNUSED_PARAMETER")
+        @JvmStatic
+        fun nop(value: Any?): Atom = UNIT_ATOM
+
+        /**
+         * `add-atom` — add [atom] to [space] as DATA (unreduced; the
          * system-function signature types the argument `Atom`, suppressing call-site
          * reduction, matching hyperon). Bound variables in the atom ARE substituted first
          * ([Matcher.resolveDeep]): when `add-atom` runs inside a reduced match template
@@ -296,28 +353,34 @@ open class JettaProgram {
          * MeTTa symbol verbatim as the INVOKESTATIC target. Returns the unit atom `()` (an
          * ordinary Atom, as in hyperon) rather than `Unit`/void, so the result composes as
          * data when `add-atom` is nested in a larger expression.
+         *
+         * [space] is `Object`, not `String`, for the same reason `match`'s is
+         * ([resolveSpaceName]): the space can arrive INDIRECTLY, as the value of a variable
+         * rather than as a literal `&name` the compiler lowered to a String. The reference
+         * stdlib is written that way throughout — `(= (add-reduct $dst $atom) (add-atom $dst
+         * $atom))` — and a `String` parameter rejected the `Atom` at class load.
          */
         @JvmStatic
-        fun `add-atom`(spaceName: String, atom: Atom): Atom {
+        fun `add-atom`(space: Any?, atom: Atom): Atom {
             val resolved = Matcher.resolveDeep(atom)
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
                 .add(resolved as? Expression ?: Expression(listOf(resolved)))
             return UNIT_ATOM
         }
 
-        /** `remove-atom` — remove the first atom structurally equal to [atom] from [spaceName]. */
+        /** `remove-atom` — remove the first atom structurally equal to [atom] from [space]. */
         @JvmStatic
-        fun `remove-atom`(spaceName: String, atom: Atom): Atom {
+        fun `remove-atom`(space: Any?, atom: Atom): Atom {
             val resolved = Matcher.resolveDeep(atom)
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
                 .remove(resolved as? Expression ?: Expression(listOf(resolved)))
             return UNIT_ATOM
         }
 
-        /** `get-atoms` — the full non-deterministic bag of atoms currently in [spaceName]. */
+        /** `get-atoms` — the full non-deterministic bag of atoms currently in [space]. */
         @JvmStatic
-        fun `get-atoms`(spaceName: String): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
+        fun `get-atoms`(space: Any?): List<Atom> =
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getAtoms()
 
         /**
          * `import!` — runtime, order-sensitive module import (hyperon semantics).
@@ -372,6 +435,24 @@ open class JettaProgram {
             match(space, src, dst).map { reduceGrounded(it) }
 
         /**
+         * `matchReduceDeep` — like [matchReduce], but each result goes through the FULL
+         * evaluator (space rules, special forms, multi-rule union) before the grounded-op pass.
+         * Used when the TEMPLATE is a bare VARIABLE: what it binds to is arbitrary, and when the
+         * query is over `(= <head> $x)` it is a rule BODY, which hyperon evaluates.
+         * `(match &self (= (h 2) $x) $x)` over `(= (h 2) (if (< 2 0) (- 0 2) (+ 1 2)))` must
+         * answer `3`, not the `if` term. Reduction runs in the CURRENT program's space, not the
+         * queried one — the queried space supplies the rule, the caller's context evaluates it.
+         */
+        @JvmStatic
+        fun matchReduceDeep(space: Any?, src: Atom, dst: Atom): List<Atom> {
+            val here = currentSpaceName ?: ""
+            return match(space, src, dst).flatMap { result ->
+                JettaCallSite.reduceBag(here, if (result is BoundAtom) result.atom else result)
+                    .map { reduceGrounded(it) }
+            }
+        }
+
+        /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
          * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
          * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —
@@ -381,17 +462,25 @@ open class JettaProgram {
          */
         private fun reduceGrounded(atom: Atom): Atom {
             val inner = if (atom is BoundAtom) atom.atom else atom
-            if (inner !is Expression || inner.atoms.size != 3) return atom
-            val op = when (val h = inner.atoms[0]) {
-                is Symbol -> h.name
-                is net.singularity.jetta.compiler.frontend.ir.Special -> h.value
-                else -> return atom
+            if (inner !is Expression || inner.atoms.isEmpty()) return atom
+            // Applicative order: reduce the ARGUMENTS whatever the head is. An unreducible head
+            // does not freeze what it is applied to — hyperon answers `(ln 4)` for `(ln (+ 2 2))`,
+            // and f1 :56 needs the same of `(g (+ 1 2))` once `g` is (correctly) not visible.
+            // Codegen already applies this rule to STATIC terms; this is its runtime counterpart.
+            val reduced = inner.atoms.map { reduceGrounded(it) }
+            if (reduced.size == 3) {
+                val op = when (val h = reduced[0]) {
+                    is Symbol -> h.name
+                    is net.singularity.jetta.compiler.frontend.ir.Special -> h.value
+                    else -> null
+                }
+                // apply returns null when [op] is not a grounded operator OR an operand is not a
+                // number — both mean "not computable", so fall through to the rebuilt term.
+                if (op != null) GroundedOps.apply(op, reduced[1], reduced[2])?.let { return it }
             }
-            val x = reduceGrounded(inner.atoms[1])
-            val y = reduceGrounded(inner.atoms[2])
-            // apply returns null when [op] is not a grounded operator OR an operand is not a
-            // number — both mean "leave inert" here, so a single null check covers both.
-            return GroundedOps.apply(op, x, y) ?: atom
+            // Nothing computed: keep the original atom (with its BoundAtom envelope) when no
+            // argument moved, so an inert term is returned identically to before.
+            return if (reduced == inner.atoms) atom else Expression(reduced)
         }
 
         /**
@@ -424,6 +513,33 @@ open class JettaProgram {
             val e = if (atom is BoundAtom) atom.atom else atom
             return if (e is Expression && e.atoms.isNotEmpty()) Expression(atoms = e.atoms.drop(1))
             else Expression(Symbol("Error"), atom, Symbol("cdr-atom expects a non-empty expression"))
+        }
+
+        /**
+         * `decons-atom` — split a non-empty expression into head and tail, as a TWO-element
+         * expression: `(decons-atom (Cons X Nil))` → `(Cons (X Nil))`. Note the shape — it is
+         * not the flat expression, which is what makes it the exact inverse of [cons-atom] and
+         * lets `(unify ($head $tail) …)` destructure the result. The reference `stdlib.metta`
+         * defines `car-atom` and `cdr-atom` in terms of this one.
+         */
+        @JvmStatic
+        fun `decons-atom`(atom: Atom): Atom {
+            val e = if (atom is BoundAtom) atom.atom else atom
+            return if (e is Expression && e.atoms.isNotEmpty())
+                Expression(e.atoms[0], Expression(atoms = e.atoms.drop(1)))
+            else Expression(Symbol("Error"), atom, Symbol("decons-atom expects a non-empty expression"))
+        }
+
+        /**
+         * `cons-atom` — prepend an atom to an expression: `(cons-atom a (b c))` → `(a b c)`.
+         * The inverse of [decons-atom]; a non-expression tail is an error.
+         */
+        @JvmStatic
+        fun `cons-atom`(head: Atom, tail: Atom): Atom {
+            val h = if (head is BoundAtom) head.atom else head
+            val t = if (tail is BoundAtom) tail.atom else tail
+            return if (t is Expression) Expression(atoms = listOf(h) + t.atoms)
+            else Expression(Symbol("Error"), tail, Symbol("cons-atom expects an expression as its second argument"))
         }
 
         // ---- Documentation: get-doc / help! ------------------------------------------------
@@ -577,7 +693,9 @@ open class JettaProgram {
          */
         @JvmStatic
         fun `get-type`(atom: Atom): List<Atom> {
-            val t = TypeEngine.inferType(atom, selfAtoms())
+            // A `bind!` token denotes the atom it names, so `(get-type &state-token)` asks about
+            // the state, not about an undeclared symbol.
+            val t = TypeEngine.inferType(derefDeep(atom), selfAtoms())
             return if (t == null) emptyList() else listOf(t)
         }
 
@@ -594,7 +712,9 @@ open class JettaProgram {
          */
         @JvmStatic
         fun typeCheckError(callExpr: Atom): Atom? {
-            val err = TypeEngine.checkApp(callExpr, selfAtoms()) ?: return null
+            // Check the DEREFERENCED form (a `bind!` token has the type of the atom it names) but
+            // report the original: hyperon's error term echoes the expression as written.
+            val err = TypeEngine.checkApp(derefDeep(callExpr), selfAtoms()) ?: return null
             return TypeEngine.errorExpr(callExpr, err)
         }
 
@@ -638,6 +758,141 @@ open class JettaProgram {
             return out
         }
 
+        /**
+         * `unifyMatch <names> <a> <b> <then> <else>` — the runtime of minimal MeTTa's
+         * `(unify $a $b $then $else)`, lowered by `FunctionRewriter`. [a] and [b] arrive as
+         * UNREDUCED data (both are meta-type `Atom` in hyperon too) and are unified
+         * symmetrically — either side may be the pattern, which is how the reference stdlib
+         * writes it (`(unify $list ($head $tail) …)` and `(unify ($head $tail) $ht …)` both
+         * occur). On success the bindings are read back and passed positionally to [thenBranch];
+         * on failure [elseBranch] (0-arg) is applied. Both branches are lambdas so that only the
+         * taken one is evaluated.
+         *
+         * [names] carries the [thenBranch] parameter names as an `Expression` of `Symbol`s, in
+         * the lambda's parameter order. They cannot be recovered from [a]/[b] at runtime: codegen
+         * resolves an in-scope pattern variable to its VALUE (see `generateQuote`'s `Variable`
+         * arm), and that value may itself contain variables — the reference `let*` unifies
+         * `($pattern $atom)` against a pair that still holds the user's `$v1`. Collecting names
+         * from the atoms, as [letMatch] can afford to, would pick those up and shift every
+         * positional argument. Symbols rather than Variables for the same reason in reverse: a
+         * quoted `Variable` whose name matches an enclosing slot would be emitted as that slot's
+         * value, losing the name.
+         */
+        @JvmStatic
+        fun unifyMatch(
+            names: Atom,
+            a: Atom,
+            b: Atom,
+            thenBranch: JettaFunction,
+            elseBranch: JettaFunction,
+        ): List<Atom> {
+            val left = if (a is BoundAtom) a.atom else a
+            val right = if (b is BoundAtom) b.atom else b
+            val s = HashMap<String, Atom>()
+            if (!TypeEngine.unify(left, right, s)) return branchResult(elseBranch.apply(emptyArray()))
+            val params = (if (names is BoundAtom) names.atom else names).let { n ->
+                (n as? Expression)?.atoms?.mapNotNull { (it as? Symbol)?.name } ?: emptyList()
+            }
+            val args = Array<Any?>(params.size) { i -> TypeEngine.resolve(Variable(params[i]), s) }
+            return branchResult(thenBranch.apply(args))
+        }
+
+        /** Counter for the fresh names [sealed] mints; global, so two seals never collide. */
+        private val sealCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /**
+         * `sealed` — rename every variable in [atom] to a fresh one, EXCEPT those listed in
+         * [ignore]. Note the direction: the first argument is the list to LEAVE ALONE, which is
+         * how hyperon documents it ("replaces all occurrences of any var inside atom by unique
+         * variable, except list of variables to ignore"). That is what gives a template a locally
+         * scoped variable: `map-atom` seals its own `$map` so the recursion's variables cannot
+         * capture the user's, while keeping the one variable it is about to substitute for.
+         *
+         * Both arguments are INERT — the point is the term as written, not its value.
+         */
+        @JvmStatic
+        fun sealed(ignore: Atom, atom: Atom): Atom {
+            val keep = HashSet<String>()
+            collectVarNames(if (ignore is BoundAtom) ignore.atom else ignore, keep)
+            val renamed = HashMap<String, Variable>()
+            fun go(a: Atom): Atom = when (a) {
+                is Variable ->
+                    if (a.name in keep) a
+                    else renamed.getOrPut(a.name) { Variable("${a.name}#${sealCounter.incrementAndGet()}") }
+                is Expression -> Expression(a.atoms.map { go(it) })
+                else -> a
+            }
+            return go(if (atom is BoundAtom) atom.atom else atom)
+        }
+
+        /**
+         * `atom-subst` — substitute [value] for the variable named by [variable] throughout
+         * [template].
+         *
+         * Written natively rather than taken from the reference stdlib, whose definition is a
+         * minimal-MeTTa trick — `(chain (eval (noeval $atom)) $var (return $templ))` binds *the
+         * variable that `$var`'s VALUE names*, which a compiler that lowers `chain` onto `let`
+         * cannot express: our `let` binds the syntactic `$var`, not the variable it holds. As a
+         * builtin it shadows that rule (see `Context.markDefinitionsShadowedByRuntime`) and every
+         * call site links here instead. The operation itself is plain substitution.
+         */
+        @JvmStatic
+        fun `atom-subst`(value: Atom, variable: Atom, template: Atom): Atom {
+            val v = if (variable is BoundAtom) variable.atom else variable
+            val name = (v as? Variable)?.name ?: return template
+            return substituteVar(
+                if (template is BoundAtom) template.atom else template,
+                name,
+                if (value is BoundAtom) value.atom else value,
+            )
+        }
+
+        /**
+         * `get-metatype` — the atom's META-type: which of MeTTa's four kinds of atom it is, as
+         * opposed to `get-type`, which answers with the `:` declarations in the space. The
+         * argument is INERT (hyperon does not reduce it either), so `(get-metatype (+ 1 2))` is
+         * `Expression`, not the metatype of `3`.
+         *
+         * `ArrowType` answers `Expression` because it is one: the rewriter folds the surface form
+         * `(-> A B)` into that IR node, and the reference stdlib's `is-function` relies on seeing
+         * a type as an Expression whose head it can compare with `->`.
+         */
+        @JvmStatic
+        fun `get-metatype`(atom: Atom): Atom = when (if (atom is BoundAtom) atom.atom else atom) {
+            is Variable -> Symbol("Variable")
+            is Expression, is ArrowType -> Symbol("Expression")
+            is Grounded<*> -> Symbol("Grounded")
+            else -> Symbol("Symbol")
+        }
+
+        /**
+         * `ifEqual <a> <b> <then> <else>` — the runtime of minimal MeTTa's
+         * `(if-equal $a $b $then $else)`, lowered by `FunctionRewriter`. Like [unifyMatch] the two
+         * atoms arrive UNREDUCED and the branches are lambdas so only the taken one is evaluated —
+         * the reference stdlib puts `(Error …)` in an else-branch, which must not run otherwise.
+         *
+         * The comparison is STRUCTURAL equality, not unification: `Expression` and `Symbol` define
+         * `equals` structurally, and hyperon's own `if-equal` compares atoms rather than matching
+         * them, so a variable here is a term to compare and binds nothing. Bound variables are
+         * substituted first ([Matcher.resolveDeep]), which is what the reference interpreter does
+         * before handing arguments to a grounded operation.
+         */
+        @JvmStatic
+        fun ifEqual(a: Atom, b: Atom, thenBranch: JettaFunction, elseBranch: JettaFunction): List<Atom> {
+            val left = Matcher.resolveDeep(if (a is BoundAtom) a.atom else a)
+            val right = Matcher.resolveDeep(if (b is BoundAtom) b.atom else b)
+            val taken = if (left == right) thenBranch else elseBranch
+            return branchResult(taken.apply(emptyArray()))
+        }
+
+        /** Normalise a branch lambda's result to the `List<Atom>` bag every JeTTa result is shaped as. */
+        private fun branchResult(res: Any?): List<Atom> = when (res) {
+            is List<*> -> res.mapNotNull { it as? Atom }
+            is Atom -> listOf(res)
+            null -> emptyList()
+            else -> listOf(Grounded(res))
+        }
+
         /** Collect the variable names in [a] in document order (deduplicated by [out]'s type). */
         private fun collectVarNames(a: Atom, out: MutableSet<String>) {
             when (a) {
@@ -660,6 +915,12 @@ open class JettaProgram {
                 is Boolean -> v
                 is Symbol -> v.name == "True"
                 is Grounded<*> -> v.value == true
+                // A multivalued call in a boolean slot yields a BAG. A one-element bag is that
+                // element — the ordinary case, e.g. a predicate whose body asks `get-type`
+                // (bag-returning) though it is declared `(-> Atom Bool)`. An empty bag has no
+                // value and is false; a genuinely branching bag would have to FORK the `if`,
+                // which a compiled boolean condition cannot do, so it is false here too.
+                is List<*> -> v.size == 1 && isTruthy(v[0])
                 else -> false
             }
         }
@@ -691,12 +952,33 @@ open class JettaProgram {
         fun `get-state`(token: Atom): Atom =
             cellOf(token)?.value ?: nonReducedState("get-state", token)
 
-        /** `change-state!` — set the state's value to [newValue]; returns the state atom. */
+        /**
+         * `change-state!` — set the state's value to [newValue]; returns the state atom.
+         *
+         * A state is typed by what it was created with (`(StateMonad T)`), and hyperon rejects a
+         * write of a different type rather than silently retyping the cell: the form's VALUE
+         * becomes `(Error (change-state! …) (BadArgType 2 T <new type>))` and the cell keeps its
+         * old content. The check is [TypeEngine.checkApp] over the stdlib signature
+         * `(-> (StateMonad $t) $t (StateMonad $t))` — the tvar binds to the current content type
+         * at parameter 1 and constrains parameter 2. Untyped content is `%Undefined%`, which
+         * unifies with anything, so gradually-typed programs are unaffected.
+         */
         @JvmStatic
-        fun `change-state!`(token: Atom, newValue: Atom): Atom {
+        fun `change-state!`(token: Atom, newValue: Any?): Atom {
             val cell = cellOf(token) ?: return nonReducedState("change-state!", token)
-            cell.value = newValue
-            return Grounded(cell)
+            val value = asAtom(newValue)
+            val state: Atom = Grounded(cell)
+            val callExpr = Expression(listOf(Symbol("change-state!"), state, value))
+            TypeEngine.checkApp(callExpr, selfAtoms())?.let { return TypeEngine.errorExpr(callExpr, it) }
+            cell.value = value
+            return state
+        }
+
+        /** Coerce a runtime value to an [Atom]: unwrap a [BoundAtom], box a raw primitive. */
+        private fun asAtom(value: Any?): Atom = when (value) {
+            is BoundAtom -> asAtom(value.atom)
+            is Atom -> value
+            else -> Grounded(value)
         }
 
         /** Resolve a state token/atom to its [StateCell]: a bound Symbol via [tokens], or a state atom directly. */
@@ -714,7 +996,19 @@ open class JettaProgram {
                 is String -> tokens[t]
                 else -> t
             }
-            return ((resolved as? Grounded<*>)?.value as? StateCell)
+            ((resolved as? Grounded<*>)?.value as? StateCell)?.let { return it }
+            // The state may be addressed INDIRECTLY, by an expression that a `=` rule rewrites to
+            // it — hyperon's "symbolic expression wrapping a state" idiom, where
+            // `(add-atom &self (= (status (Goal $g)) <state>))` installs the rule at RUN time. The
+            // head is therefore unknown to codegen, so the argument reaches us as inert data
+            // rather than reduced. Reduce it here against the live space and retry. Miss path
+            // only: a token that already denoted a cell returned above, so the ordinary
+            // `bind!`/direct-atom cases never pay for this.
+            if (resolved is Expression && resolved.atoms.isNotEmpty()) {
+                val reduced = JettaCallSite.reduce(currentSpaceName ?: "", resolved)
+                if (reduced !== resolved) return (reduced as? Grounded<*>)?.value as? StateCell
+            }
+            return null
         }
 
         private fun nonReducedState(op: String, token: Any?): Atom {

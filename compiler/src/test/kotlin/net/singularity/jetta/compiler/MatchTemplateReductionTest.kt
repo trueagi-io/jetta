@@ -45,7 +45,7 @@ class MatchTemplateReductionTest {
             """
             (Venus orbit 0.7 au)
             (Mars orbit 1.5 au)
-            !(println (collapse (match &self (, (Venus orbit ${'$'}x au) (Mars orbit ${'$'}y au)) (- ${'$'}y ${'$'}x))))
+            !(println! (collapse (match &self (, (Venus orbit ${'$'}x au) (Mars orbit ${'$'}y au)) (- ${'$'}y ${'$'}x))))
             """
         )
         // The subtraction must be evaluated (0.8), not left inert as (- 1.5 0.7).
@@ -62,7 +62,7 @@ class MatchTemplateReductionTest {
             (Venus orbit 0.7 au)
             (Mars orbit 1.5 au)
             !(assertEqual (match &self (, (Venus orbit ${'$'}x au) (Mars orbit ${'$'}y au)) (- ${'$'}y ${'$'}x)) 0.8)
-            !(println "ok")
+            !(println! "ok")
             """
         )
         assertTrue(output.trim().endsWith("ok"), "assertEqual should hold; got:\n$output")

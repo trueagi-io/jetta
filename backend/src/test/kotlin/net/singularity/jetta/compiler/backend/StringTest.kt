@@ -15,7 +15,7 @@ class StringTest : GeneratorTestBase() {
         compile(
             "Hello.metta",
             """
-                !(println "Hello World")
+                !(println! "Hello World")
                 """.trimIndent().replace('_', '$')
         ) { context ->
             context.addSystemFunction(

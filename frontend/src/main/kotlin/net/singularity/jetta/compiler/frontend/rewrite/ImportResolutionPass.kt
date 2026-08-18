@@ -41,6 +41,10 @@ class ImportResolutionPass(
 ) {
     private val moduleNamePattern = Regex("^[A-Za-z0-9_-]+$")
 
+    private companion object {
+        const val SELF = "&self"
+    }
+
     /** Resolve all imports reachable from [source]. Returns a transformed [ParsedSource]
      * with each `import!` Run replaced by the `!`-Runs the imported module would execute
      * at load time, in source order. On cache hit (the module was already loaded earlier
@@ -150,11 +154,28 @@ class ImportResolutionPass(
             cache.imports.getOrPut(canonicalImporter) { mutableSetOf() }.add(targetPath)
             // Clone each Run so the importer and the imported module's own __main hold
             // distinct instances (they otherwise share `id` and mutable IR fields that
-            // later passes populate per-owner).
-            return resolved.code.filterIsInstance<Run>().map { Run(it.expression, it.position) }
+            // later passes populate per-owner), and rebind `&self` to the MODULE's own space.
+            // A module's load-time effects belong to the module: moduleA's
+            // `!(import! &self f1_moduleC)`, spliced verbatim, imported moduleC into the
+            // IMPORTER instead — so `g` was reachable from &self at line 1 of f1_imports even
+            // though moduleA reaches &self only at :61. Runs spliced from a deeper module were
+            // already rebound during that module's own resolve, so only the `&self`s this
+            // module wrote itself are left to rewrite here.
+            return resolved.code.filterIsInstance<Run>()
+                .map { Run(rebindSelf(it.expression, moduleName) as Expression, it.position) }
         } finally {
             cache.resolving.remove(targetPath)
         }
+    }
+
+    /** Replace every `&self` reference in [atom] with [moduleName], the module's own space. */
+    private fun rebindSelf(atom: Atom, moduleName: String): Atom = when {
+        atom is Symbol && atom.name == SELF -> Symbol(moduleName, atom.position)
+        atom is Expression -> Expression(
+            atoms = atom.atoms.map { rebindSelf(it, moduleName) },
+            position = atom.position,
+        )
+        else -> atom
     }
 
     private data class ImportRequest(

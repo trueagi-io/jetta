@@ -36,6 +36,17 @@ class FunctionRewriter(
     private val isReducibleName: (String) -> Boolean = { false },
 ) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
+
+    /**
+     * Per function, the parameter indices its `(: f (-> …))` declaration writes LITERALLY as `Atom`
+     * — hyperon's meta-type annotation, which says "hand this argument over as the TERM, do not
+     * reduce it". The distinction is invisible in [typeInfo] because `asType()` erases every type it
+     * does not know (`Number`, `Nat`, a user type) to `Atom` too, and reducing is right for those;
+     * so it has to be read off the declaration as written. Travels to codegen via
+     * `FunctionDefinition.declaredAtomParams` → `JvmMethod.templateAtomParams`, which holds the
+     * argument only when it is a template — see that field for why.
+     */
+    private val literalAtomParams = mutableMapOf<String, Set<Int>>()
     private val annotations = mutableMapOf<String, List<Atom>>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val runs = mutableListOf<Atom>()
@@ -266,6 +277,23 @@ class FunctionRewriter(
         return result
     }
 
+    /**
+     * The parameter positions of a `(-> T1 T2 … R)` declaration written literally as `Atom`. Only a
+     * flat arrow is inspected: a nested `(-> …)` parameter is a function value, not a term to hold
+     * unreduced. `%Undefined%` is deliberately NOT included — it is the gradual wildcard, and its
+     * argument is an ordinary value.
+     */
+    private fun literalAtomIndices(declaration: Atom): Set<Int> {
+        val types = (declaration as? Expression)?.atoms ?: return emptySet()
+        if ((types.firstOrNull() as? Symbol)?.name != Predefined.ARROW &&
+            (types.firstOrNull() as? Special)?.value != Predefined.ARROW
+        ) return emptySet()
+        // drop the arrow itself and the result type
+        val params = types.drop(1).dropLast(1)
+        // The surface spelling, as `asType()` matches it below — `GroundedType`'s own name is private.
+        return params.indices.filter { (params[it] as? Symbol)?.name == "Atom" }.toSet()
+    }
+
     private fun mkFunctions(): List<Atom> {
         val relationalCallees = computeRelationalCallees()
         return patterns.map { (name, list) ->
@@ -279,7 +307,8 @@ class FunctionRewriter(
                     typeInfo[name] as? ArrowType,
                     pattern.value,
                     annotations[name]?.toMutableList() ?: mutableListOf(),
-                    position = pattern.pattern.position
+                    position = pattern.pattern.position,
+                    declaredAtomParams = literalAtomParams[name].orEmpty(),
                 )
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
@@ -328,7 +357,8 @@ class FunctionRewriter(
                         )
                     }, returnType = arrowType?.types?.last()),
                     annotations[name]?.toMutableList() ?: mutableListOf(),
-                    position = list[0].pattern.position
+                    position = list[0].pattern.position,
+                    declaredAtomParams = literalAtomParams[name].orEmpty(),
                 )
             }
         }
@@ -541,11 +571,46 @@ class FunctionRewriter(
     // `+`/`*`) and must be promoted to their Special form. Aliases map an alternate
     // surface spelling to a canonical Predefined name — hyperon writes modulo as `%`,
     // which the lexer sees as an IDENT rather than a token.
+    /** hyperon's minimal-MeTTa sequencing primitive; rewritten onto `let` (see below). */
+    private val CHAIN_KEYWORD = "chain"
+
+    /**
+     * minimal MeTTa's explicit evaluation bracket. `(function X)` reduces X one step at a time
+     * until it becomes `(return $v)`, and yields that `$v`. Both halves are rewritten away — see
+     * the identity rewrite below.
+     */
+    private val FUNCTION_KEYWORD = "function"
+    private val RETURN_KEYWORD = "return"
+
+    /**
+     * minimal MeTTa's unification branch, lowered onto the `unifyMatch` runtime helper by
+     * [lowerUnify] — the one primitive here that is NOT rewritten away, because a failed match
+     * has to reach an else-branch.
+     */
+    private val UNIFY_KEYWORD = "unify"
+    private val UNIFY_MATCH_KEYWORD = "unifyMatch"
+
+    /**
+     * minimal MeTTa's structural-comparison branch. Same lowering as [UNIFY_KEYWORD] minus the
+     * bindings — nothing is bound by an equality — so both branches take no parameters.
+     */
+    private val IF_EQUAL_KEYWORD = "if-equal"
+    private val IF_EQUAL_MATCH_KEYWORD = "ifEqual"
+
+    /** The JIT-eval primitive, used to run an atom a program built at run time. */
+    private val EVAL_KEYWORD = "eval"
+
     private val specialAliases = mapOf(
         "%" to Predefined.MOD
     )
 
     private val specials = listOf(
+        // A user-written `quote` must become the SPECIAL form, not stay a Symbol. Internally
+        // generated quotes are already `PredefinedAtoms.QUOTE` (a Special) and every pass keys
+        // off that; a Symbol head instead fell through to the unresolved-head path, which is the
+        // DATA-CONSTRUCTOR path — and a data constructor evaluates its arguments in applicative
+        // order. So `(quote (+ 1 2))` reduced to `(quote 3)`, exactly what quoting must prevent.
+        Predefined.QUOTE,
         Predefined.DIV,
         Predefined.MOD,
         Predefined.NOT,
@@ -562,7 +627,9 @@ class FunctionRewriter(
      */
     private fun isFunctionCall(atom: Atom): Boolean {
         if (atom !is Expression) return false
-        val head = atom.atoms[0]
+        // The empty expression `()` is ordinary data — MeTTa's nil-like value, and a routine
+        // operand (`(== $list ())`). It has no head to look up.
+        val head = atom.atoms.firstOrNull() ?: return false
         return head is Symbol && patterns.containsKey(head.name)
     }
 
@@ -749,6 +816,24 @@ class FunctionRewriter(
             )
         }
 
+        // A RULE-BODY query — `(match &m (= (f 2) $x) $x)`, pattern `(= <lhs> $x)` with the same
+        // variable as the whole template. What `$x` binds to is a rule body, and hyperon does not
+        // hand it back as data: the enclosing form evaluates it, so `(if (< 2 0) (- 0 2)
+        // (g (+ 1 2)))` is seen as `(g 3)`. JeTTa's match returns an inert Atom and nothing
+        // downstream reduces it, so route to `matchReduceDeep`, which runs each result through
+        // the full evaluator. Deliberately narrow: only this pattern shape, so a `match` over
+        // ordinary DATA facts keeps returning its bindings verbatim.
+        if (templateIsRuleBodyVariable(expression.atoms[2], template)) {
+            return expression.copy(
+                listOf(
+                    Symbol("matchReduceDeep"),
+                    expression.atoms[1],
+                    quoteAtom(expression.atoms[2]),
+                    quoteAtom(template)
+                )
+            )
+        }
+
         return expression.copy(
             listOf(
                 expression.atoms[0],
@@ -771,6 +856,24 @@ class FunctionRewriter(
      * arithmetic is invisible to [templateHasReducibleCall] (which only sees Symbol heads), so
      * this is the sole path that reduces them.
      */
+    /**
+     * Is this a rule-BODY query — pattern `(= <lhs> $x)` whose template is that same `$x`? Then
+     * the match answers with a rule body, which the enclosing form evaluates in hyperon. Both
+     * spellings of the `=` head are accepted (a [Special] after canonicalisation, a [Symbol] as
+     * written).
+     */
+    private fun templateIsRuleBodyVariable(pattern: Atom, template: Atom): Boolean {
+        if (template !is Variable) return false
+        if (pattern !is Expression || pattern.atoms.size != 3) return false
+        val head = when (val h = pattern.atoms[0]) {
+            is Special -> h.value
+            is Symbol -> h.name
+            else -> return false
+        }
+        if (head != Predefined.PATTERN) return false
+        return (pattern.atoms[2] as? Variable)?.name == template.name
+    }
+
     private fun templateIsGroundedOp(atom: Atom): Boolean {
         if (atom !is Expression || atom.atoms.size != 3) return false
         val op = when (val h = atom.atoms[0]) {
@@ -898,6 +1001,172 @@ class FunctionRewriter(
         return Expression(Symbol(LetRewriter.LET_KEYWORD), caseVar, scrutinee, acc)
     }
 
+    /**
+     * Lower minimal MeTTa's `(unify $a $b $then $else)` onto the runtime [unifyMatch] helper —
+     * `(unifyMatch (names…) $a $b (\ (names…) $then) (\ () $else))`.
+     *
+     * `unify` is a four-way form: the two atoms are unified SYMMETRICALLY (the reference stdlib
+     * writes the pattern on either side — `(unify $list ($head $tail) …)` and
+     * `(unify ($head $tail) $ht …)` both occur), and only the taken branch is evaluated, hence
+     * two lambdas rather than two arguments.
+     *
+     * The whole difficulty is the then-branch's PARAMETER LIST: the variables the unification
+     * binds. Codegen already draws the line for the atoms themselves — inside an inert argument
+     * `generateQuote` loads an in-scope variable's VALUE and emits a genuinely free one as
+     * `Variable` data — so a pattern built from bound values (hyperon's `if-decons-expr`, whose
+     * `$head`/`$tail` are meta-type `Variable` PARAMETERS) needs nothing special. What codegen
+     * cannot decide is which names the branch body must receive positionally: exactly the ones
+     * NOT already in scope, since an in-scope name must stay a capture of the enclosing slot.
+     * Listing it as a parameter instead would shadow that slot with an unbound `Variable`.
+     *
+     * Scope is therefore threaded explicitly here, top-down, before the ordinary rewrite: an
+     * over-approximating pre-pass cannot work, because a `unify`'s own pattern variables are
+     * binders for its then-branch while being ordinary in-scope values for a `unify` NESTED in
+     * that branch — which is precisely how the reference `let*` is written.
+     *
+     * DIVERGENCE, deliberate: the then-branch is a compiled lambda, so it is EVALUATED with the
+     * bindings but not SUBSTITUTED into. That is invisible unless the branch is a runtime-built
+     * template that shares variable names with the unified pair (hyperon's `switch-internal`
+     * passes `$template` through). Substituting into a template and then evaluating it is the
+     * runtime-compilation path, not this one.
+     */
+    private fun lowerUnify(expression: Expression, scope: Set<String>): Atom {
+        val a = expression.atoms[1]
+        val b = expression.atoms[2]
+        val thenBranch = expression.atoms[3]
+        val elseBranch = expression.atoms[4]
+        val bound = (varNamesIn(a) + varNamesIn(b)).distinct().filter { it !in scope }
+        val inner = scope + bound
+        val params = Expression(bound.map { Variable(it) }, position = expression.position)
+        return Expression(
+            listOf(
+                Symbol(UNIFY_MATCH_KEYWORD, position = expression.position),
+                // The parameter NAMES, as Symbols: the runtime helper needs them to pass the
+                // bindings positionally, and a quoted Symbol never collapses to a slot the way a
+                // quoted Variable would. See JettaProgram.unifyMatch.
+                Expression(bound.map { Symbol(it) }, position = expression.position),
+                lowerUnifyForms(a, scope),
+                lowerUnifyForms(b, scope),
+                Expression(
+                    listOf(Special(Predefined.LAMBDA), params, lowerUnifyForms(thenBranch, inner)),
+                    position = thenBranch.position,
+                ),
+                Expression(
+                    listOf(
+                        Special(Predefined.LAMBDA),
+                        Expression(emptyList(), position = elseBranch.position),
+                        lowerUnifyForms(elseBranch, scope),
+                    ),
+                    position = elseBranch.position,
+                ),
+            ),
+            position = expression.position,
+        )
+    }
+
+    /**
+     * Lower `(if-equal $a $b $then $else)` onto the runtime [ifEqual] helper. [lowerUnify]'s
+     * sibling: the same two-branch shape, but an equality binds nothing, so both branches are
+     * parameterless and no scope analysis is needed — only the recursion into them.
+     */
+    private fun lowerIfEqual(expression: Expression, scope: Set<String>): Atom {
+        fun branch(atom: Atom): Atom = Expression(
+            listOf(
+                Special(Predefined.LAMBDA),
+                Expression(emptyList(), position = atom.position),
+                lowerUnifyForms(atom, scope),
+            ),
+            position = atom.position,
+        )
+        return Expression(
+            listOf(
+                Symbol(IF_EQUAL_MATCH_KEYWORD, position = expression.position),
+                lowerUnifyForms(expression.atoms[1], scope),
+                lowerUnifyForms(expression.atoms[2], scope),
+                branch(expression.atoms[3]),
+                branch(expression.atoms[4]),
+            ),
+            position = expression.position,
+        )
+    }
+
+    /** Variable names in [atom], in document order. */
+    private fun varNamesIn(atom: Atom): List<String> {
+        val out = mutableListOf<String>()
+        fun go(a: Atom) {
+            when (a) {
+                is Variable -> out.add(a.name)
+                is Expression -> a.atoms.forEach(::go)
+                else -> {}
+            }
+        }
+        go(atom)
+        return out.distinct()
+    }
+
+    /**
+     * Rewrite every `unify` form in [atom] with [scope] carrying the variable names bound around
+     * it. Binder forms (`let`, `let*`, `chain`, a lambda, and `unify`'s own then-branch) extend
+     * the scope for their body only; `quote`d data is left untouched.
+     */
+    private fun lowerUnifyForms(atom: Atom, scope: Set<String>): Atom {
+        if (atom !is Expression || atom.atoms.isEmpty()) return atom
+        val head = atom.atoms[0]
+        val name = (head as? Symbol)?.name
+        if (head == PredefinedAtoms.QUOTE || name == Predefined.QUOTE) return atom
+        if (name == UNIFY_KEYWORD && atom.atoms.size == 5) return lowerUnify(atom, scope)
+        if (name == IF_EQUAL_KEYWORD && atom.atoms.size == 5) return lowerIfEqual(atom, scope)
+        if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    atom.atoms[1],
+                    lowerUnifyForms(atom.atoms[2], scope),
+                    lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[1])),
+                )
+            )
+        }
+        // `(chain X $v T)` binds `$v` in T only. Handled here as written, before the rewrite onto
+        // `let` further down, so a `unify` in either position sees the right scope.
+        if (name == CHAIN_KEYWORD && atom.atoms.size == 4) {
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    lowerUnifyForms(atom.atoms[1], scope),
+                    atom.atoms[2],
+                    lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[2])),
+                )
+            )
+        }
+        if (name == LetRewriter.LETSTAR_KEYWORD && atom.atoms.size == 3) {
+            val bindings = atom.atoms[1] as? Expression ?: return atom
+            var acc = scope
+            val rewrittenBindings = bindings.atoms.map { pair ->
+                if (pair !is Expression || pair.atoms.size != 2) return@map pair
+                val value = lowerUnifyForms(pair.atoms[1], acc)
+                acc = acc + varNamesIn(pair.atoms[0])
+                pair.copy(atoms = listOf(pair.atoms[0], value))
+            }
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    bindings.copy(atoms = rewrittenBindings),
+                    lowerUnifyForms(atom.atoms[2], acc),
+                )
+            )
+        }
+        if (head is Special && head.value == Predefined.LAMBDA && atom.atoms.size == 3) {
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    atom.atoms[1],
+                    lowerUnifyForms(atom.atoms[2], scope + varNamesIn(atom.atoms[1])),
+                )
+            )
+        }
+        return atom.copy(atoms = atom.atoms.map { lowerUnifyForms(it, scope) })
+    }
+
     private fun rewriteAssertionCall(expression: Expression): Expression {
         if (expression.atoms.size != 3) return expression
         return expression.copy(
@@ -917,8 +1186,61 @@ class FunctionRewriter(
         // (pattern/template wrapped in quote), then rewritten AGAIN when JIT-eval
         // re-runs the pipeline → double-quoted pattern that matches nothing. The quoted
         // form must reach eval exactly as the user wrote it.
-        if (func == PredefinedAtoms.QUOTE) return expression
+        // Match the NAME, not just the Special: a `quote` written in the source is still a Symbol
+        // at this point (it becomes a Special further down, in `mkSpecialFromSymbol`), so keying
+        // on `PredefinedAtoms.QUOTE` alone let a source-written quote's contents be rewritten.
+        // The head is normalised to the Special HERE, because returning early skips the conversion
+        // below — and a Symbol head would leave the form on codegen's data-constructor path, which
+        // evaluates its arguments (the very thing quoting must prevent).
+        if (func == PredefinedAtoms.QUOTE || (func is Symbol && func.name == Predefined.QUOTE)) {
+            return expression.copy(atoms = listOf(PredefinedAtoms.QUOTE) + expression.atoms.drop(1))
+        }
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
+        // `chain` is `let` with the binding evaluated: `(chain X $v T)` binds $v to the value of X
+        // and yields T. Rewriting it onto `let` reuses the whole tested binding path instead of
+        // adding a second one. DIVERGENCE: hyperon's `chain` takes ONE reduction step, where `let`
+        // evaluates fully. Same answer whenever the bound expression reaches a value in one step
+        // (every use in the reference `stdlib.metta` and in the corpus), different for a program
+        // that relies on stepwise control — which is the point of `chain` in minimal MeTTa.
+        if (func is Symbol && func.name == CHAIN_KEYWORD && expression.atoms.size == 4) {
+            // A bare VARIABLE in the stepped position is the one shape where `let` is not enough.
+            // `chain` evaluates its first argument after substitution, so a variable there means
+            // "run the program this variable holds" — the reference `map-atom` builds a template
+            // with `atom-subst` and then does `(chain $map-expr $head-mapped …)` to run it. A `let`
+            // would bind the template ITSELF, unevaluated. Routing it through `eval` is the
+            // runtime-compilation path, which is exactly what evaluating a runtime-built atom is.
+            val stepped = expression.atoms[1]
+            val value = if (stepped is Variable)
+                Expression(Symbol(EVAL_KEYWORD, position = stepped.position), stepped, position = stepped.position)
+            else stepped
+            return rewriteAtom(
+                Expression(
+                    Symbol(LetRewriter.LET_KEYWORD, position = func.position),
+                    expression.atoms[2],
+                    value,
+                    expression.atoms[3],
+                    position = expression.position,
+                )
+            )
+        }
+        // `function`/`return` are minimal MeTTa's evaluation bracket: `(function X)` reduces X one
+        // step at a time until it becomes `(return $v)`, then yields `$v`. The bracket exists to
+        // express WHEN to stop stepping — and JeTTa does not step: wherever it evaluates, it
+        // evaluates to a value. So both halves carry no information here and become the identity,
+        // leaving the `chain`s inside them as the `let`s they already rewrite to. This is what
+        // turns the reference `stdlib.metta`'s bodies from data (`function` was an unknown head,
+        // so the whole body compiled as a constructor) into ordinary compiled code.
+        //
+        // Same trade as `chain`, and the same divergence: identical answers whenever the body
+        // reaches its `return` — every use in that file — and different for a program that uses
+        // the bracket for stepwise control, which is the point of it in minimal MeTTa. As with
+        // `chain`, a user-defined function of the same name is shadowed by this rewrite; hyperon
+        // reserves both names too.
+        if (func is Symbol && expression.atoms.size == 2 &&
+            (func.name == FUNCTION_KEYWORD || func.name == RETURN_KEYWORD)
+        ) {
+            return rewriteAtom(expression.atoms[1])
+        }
         if (func is Symbol && func.name == "case" && expression.atoms.size == 3) return rewriteCaseCall(expression)
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {
@@ -964,7 +1286,11 @@ class FunctionRewriter(
                     // it (else -1 = always-visible, no guard). `factCount` here == the storeIndex
                     // this fact will get (addAsFact ++s it just below), matching the run watermark.
                     val ordinal = if (runs.isNotEmpty()) factCount else -1
-                    list.add(Pattern(pattern, rewriteAtom(expression.atoms[2]), ordinal))
+                    // `unify` is lowered in its own top-down pass first: it is the one form whose
+                    // rewrite depends on which variables are already in scope, and the clause head
+                    // is what seeds that scope. See [lowerUnify].
+                    val body = lowerUnifyForms(expression.atoms[2], varNamesIn(pattern).toSet())
+                    list.add(Pattern(pattern, rewriteAtom(body), ordinal))
                 }
                 // Every `(= lhs rhs)` is ALSO an equality fact in the space, whether or
                 // not its head compiles to a JVM function. This is the reference
@@ -980,6 +1306,9 @@ class FunctionRewriter(
             Predefined.TYPE -> {
                 val symbol = expression.atoms[1] as? Symbol
                 if (symbol != null) {
+                    // Record which parameters were written LITERALLY as `Atom` before `asType()`
+                    // erases every unknown type to the same thing — see [literalAtomParams].
+                    literalAtomParams[symbol.name] = literalAtomIndices(expression.atoms[2])
                     typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
                     // ALSO keep the type as a space fact so it is visible at runtime
                     // (`get-doc` / future `get-type` query `&self`). This is additive: the
@@ -1021,7 +1350,8 @@ class FunctionRewriter(
         // Snapshot the facts-declared-above count BEFORE rewriting the run body (rewriting never
         // adds facts, but keep the read at the source-order point for clarity).
         runWatermarks.add(factCount)
-        runs.add(rewriteAtom(run.expression))
+        // A run has no enclosing clause, so every variable in a `unify` it contains is free.
+        runs.add(rewriteAtom(lowerUnifyForms(run.expression, emptySet())))
     }
 
     /**

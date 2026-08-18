@@ -10,12 +10,6 @@
 # The runner skips files imported by other files in the suite (modules).
 # So entries here only need to cover files that run as standalone tests.
 
-# f1_imports transitively imports f1_moduleC, which trips a pre-existing
-# compiler NotImplementedError (likely tied to `Number` type / zero-arg
-# function in its declarations). Once that compiler bug is fixed the
-# whole f1 family should pass.
-f1_imports.metta            COMPILE_FAIL:KNOWN_BUG:moduleC-not-implemented        compiler crashes resolving f1_moduleC's body
-
-# c2_spaces uses (import! &kb ...) which is explicitly rejected until
-# Import-As semantics are implemented.
-c2_spaces.metta             COMPILE_FAIL:FEATURE_PENDING:import-as               needs Import-As (&kb) support
+# Empty: f1_imports was the last entry and now PASSES — its final blocker was a name defined by
+# more than one imported module (`dup`), which the reference interpreter answers with the union of
+# both rules. Such a call now dispatches over every visible owner and collects one bag.

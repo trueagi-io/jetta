@@ -8,11 +8,11 @@ import kotlin.test.assertTrue
 
 class ExternalCallsTest : GeneratorTestBase() {
     @Test
-    fun `call println with boxed int arg`() =
+    fun `call println! with boxed int arg`() =
         compile(
             "Println.metta",
             """
-            !(println (+ 1 1))
+            !(println! (+ 1 1))
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)
@@ -28,11 +28,11 @@ class ExternalCallsTest : GeneratorTestBase() {
         }
 
     @Test
-    fun `call println with boxed double arg`() =
+    fun `call println! with boxed double arg`() =
         compile(
             "Println.metta",
             """
-            !(println (+ 1.0 2.0))
+            !(println! (+ 1.0 2.0))
             """.trimIndent().replace('_', '$')
         ) { context ->
             registerExternals(context)

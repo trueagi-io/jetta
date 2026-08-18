@@ -8,6 +8,7 @@ import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Variable
+import net.singularity.jetta.runtime.StateCell
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -31,6 +32,7 @@ object TypeEngine {
     private val STRING = Symbol("String")
     private val BOOL = Symbol("Bool")
     private val UNDEF = Symbol("%Undefined%")
+    private val STATE_MONAD = Symbol("StateMonad")
     private const val UNDEF_NAME = "%Undefined%"
 
     /** Monotonic source of globally-unique variable suffixes for [instantiate]. */
@@ -159,8 +161,19 @@ object TypeEngine {
         "+", "-", "*", "/", "div", "%", "mod" -> arrow(NUMBER, NUMBER, NUMBER)
         "<", ">", "<=", ">=" -> arrow(NUMBER, NUMBER, BOOL)
         "==", "!=" -> Variable("_eqT#${freshCounter.incrementAndGet()}").let { arrow(it, it, BOOL) }
+        // The state signatures, verbatim from hyperon's stdlib. They are what makes a state's
+        // type `(StateMonad <type of its content>)` and what makes `change-state!` reject a value
+        // of a different type than the one the state was created with (`(BadArgType 2 …)`) —
+        // the tvar binds to the content type at parameter 1 and constrains parameter 2.
+        "new-state" -> freshStateVar().let { arrow(it, stateMonad(it)) }
+        "get-state" -> freshStateVar().let { arrow(stateMonad(it), it) }
+        "change-state!" -> freshStateVar().let { arrow(stateMonad(it), it, stateMonad(it)) }
         else -> null
     }
+
+    private fun freshStateVar(): Variable = Variable("_stT#${freshCounter.incrementAndGet()}")
+
+    private fun stateMonad(t: Atom): Atom = Expression(atoms = listOf(STATE_MONAD, t))
 
     /** `(: subject T)` — a type fact declaring the type of [subject]. */
     private fun isTypeFact(a: Atom, subject: Atom): Boolean =
@@ -174,9 +187,50 @@ object TypeEngine {
      */
     private fun typeOfSymbol(sym: Atom, atoms: List<Atom>): Atom {
         nameOf(sym)?.let { builtinType(it) }?.let { return it }
-        val decl = atoms.firstOrNull { isTypeFact(it, sym) } as? Expression
-        return decl?.atoms?.getOrNull(2)?.let { instantiate(it) } ?: UNDEF
+        return declaredType(sym, atoms) ?: UNDEF
     }
+
+    /**
+     * The type a `:` fact declares for [subject] verbatim, fresh-instantiated, or null when none
+     * does.
+     */
+    private fun declaredType(subject: Atom, atoms: List<Atom>): Atom? {
+        val decl = atoms.firstOrNull { isTypeFact(it, subject) } as? Expression
+        return decl?.atoms?.getOrNull(2)?.let { instantiate(it) }
+    }
+
+    /**
+     * A subject need not be a leaf: `(: (A B) PairAB)` types a whole expression, which is what
+     * gives `(new-state (A B))` the type `(StateMonad PairAB)` — read as an application, `(A B)`
+     * has no arrow-typed head and is simply ill-typed.
+     *
+     * Looking that up must not cost a scan of the space per inference: type checking runs on
+     * every call of a `:`-declared function, and most of its arguments are data whose head has no
+     * arrow — precisely the path that reaches here. So the compound declarations are collected
+     * once into a map, cached against the visible atom COUNT: the set of `:` facts can only
+     * change when the space does, and the count moves with it (a remove paired with an add of a
+     * new compound declaration in one step is the one shape this would miss).
+     */
+    private fun compoundDeclarations(atoms: List<Atom>): Map<Atom, Atom> {
+        if (compoundDeclKey != atoms.size) {
+            val m = HashMap<Atom, Atom>()
+            for (a in atoms) {
+                if (a !is Expression || a.atoms.size < 3) continue
+                if (nameOf(a.atoms[0]) != Predefined.TYPE) continue
+                val subject = a.atoms[1]
+                if (subject is Expression) m.putIfAbsent(subject, a.atoms[2])
+            }
+            compoundDecls = m
+            compoundDeclKey = atoms.size
+        }
+        return compoundDecls
+    }
+
+    @Volatile
+    private var compoundDeclKey: Int = -1
+
+    @Volatile
+    private var compoundDecls: Map<Atom, Atom> = emptyMap()
 
     // --- inference ------------------------------------------------------------------------
 
@@ -190,10 +244,21 @@ object TypeEngine {
     fun inferType(atom: Atom, atoms: List<Atom>): Atom? {
         val a = if (atom is BoundAtom) atom.atom else atom
         return when (a) {
-            is Grounded<*> -> typeOfLiteral(a)
+            // A live state atom is typed by what it currently HOLDS, so a state created from a
+            // `:`-declared value carries that declared type: `(get-type &state-token)` is
+            // `(StateMonad PairAB)` when the cell holds `(A B)` and `(: (A B) PairAB)` is in
+            // scope. Needs the `:` facts, so it cannot live in the literal table.
+            is Grounded<*> -> when (val v = a.value) {
+                is StateCell -> inferType(v.value, atoms)?.let { stateMonad(it) }
+                else -> typeOfLiteral(a)
+            }
             is Variable -> UNDEF
             is Symbol, is Special -> typeOfSymbol(a, atoms)
+            // Reading the expression as an application first; only a form that is not a
+            // well-typed application — `(A B)`, a bare data pair — asks whether some `:` fact
+            // types it verbatim (see [compoundDeclarations]).
             is Expression -> inferApp(a, atoms)
+                ?: compoundDeclarations(atoms)[a]?.let { instantiate(it) }
             else -> UNDEF
         }
     }

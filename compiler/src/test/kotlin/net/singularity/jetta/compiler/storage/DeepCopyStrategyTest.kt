@@ -21,7 +21,7 @@ class DeepCopyStrategyTest {
             """
             (Fact apple)
             !(import! &self utils)
-            !(println "ok")
+            !(println! "ok")
             """.trimIndent()
         )
         File(src.toFile(), "utils.metta").writeText(
@@ -68,9 +68,9 @@ class DeepCopyStrategyTest {
         // import it sees utils' fact. This is the behaviour the static merge could not model.
         File(src.toFile(), "mainord.metta").writeText(
             """
-            !(println (collapse (match &self (Fact ${'$'}x) ${'$'}x)))
+            !(println! (collapse (match &self (Fact ${'$'}x) ${'$'}x)))
             !(import! &self utilord)
-            !(println (collapse (match &self (Fact ${'$'}x) ${'$'}x)))
+            !(println! (collapse (match &self (Fact ${'$'}x) ${'$'}x)))
             """.trimIndent()
         )
         File(src.toFile(), "utilord.metta").writeText("(Fact banana)")
@@ -95,7 +95,7 @@ class DeepCopyStrategyTest {
             """
             !(import! &self a)
             !(import! &self b)
-            !(println "ok")
+            !(println! "ok")
             """.trimIndent()
         )
         File(src.toFile(), "a.metta").writeText(
@@ -151,7 +151,7 @@ class DeepCopyStrategyTest {
         File(src.toFile(), "mainx.metta").writeText(
             """
             !(import! &self utilsx)
-            !(println (foo))
+            !(println! (foo))
             """.trimIndent()
         )
         File(src.toFile(), "utilsx.metta").writeText(

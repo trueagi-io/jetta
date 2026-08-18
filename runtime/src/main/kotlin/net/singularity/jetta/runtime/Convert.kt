@@ -13,6 +13,23 @@ import net.singularity.jetta.compiler.frontend.ir.Symbol
  */
 object Convert {
     /**
+     * Strip a value out of its MeTTa envelope, if it has one.
+     *
+     * An `Object`-typed slot — what a parameter or return declared `Any` (or `Number`, which
+     * erases to it) compiles to — may legitimately hold either a `Grounded` wrapping the value or
+     * the bare box: the call site boxes a computed primitive, while a value that travelled as data
+     * arrives wrapped. Code that reads such a slot as a primitive has to accept both, so it goes
+     * through here instead of casting straight to `Grounded`. `Atom`-typed slots hold Atoms by
+     * construction and keep their direct unwrap — this is not on that path.
+     */
+    @JvmStatic
+    fun unwrapValue(value: Any?): Any? = when (value) {
+        is BoundAtom -> unwrapValue(value.atom)
+        is net.singularity.jetta.compiler.frontend.ir.Grounded<*> -> value.value
+        else -> value
+    }
+
+    /**
      * `superpose` — turn a tuple into a nondeterministic result.
      * `(superpose (a b c))` yields the alternatives `a`, `b`, `c`; `(superpose ())`
      * yields no results. The argument is an [Expression] whose children become the

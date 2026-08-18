@@ -7,6 +7,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotInferTypeMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.CannotResolveSymbolMessage
 import net.singularity.jetta.compiler.frontend.resolve.messages.IncompatibleTypesMessage
+import net.singularity.jetta.compiler.frontend.resolve.messages.ShadowedByBuiltinMessage
 import net.singularity.jetta.compiler.frontend.rewrite.CanonicalFormRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LowerAssertExpressionsRewriter
@@ -29,6 +30,7 @@ class Context private constructor(
     private val resolvedFunctions: MutableMap<String, SymbolDef>,
     private val functions: MutableMap<String, FunctionDefinition>,
     private val systemFunctions: MutableMap<String, ResolvedSymbol>,
+    private val functionOwners: MutableMap<String, List<SymbolDef>>,
 ) {
     constructor(
         messageCollector: MessageCollector,
@@ -37,7 +39,7 @@ class Context private constructor(
         space: Space,
     ) : this(
         messageCollector, mapImpl, flatMapImpl, space,
-        mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(),
+        mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(), mutableMapOf(),
     )
 
     private val logger = Logger.getLogger(Context::class.java)
@@ -76,6 +78,7 @@ class Context private constructor(
         OverlayMap(resolvedFunctions),
         OverlayMap(functions),
         OverlayMap(systemFunctions),
+        OverlayMap(functionOwners),
     )
 
     fun getSpace(): Space {
@@ -164,12 +167,30 @@ class Context private constructor(
         owner = owner,
         name = func.name,
         descriptor = func.getJvmDescriptor(),
-        signature = func.getSignature()
+        signature = func.getSignature(),
+        // A parameter the source declares literally `Atom` is hyperon's meta-type annotation. Only a
+        // builtin could say so before — `inertAtomParams` was reachable only from
+        // `registerExternals` — so a user function could not take a template, and the reference
+        // stdlib's `filter-atom` had its `(> $v 1)` reduced at the call site over a free variable.
+        // It maps to the CONDITIONAL flavour: see `JvmMethod.templateAtomParams` for why holding a
+        // user function's argument unconditionally is wrong for us where it is right for hyperon.
+        templateAtomParams = func.declaredAtomParams,
     )
+
+    /**
+     * Record [owner] among ALL the modules that define [func]'s name, beside the single-owner
+     * `resolvedFunctions` (whose last writer wins). Keyed by owner, so the repeated resolution
+     * rounds over one source refresh that module's entry instead of appending to it.
+     */
+    private fun recordFunctionOwner(owner: String, func: FunctionDefinition) {
+        val current = functionOwners[func.name].orEmpty()
+        functionOwners[func.name] = current.filterNot { it.owner == owner } + SymbolDef(owner, func)
+    }
 
     private fun addResolvedFunction(owner: String, func: FunctionDefinition) {
         logger.debug { "Registered function: ${func.name} :: ${func.arrowType ?: "untyped"} (owner=$owner)" }
         resolvedFunctions[func.name] = SymbolDef(owner, func)
+        recordFunctionOwner(owner, func)
         main?.let {
             val lastCall = when (it.body) {
                 is Expression -> (it.body as Expression).atoms.last()
@@ -195,6 +216,7 @@ class Context private constructor(
                 .map { it as FunctionDefinition }
         external.forEach {
             resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
+            recordFunctionOwner(source.getJvmClassName(), it)
         }
     }
 
@@ -354,6 +376,18 @@ class Context private constructor(
             }
 
             is Expression -> {
+                expression.atoms.forEach { inferType(it, scope) }
+                expression.type = GroundedType.ATOM
+            }
+
+            is Grounded<*> -> {
+                // A LITERAL-headed expression — `(1 2 $d)` — is a data tuple, not an
+                // application: no value is callable, and a non-callable head is inert data by
+                // the same policy that makes an unresolved Symbol head data. Infer the
+                // elements' types (a nested call inside the tuple still needs them) and type
+                // the tuple itself ATOM, exactly as the expression-headed arm above does.
+                // Used to be a `TODO`, which crashed the whole compile on a shape the parser
+                // accepts and the runtime handles.
                 expression.atoms.forEach { inferType(it, scope) }
                 expression.type = GroundedType.ATOM
             }
@@ -533,6 +567,60 @@ class Context private constructor(
      */
     private fun hasGroundedArithmeticTypeError(operands: List<Atom>): Boolean =
         operands.any { it.type == GroundedType.STRING }
+
+    /**
+     * A grounded arithmetic op computes over numbers, so a bare [Symbol] operand — `(+ ln 2)`,
+     * where `ln` is an ordinary symbol rather than a grounded function — is neither a number nor
+     * something that reduces to one. hyperon leaves the whole application UNREDUCED (c1:
+     * `(> 4 (+ ln 2))` → `(> 4 (+ ln 2))`), so stamp the node `ATOM` and let codegen take its
+     * inert branch and quote the expression. Without this the operand reached `IADD` and tripped
+     * `FunctionGenerator.type`'s `TODO` — a bare Symbol has no JVM type, so arithmetic codegen
+     * could never have handled one. Variables (pinned numeric by [inferArithmeticOperandTypes]),
+     * nested calls and grounded numbers are untouched.
+     */
+    private fun hasUnreducibleArithmeticOperand(operands: List<Atom>, scope: Scope): Boolean =
+        operands.any { it is Symbol || isFreeRunVariable(it, scope) }
+
+    /**
+     * A variable with no binder at all: it occurs in a top-level `!`-run, whose generated `__main_N`
+     * has no parameters and no match pattern, and it is not in scope. c1 expects
+     * `(> 4 (+ $x 2))` back unreduced for exactly this reason.
+     *
+     * Restricted to run functions on purpose. Inside an ordinary function an untyped variable is a
+     * parameter or a destructured match binding — [inferArithmeticOperandTypes] must keep pinning
+     * those to a numeric type (that is what lets an untyped `(+ $x $x)` compile at all), and a
+     * destructured binding is not in `scope.data` before it is pinned, so "absent from scope" alone
+     * would wrongly condemn `subsum`'s `(* $x $b)`.
+     */
+    private fun isFreeRunVariable(atom: Atom, scope: Scope): Boolean =
+        atom is Variable && scope[atom.name] == null &&
+            (scope.functionDefinition as? FunctionDefinition)
+                ?.name?.startsWith(FunctionRewriter.MAIN) == true
+
+    /**
+     * An arithmetic form that cannot be computed because an operand is a plain symbol — `(+ ln 2)`,
+     * the node [hasUnreducibleArithmeticOperand] stamps `ATOM`. An enclosing order comparison then
+     * has no Bool value either and must stay inert as a whole: c1 expects `(> 4 (+ ln 2))` back
+     * unchanged. Tested STRUCTURALLY, not by the `ATOM` type, because many legitimately comparable
+     * operands are Atom-typed at compile time (an untyped function's result, an `Atom` parameter
+     * holding a grounded number) and those must keep compiling to a real comparison.
+     */
+    private fun isUnreducibleArithmetic(atom: Atom, scope: Scope): Boolean =
+        atom is Expression && arithmeticOpName(atom.atoms.firstOrNull()) != null &&
+            hasUnreducibleArithmeticOperand(atom.arguments(), scope)
+
+    /** The surface name of an arithmetic head, whether stored as [Special] or [Symbol]. */
+    private fun arithmeticOpName(head: Atom?): String? {
+        val name = when (head) {
+            is Special -> head.value
+            is Symbol -> head.name
+            else -> null
+        }
+        return name?.takeIf {
+            it == Predefined.PLUS || it == Predefined.MINUS || it == Predefined.TIMES ||
+                it == Predefined.DIVIDE || it == Predefined.DIV || it == Predefined.MOD
+        }
+    }
 
     /**
      * D2.4 (increment 1): `==`/`!=` are grounded `(-> $t $t Bool)`, so both operands must
@@ -822,13 +910,57 @@ class Context private constructor(
             round++
         } while (changed && round < 16)
         val normalizedMain = normalizeMainForCodegen(source)
+        // Annotate BEFORE the post-resolve rewriters: both the multivalued marking and the
+        // multivalued LIFT read a name's user `=` definition, and a shadowed one has to be
+        // invisible to them for the same reason codegen skips it — the call links to the builtin.
+        // The warning is emitted separately, further down, because `messageCollector.clear()`
+        // below would otherwise swallow it.
+        markDefinitionsShadowedByRuntime(normalizedMain)
         val postprocessed = applyPostResolveRewriters(normalizedMain)
         messageCollector.clear()
         registerUntypedFunctions(postprocessed)
         resolveSource(postprocessed)
         validateExecutableCalls(postprocessed)
         defaultUntypedToAtom(postprocessed)
+        markDefinitionsShadowedByRuntime(postprocessed)
+        reportDefinitionsShadowedByRuntime(postprocessed)
         return postprocessed
+    }
+
+    /**
+     * A `=` rule whose name JeTTa grounds natively can never be reached as a CALL: [resolve]
+     * consults [systemFunctions] first, so every call site — in this module and in any importer —
+     * links to the builtin. Compiling a method for it anyway is dead code that can still fail
+     * verification, and verification is never local: one bad method takes the whole class with it.
+     *
+     * The reference `stdlib.metta` redefines a dozen such names on top of hyperon's Rust primitives
+     * (`cdr-atom`, `car-atom`, `case`, `collapse`, `empty`, `quote`, `nop`, `assertEqual`, `help!`,
+     * …), and one of them cannot be represented at all: `help!` is written there at two arities,
+     * which merge into a single method whose body loads a parameter its descriptor does not declare.
+     *
+     * Marking them is not new policy — the resolver has always preferred the builtin, so no call
+     * site changes meaning. The rule itself still reaches the SPACE as an ordinary `(= …)` atom, so
+     * the reflective path (`match &self (= …)`, runtime dispatch) sees exactly what it saw before.
+     * Only the unreachable JVM method disappears. Reported as a WARNING, because a user who writes
+     * such a rule expecting it to be called deserves to know it will not be.
+     */
+    private fun markDefinitionsShadowedByRuntime(source: ParsedSource) {
+        source.code.filterIsInstance<FunctionDefinition>().forEach {
+            if (systemFunctions[it.name] != null && !it.isShadowedByRuntime()) {
+                it.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
+            }
+        }
+    }
+
+    /**
+     * The warning for [markDefinitionsShadowedByRuntime], reported separately because the
+     * annotation has to be in place before the post-resolve rewriters run while the message must
+     * survive the `messageCollector.clear()` between them.
+     */
+    private fun reportDefinitionsShadowedByRuntime(source: ParsedSource) {
+        source.code.filterIsInstance<FunctionDefinition>()
+            .filter { it.isShadowedByRuntime() }
+            .forEach { messageCollector.add(ShadowedByBuiltinMessage(it.name, it.position)) }
     }
 
     /**
@@ -1001,12 +1133,79 @@ class Context private constructor(
     }
 
     private fun resolveSource(source: ParsedSource) {
-        source.code.forEach {
-            when (it) {
-                is FunctionDefinition -> resolveFunctionDefinition(source.getJvmClassName(), it)
-                else -> TODO("it=$it")
+        val self = source.getJvmClassName()
+        val schedule = importSchedule(source)
+        gatedModules = schedule.values.mapTo(mutableSetOf()) { it.second }
+        try {
+            source.code.forEach {
+                when (it) {
+                    is FunctionDefinition -> {
+                        // A `!`-run sees only what has been imported into `&self` BEFORE it.
+                        // Everything else — an ordinary function, hoisted and resolved at call
+                        // time — keeps the unbounded view.
+                        visibleOwners = runOrdinal(it.name)
+                            ?.let { n -> visibleOwnersAt(self, schedule, n) }
+                        resolveFunctionDefinition(self, it)
+                    }
+
+                    else -> TODO("it=$it")
+                }
+            }
+        } finally {
+            visibleOwners = null
+            gatedModules = emptySet()
+        }
+    }
+
+    /**
+     * The source's `import!` directives keyed by the ordinal of the `!`-run that performs them.
+     * `FunctionRewriter` has already split every top-level `!`-form into `__main_<k>` in source
+     * order, so the ordinal IS the program order — no separate bookkeeping is needed. Each entry
+     * is (target space, imported module); the target is `&self` as written, a named space, or —
+     * for a directive spliced out of an imported module — that module's own name (see
+     * `ImportResolutionPass.rebindSelf`).
+     */
+    private fun importSchedule(source: ParsedSource): Map<Int, Pair<String, String>> = buildMap {
+        source.code.forEach { atom ->
+            val def = atom as? FunctionDefinition ?: return@forEach
+            val ordinal = runOrdinal(def.name) ?: return@forEach
+            val body = def.body as? Expression ?: return@forEach
+            if (body.atoms.size != 3) return@forEach
+            if ((body.atoms[0] as? Symbol)?.name != Visibility.IMPORT) return@forEach
+            val target = (body.atoms[1] as? Symbol)?.name ?: return@forEach
+            val module = (body.atoms[2] as? Symbol)?.name ?: return@forEach
+            put(ordinal, target to module)
+        }
+    }
+
+    /** `__main_7` -> 7; any other function (including `__main` itself) -> null. */
+    private fun runOrdinal(name: String): Int? =
+        if (name.startsWith(Visibility.RUN_PREFIX)) name.removePrefix(Visibility.RUN_PREFIX).toIntOrNull() else null
+
+    /**
+     * Which modules a run at [ordinal] may resolve against: [self], plus the transitive closure
+     * of the imports performed STRICTLY BEFORE it. Transitive because an import copies the source
+     * module's space as it stands, and a module has by then imported its own dependencies into
+     * itself — f1's `g` lives in moduleC, which moduleA imports into itself at run 4, and moduleA
+     * reaches `&self` at run 10, so `g` is resolvable from run 11 on and not at run 9. An import
+     * into a NAMED space contributes nothing to `&self` unless that space is itself reachable.
+     */
+    private fun visibleOwnersAt(
+        self: String,
+        schedule: Map<Int, Pair<String, String>>,
+        ordinal: Int,
+    ): Set<String> {
+        val visible = mutableSetOf(self)
+        val edges = schedule.filterKeys { it < ordinal }.values
+        var changed = true
+        while (changed) {
+            changed = false
+            edges.forEach { (target, module) ->
+                val targetName = if (target == Visibility.SELF) self else target
+                if (targetName in visible && visible.add(module)) changed = true
             }
         }
+        return visible
     }
 
     fun resolveFunctionDefinition(owner: String, functionDefinition: FunctionDefinition) {
@@ -1058,13 +1257,25 @@ class Context private constructor(
      * `.resolved` + a concrete type and codegen evaluates it), otherwise the sub-atom stays
      * inert. Pure symbols/literals/variables are left as-is.
      */
-    private fun resolveNestedCallsInData(atom: Atom, scope: Scope) {
+    private fun resolveNestedCallsInData(
+        atom: Atom,
+        scope: Scope,
+        executeSpecialHeads: Boolean = false
+    ) {
         if (atom !is Expression) return
-        val headName = (atom.atoms.firstOrNull() as? Symbol)?.name
-        if (headName != null && resolve(headName) != null) {
+        val head = atom.atoms.firstOrNull()
+        val headName = (head as? Symbol)?.name
+        // [executeSpecialHeads] additionally treats a Special-headed sub-form (arithmetic) as
+        // executable, which is what turns c1's `(ln (+ 2 2))` into `(ln 4)`: unresolved, the `(+ 2 2)`
+        // stays untyped and codegen quotes it as a thunk. OFF by default, because a Special-headed
+        // form inside genuine data must stay inert — c3's `(stv (* 0.8 (s-tv (TV …))) …)` is a data
+        // template whose `(* …)` is not reducible at that point, and executing it hands the
+        // multiplication an unbound Variable.
+        val specialIsExecutable = executeSpecialHeads && head is Special
+        if (specialIsExecutable || (headName != null && resolve(headName) != null)) {
             resolveExpression(atom, scope)
         } else {
-            atom.atoms.forEach { resolveNestedCallsInData(it, scope) }
+            atom.atoms.forEach { resolveNestedCallsInData(it, scope, executeSpecialHeads) }
         }
     }
 
@@ -1133,7 +1344,14 @@ class Context private constructor(
                 atom.arrowType = atom.arrowType ?: suggestedType as? ArrowType
                 atom.type = atom.arrowType ?: suggestedType
                 atom.params.forEachIndexed { index, variable ->
-                    variable.type = atom.arrowType?.types?.get(index)
+                    // A lambda can legitimately have MORE parameters than its suggested arrow type
+                    // declares: the branch lambdas of `letMatch` / `unifyMatch` take one argument
+                    // per variable in the PATTERN, a count no system-function declaration can
+                    // state. Those parameters carry bindings read out of a match, so `Atom` is
+                    // their type. Indexing blindly threw ArrayIndexOutOfBounds and killed the
+                    // whole compile (a 4-variable `unify` pattern is enough — the reference
+                    // stdlib's `get-doc` uses one).
+                    variable.type = atom.arrowType?.types?.getOrNull(index) ?: GroundedType.ATOM
                 }
                 val lambdaTypeInfo = createLambdaTypeInfo(scope, atom)
                 resolveAtom(atom.body, lambdaTypeInfo)
@@ -1156,13 +1374,28 @@ class Context private constructor(
                     }
                     return
                 }
-                if (suggestedType != def.func.arrowType) {
-                    messageCollector.add(IncompatibleTypesMessage(suggestedType!!, def.func.arrowType!!, atom.position))
+                // A function's NAME in a value position — passed to a higher-order function, or
+                // sitting in a data slot. It eta-expands into `(\ params (f params))` below.
+                //
+                // An incompatibility can only be reported when there is something to compare:
+                // both a type expected here and a declared arrow type. Neither is guaranteed —
+                // an argument slot typed `Atom`, or any value position with no expectation at
+                // all, gives no suggested type, and an untyped callee has no arrow type — and
+                // asserting them threw instead (the `!!`s this replaces).
+                val declared = def.func.arrowType
+                if (suggestedType != null && declared != null && suggestedType != declared) {
+                    messageCollector.add(IncompatibleTypesMessage(suggestedType, declared, atom.position))
+                    return
+                }
+                if (declared == null) {
+                    // Nothing to build a typed reference from. The name stays a plain atom and
+                    // the application it ends up in is reduced by runtime dispatch.
+                    atom.type = GroundedType.ATOM
                     return
                 }
                 val wrapper = Lambda(
                     def.func.params,
-                    def.func.arrowType,
+                    declared,
                     Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position),
                     position = atom.position
                 )
@@ -1217,6 +1450,7 @@ class Context private constructor(
 
     private fun createLambdaTypeInfo(parentScope: Scope, lambda: Lambda): Scope = parentScope.join(lambda)
 
+
     private fun resolveExpression(expression: Expression, scope: Scope) {
         logger.trace { "Resolving expression: $expression" }
         if (!scope.isProvided &&
@@ -1231,12 +1465,25 @@ class Context private constructor(
             expression.type = GroundedType.ATOM
             return
         }
+        // A grounded operator applied to the wrong number of operands is DATA, not a call — the
+        // Special branches below each destructure a fixed shape and would otherwise throw. Same
+        // policy as the arity guard on a user-defined function below: leave the form inert,
+        // resolve what is inside it, and let the runtime reduce the completed application.
+        if (expression.isMisappliedSpecial()) {
+            expression.type = GroundedType.ATOM
+            expression.arguments().forEach { resolveAtom(it, scope) }
+            return
+        }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
                 val resolved = resolve(atom.name)
                 val expectedArity = resolved?.arrowType()?.let { it.types.size - 1 }
+                // The guard used to require `definedFunctions[atom.name] != null`, i.e. it only
+                // covered USER-defined callees. A system function has no entry there, so an
+                // over-applied one walked straight into `arrowType.types[index]` below and threw
+                // IndexOutOfBounds (hit while parsing the reference `stdlib.metta`). Arity is a
+                // property of the resolved symbol, whoever owns it.
                 if (resolved != null && expectedArity != null &&
-                    definedFunctions[atom.name] != null &&
                     expression.arguments().size != expectedArity
                 ) {
                     // Arity mismatch on a user-defined function: an under-application
@@ -1282,6 +1529,20 @@ class Context private constructor(
                         }
                     }
                 } else {
+                    // A name that resolves but is NOT YET VISIBLE here (its module is imported
+                    // into `&self` further down the file) must lose any stamp an earlier pass
+                    // left on it. The first resolution rounds run while `__main` is still one
+                    // monolithic run — there is no ordinal to gate on — so `(g 3)` gets a
+                    // `.resolved` then; this pass runs after the split and must retract it, or
+                    // codegen emits the static call anyway (f1 :56).
+                    // The stale TYPE has to go with it: the earlier pass stamped the callee's
+                    // return type (`Int` for `g`), and codegen would then emit an inert
+                    // Expression while promising a primitive on the stack (VerifyError).
+                    // Un-resolved application = data = ATOM.
+                    if (isShadowedByVisibility(atom.name)) {
+                        expression.resolved = null
+                        expression.type = GroundedType.ATOM
+                    }
                     // Always track as unresolved so subsequent passes can retry
                     unresolvedElements[expression.id] = AtomWithTypeInfo(expression, scope)
                     if (definedFunctions[atom.name] == null) {
@@ -1297,7 +1558,25 @@ class Context private constructor(
                             expression.type = GroundedType.ATOM
                             expression.arguments().forEach { resolveAtom(it, scope) }
                         } else {
-                            messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                            // An unresolved head is DATA. The reference interpreter has no notion
+                            // of an unresolved symbol at all — a head with no `=` rule leaves the
+                            // application inert — so this is reported only where JeTTa cannot
+                            // REPRESENT that: see [demandsGroundedResult].
+                            if (demandsGroundedResult(scope)) {
+                                messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
+                            }
+                            // Reported or not, treat the application as the inert data it is and
+                            // resolve the reducible sub-calls in its ARGUMENTS: an unknown head does
+                            // not suppress reduction of what it is applied to (c1 `(ln (+ 2 2))` →
+                            // `(ln 4)`). Without this the arguments were left untyped, so codegen
+                            // quoted `(+ 2 2)` as a thunk. Via [resolveNestedCallsInData], not a bare
+                            // `resolveAtom`, so genuine data — in particular a bare function NAME in
+                            // an argument slot — is left alone instead of being resolved as a
+                            // function reference against a null suggested type.
+                            expression.type = GroundedType.ATOM
+                            expression.arguments().forEach {
+                                resolveNestedCallsInData(it, scope, executeSpecialHeads = true)
+                            }
                         }
                     }
                 }
@@ -1365,13 +1644,23 @@ class Context private constructor(
                     resolveAtom(lhs, scope)
                     resolveAtom(rhs, scope)
                     propagateComparisonOperandType(lhs, rhs, scope)
-                    expression.type = GroundedType.BOOLEAN
+                    // An operand that cannot be computed leaves the comparison without a Bool
+                    // value, so the whole form stays inert data (c1 `(> 4 (+ ln 2))`). Unlike
+                    // `==`/`!=`, order comparisons have no symbolic fallback to fall back to.
+                    expression.type =
+                        if (isUnreducibleArithmetic(lhs, scope) || isUnreducibleArithmetic(rhs, scope)) {
+                            GroundedType.ATOM
+                        } else {
+                            GroundedType.BOOLEAN
+                        }
                 }
 
                 Predefined.TIMES, Predefined.MINUS, Predefined.PLUS -> {
                     val operands = expression.arguments()
                     operands.forEach { resolveAtom(it, scope) }
-                    if (hasGroundedArithmeticTypeError(operands)) {
+                    if (hasGroundedArithmeticTypeError(operands) ||
+                        hasUnreducibleArithmeticOperand(operands, scope)
+                    ) {
                         expression.type = GroundedType.ATOM
                     } else {
                         inferArithmeticOperandTypes(atom.value, operands, scope)
@@ -1578,8 +1867,140 @@ class Context private constructor(
                 (atoms[0] as? Special)?.value == Predefined.SEQ
 
     fun resolve(name: String): ResolvedSymbol? =
-        systemFunctions[name] ?: resolvedFunctions[name]
-            ?.let { ResolvedSymbol(it.toJvm(), it.func.arrowType, it.func.isMultivalued()) }
+        systemFunctions[name] ?: resolveUserFunction(name)
+
+    private fun resolveUserFunction(name: String): ResolvedSymbol? {
+        val primary = primaryOwner(name) ?: return null
+        val alternatives = visibleAlternativeOwners(name, primary)
+        if (alternatives.isEmpty()) {
+            return ResolvedSymbol(primary.toJvm(), primary.func.arrowType, primary.func.isMultivalued())
+        }
+        // More than one visible module defines this name: the call answers with the union of
+        // their results, so its type gains a bag and it counts as multivalued from here on
+        // (`MarkMultivaluedFunctionsRewriter` reads `isMultiValued` off the resolved symbol, and
+        // `Expression.type` is stamped from this arrow type).
+        val arrowType = primary.func.arrowType?.let {
+            ArrowType(it.types.dropLast(1) + SeqType(it.types.last()))
+        }
+        return ResolvedSymbol(primary.toJvm(), arrowType, true, alternatives.map { it.toJvm() })
+    }
+
+    /**
+     * The owner a call to [name] links against: the single-owner entry when it is visible here,
+     * otherwise ANY visible owner of that name.
+     *
+     * The fallback matters because `resolvedFunctions` keeps only the LAST module compiled, which
+     * need not be the one in scope: with two modules defining `h`, importing only the other one
+     * left the call inert, since the sole candidate the table offered was invisible. Reached only
+     * under ordered visibility (inside a `!`-run) and only when a second owner exists, so the
+     * one-name-one-method case is untouched.
+     */
+    private fun primaryOwner(name: String): SymbolDef? {
+        val recorded = resolvedFunctions[name] ?: return null
+        if (isOwnerVisible(recorded.owner)) return recorded
+        return functionOwners[name].orEmpty().firstOrNull { isOwnerVisible(it.owner) }
+    }
+
+    /**
+     * The OTHER visible modules that define [name] — empty in the ordinary one-name-one-method
+     * case. `import!` copies each module's `(= …)` rules into `&self`, so when two imported
+     * modules both define `dup` the reference interpreter keeps both rules and unions their
+     * answers (f1_imports :114). JeTTa compiles each module separately, so the union has to be
+     * built at the call site out of the several compiled methods.
+     *
+     * Deliberately narrow — every condition here is load-bearing:
+     *  - only inside a `!`-run ([visibleOwners] non-null), and only over owners in that run's
+     *    visible set. [isOwnerVisible] is permissive for an owner no `import!` names (the REPL
+     *    compiles every input as its own class, `compileMultipleSources` may be handed unrelated
+     *    files); unioning across those would turn a plain redefinition into non-determinism.
+     *  - the primary owner must be in that set too, for the same reason.
+     *  - identical JVM descriptor, because the union evaluates the arguments ONCE and feeds the
+     *    same values to every owner.
+     *  - scalar owners only: each call contributes one element to the bag. A multivalued owner
+     *    would return a bag of its own, which is a concatenation, not an element.
+     *  - a value to contribute at all, so nothing that returns `void`.
+     */
+    private fun visibleAlternativeOwners(name: String, primary: SymbolDef): List<SymbolDef> {
+        val visible = visibleOwners ?: return emptyList()
+        if (primary.owner !in visible) return emptyList()
+        if (primary.func.arrowType == null || primary.func.isMultivalued()) return emptyList()
+        val descriptor = primary.func.getJvmDescriptor()
+        if (descriptor.endsWith(")V")) return emptyList()
+        return functionOwners[name].orEmpty().filter {
+            it.owner != primary.owner &&
+                it.owner in visible &&
+                it.func.arrowType != null &&
+                !it.func.isMultivalued() &&
+                it.func.getJvmDescriptor() == descriptor
+        }
+    }
+
+    /**
+     * Ordered module visibility — the compile-time twin of the runtime watermark.
+     *
+     * A cross-module symbol means nothing until its module has been imported into `&self`, and
+     * `import!` is order-sensitive, so a name that resolves inside one `!`-run need not resolve
+     * inside an earlier one. [visibleOwners] is the set in effect for the definition being
+     * resolved right now; `null` means "unbounded" — every non-run context (an ordinary function,
+     * which is hoisted and resolved at call time, and every caller outside [resolveSource]).
+     */
+    private var visibleOwners: Set<String>? = null
+
+    /**
+     * The modules this source actually names in an `import!`. ONLY these are gated: an owner the
+     * file never imports keeps the permissive pre-existing behaviour, which several other callers
+     * depend on — the REPL compiles each input as its own class, so a function from an earlier
+     * line has a different owner and no import schedule mentions it, and `compileMultipleSources`
+     * may be handed unrelated files that have always seen each other.
+     */
+    private var gatedModules: Set<String> = emptySet()
+
+    private fun isOwnerVisible(owner: String): Boolean {
+        val visible = visibleOwners ?: return true
+        return owner in visible || owner !in gatedModules
+    }
+
+    /** True when [name] is defined but NO module defining it is visible at this point. */
+    private fun isShadowedByVisibility(name: String): Boolean =
+        systemFunctions[name] == null &&
+            resolvedFunctions[name] != null &&
+            primaryOwner(name) == null
+
+    /**
+     * Does the result of the enclosing scope have to be a CONCRETE JVM value, one that an
+     * inert Expression cannot stand in for?
+     *
+     * This gates the "can not resolve symbol" diagnostic on an unresolved application head.
+     * A head with no definition is data in MeTTa — nothing to report — but a declared `Int`
+     * return is an `ireturn`, and handing it a quoted Expression means a VerifyError at load
+     * time instead of a wrong answer. So the message survives exactly where the program is
+     * unrepresentable rather than merely symbolic: `(: bar (-> Int)) (= (bar) (foo 1 2))`
+     * keeps it, while `(: undefined-doc-function-type (-> Expression Type))` returning the
+     * data tuple `(%Undefined%)` (reference `stdlib.metta`) does not.
+     *
+     * The condition this replaces keyed on the enclosing function's PARAMS — some param typed
+     * `Atom`, or a `Match` body. That rested on type erasure rather than on meaning: `Number`,
+     * `Type` and user types are absent from [GroundedType] and erase to `ATOM`, so they were
+     * silently accepted, while `Expression`, `Bool` and `String` — no less data-carrying —
+     * were not. An untyped or `Atom`/`Any`/`Expression`-returning scope is unaffected either
+     * way; it is representable, so it stays silent.
+     */
+    private fun demandsGroundedResult(scope: Scope): Boolean =
+        when (scope.functionDefinition.returnType) {
+            GroundedType.INT,
+            GroundedType.LONG,
+            GroundedType.DOUBLE,
+            GroundedType.BOOLEAN,
+            GroundedType.STRING -> true
+
+            else -> false
+        }
+
+    private object Visibility {
+        const val SELF = "&self"
+        const val IMPORT = "import!"
+        const val RUN_PREFIX = "${FunctionRewriter.MAIN}_"
+    }
 
     private fun ResolvedSymbol.arrowType(): ArrowType = arrowType ?: jvmMethod.arrowType()
 
