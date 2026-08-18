@@ -317,26 +317,7 @@ class CanonicalFormRewriter(
         // body is a single value (a scalar op like `min`/`*`/`s-tv`), the innermost lift is
         // MAP_ (collect one value per element). Consumed both by the compound-lift loop below
         // and by the `replacement`/createMaps path further down.
-        val bodyCallsMultivalued = body is Expression && body.atoms.isNotEmpty() && when (val h = body.atoms[0]) {
-            // The body is a call to a multivalued user function, or to a multivalued SYSTEM
-            // function (`letMatch`, `get-type`, `superpose`, …) — those return their bag
-            // directly too, so a wrap over them must flatten (d1's `(let (List $t) (get-type …)
-            // $t)` yielded `[[Number]]` when the innermost wrap map?-ed a bag-returning body).
-            is Symbol -> isMultivaluedHead(h.name)
-            // … or an APPLIED lambda (a `let` body) whose own body yields a bag — the
-            // application returns a List, so the wrap must flatten, not nest (List<List>).
-            // The body is consulted through its DECLARED return type as well: rewriting
-            // rebuilds a node under a fresh id, so a body that was marked multivalued during
-            // collection (a system call like `(superpose …)` / `(get-type …)` at the lambda's
-            // result position) is no longer in `multivaluedAtoms` by the time we ask.
-            is Lambda -> h.body.isNonDeterministic() || h.returnType is SeqType
-            // … or a reducible `=` form (D3 increment C), dispatched through JettaCallSite:
-            // the reducer answers with a bag whose size is only known at run time (d4's
-            // `(= (Mortal Plato) T)` reduces to none). flat-map, and let the combinator take
-            // a scalar answer as its singleton bag.
-            is Special -> h.value == Predefined.PATTERN
-            else -> false
-        }
+        val bodyCallsMultivalued = yieldsBag(body)
         // Apply compound-argument lifts INNERMOST: the compound (e.g. `(And $v1 $v2)`)
         // and the enclosing call over it must sit where the compound's leaf-call
         // variables are bound, so a variable bound inside the compound (`$z` from the
@@ -728,6 +709,40 @@ class CanonicalFormRewriter(
     // isMultiValued. `match` is excluded: it owns its own result scope and is
     // special-cased throughout this pass, so a `(match …)` in argument position is
     // never lifted.
+    /**
+     * Whether [atom] evaluates to a result BAG rather than to one value. Decides whether the
+     * innermost lift wrap must FLAT_MAP_ (flatten `List<List>`) or may MAP_ (one value per element).
+     *
+     *  * a call to a multivalued user function, or to a multivalued SYSTEM function (`letMatch`,
+     *    `get-type`, `superpose`, …) — d1's `(let (List $t) (get-type …) $t)` yielded `[[Number]]`
+     *    when the innermost wrap map?-ed a bag-returning body;
+     *  * an APPLIED lambda — a `let` — whose own body yields a bag. Asked RECURSIVELY, because a
+     *    chain of `let`s is a chain of applied lambdas and only the innermost one may hold the
+     *    multivalued call: the reference `map-atom` nests five, and consulting just the outermost
+     *    lambda's declared return type left a lift lambda promising `Expression` around a body
+     *    typed `Atom*` — a `List` returned against a reference descriptor, VerifyError at class
+     *    load. The declared return type is still consulted first (it is set for a lambda whose
+     *    result position holds a system call), and so is the body's own type, since rewriting
+     *    rebuilds nodes under fresh ids and drops them out of `multivaluedAtoms`;
+     *  * a `map?` / `flat-map?` node — a lift's result IS a bag;
+     *  * a reducible `=` form (D3 increment C) dispatched through JettaCallSite: the reducer
+     *    answers with a bag whose size is only known at run time (d4's `(= (Mortal Plato) T)`
+     *    reduces to none), so flat-map and let the combinator take a scalar answer as a singleton.
+     */
+    private fun yieldsBag(atom: Atom): Boolean {
+        if (atom !is Expression || atom.atoms.isEmpty()) return false
+        return when (val h = atom.atoms[0]) {
+            is Symbol -> isMultivaluedHead(h.name)
+            is Lambda ->
+                h.body.isNonDeterministic() || h.returnType is SeqType ||
+                    h.body.type is SeqType || yieldsBag(h.body)
+            is Special ->
+                h.value == Predefined.PATTERN ||
+                    h == PredefinedAtoms.MAP_ || h == PredefinedAtoms.FLAT_MAP_
+            else -> false
+        }
+    }
+
     private fun isMultivaluedHead(name: String): Boolean {
         if (name == "match") return false
         return userDefinition(name)?.isMultivalued()
