@@ -6,6 +6,7 @@ import net.singularity.jetta.compiler.frontend.ir.*
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
+import net.singularity.jetta.compiler.frontend.resolve.isShadowedByRuntime
 
 class CanonicalFormRewriter(
     val messageCollector: MessageCollector,
@@ -533,8 +534,9 @@ class CanonicalFormRewriter(
                         if (f.name == "match") {
                             return false
                         }
-                        val def = context.definedFunctions[f.name]
-                        val userMultivalued = def != null && def.func.isMultivalued()
+                        // A rule shadowed by a builtin counts as ABSENT here — see [userDefinition].
+                        val def = userDefinition(f.name)
+                        val userMultivalued = def != null && def.isMultivalued()
                         // A system multivalued function (e.g. `superpose`, `generate`):
                         // present in systemFunctions with isMultiValued, absent from
                         // definedFunctions. `match` is already excluded above.
@@ -663,7 +665,7 @@ class CanonicalFormRewriter(
                         // map?/flat-map? wraps the ASSERTION, calling it once per element and
                         // comparing a singleton against the expected bag (c1 :116/:121/:162).
                         atom.id
-                    } else if (headName != null && context.definedFunctions[headName] != null) {
+                    } else if (headName != null && userDefinition(headName) != null) {
                         atom.id
                     } else reducedScopeId
 
@@ -714,7 +716,7 @@ class CanonicalFormRewriter(
         // constructor or a system builtin, absent from definedFunctions. Treat those as not
         // multivalued rather than asserting (`!!`) and NPE-ing (crashed if2/smartdispatch/…).
         val head = atoms[0]
-        if (head is Symbol && context.definedFunctions[head.name]?.func?.isMultivalued() == true) return true
+        if (head is Symbol && userDefinition(head.name)?.isMultivalued() == true) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
         }
@@ -728,12 +730,27 @@ class CanonicalFormRewriter(
     // never lifted.
     private fun isMultivaluedHead(name: String): Boolean {
         if (name == "match") return false
-        return context.definedFunctions[name]?.func?.isMultivalued()
+        return userDefinition(name)?.isMultivalued()
             ?: (context.resolve(name)?.isMultiValued == true)
     }
 
+    /**
+     * The user `=` definition a call to [name] actually reaches, or null when the call links to the
+     * BUILTIN instead — no rule at all, or a rule SHADOWED by a runtime function of the same name.
+     *
+     * Consulting `definedFunctions` first inverted the resolver's own preference: `Context.resolve`
+     * answers with the system function, so a shadowed rule is unreachable as a call, yet its
+     * valuedness and its arrow type were the ones read here. The reference `stdlib.metta` redefines
+     * `cdr-atom` over `unify`, which is multivalued — so every `(cdr-atom …)` in that file was
+     * lifted as if it returned a bag while the builtin handed back a single `Expression`
+     * (`IncompatibleClassChangeError: Expression does not implement List` in `simpleMap`, or a
+     * VerifyError when the lift's lambda inherited the lie in its descriptor).
+     */
+    private fun userDefinition(name: String): FunctionDefinition? =
+        context.definedFunctions[name]?.func?.takeUnless { it.isShadowedByRuntime() }
+
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
-        (context.definedFunctions[name]?.func?.arrowType?.types
+        (userDefinition(name)?.arrowType?.types
             ?: context.resolve(name)?.arrowType?.types)?.let { types ->
             val returnType = types.last()
             // If the function is multivalued (returns SeqType), the map/flatMap

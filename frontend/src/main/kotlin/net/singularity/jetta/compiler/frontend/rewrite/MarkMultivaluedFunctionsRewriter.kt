@@ -8,6 +8,7 @@ import net.singularity.jetta.compiler.frontend.ir.Lambda
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
+import net.singularity.jetta.compiler.frontend.resolve.isShadowedByRuntime
 
 class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, FunctionDefinition>) : Rewriter {
     private val callsLocations = mutableMapOf<String, MutableList<FunctionDefinition>>()
@@ -65,7 +66,12 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                 // body would produce belongs to whoever eventually applies it.
                 (atom.atoms[0] as? Lambda)?.let { if (checkAtom(it.body, func)) return true }
                 (atom.atoms[0] as? Symbol)?.let {
-                    functions[it.name]?.let { def ->
+                    // A rule SHADOWED by a runtime function of the same name is skipped: the
+                    // resolver answers every call site with the builtin, so the callee's
+                    // valuedness is the builtin's, not this unreachable rule's. hyperon's
+                    // stdlib.metta redefines `cdr-atom` over the multivalued `unify`, and reading
+                    // that rule here made every caller believe the scalar builtin returned a bag.
+                    functions[it.name]?.takeUnless { def -> def.isShadowedByRuntime() }?.let { def ->
                         if (def.isMultivalued()) {
                             return true
                         }

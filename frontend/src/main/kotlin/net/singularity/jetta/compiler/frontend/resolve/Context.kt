@@ -891,6 +891,12 @@ class Context private constructor(
             round++
         } while (changed && round < 16)
         val normalizedMain = normalizeMainForCodegen(source)
+        // Annotate BEFORE the post-resolve rewriters: both the multivalued marking and the
+        // multivalued LIFT read a name's user `=` definition, and a shadowed one has to be
+        // invisible to them for the same reason codegen skips it — the call links to the builtin.
+        // The warning is emitted separately, further down, because `messageCollector.clear()`
+        // below would otherwise swallow it.
+        markDefinitionsShadowedByRuntime(normalizedMain)
         val postprocessed = applyPostResolveRewriters(normalizedMain)
         messageCollector.clear()
         registerUntypedFunctions(postprocessed)
@@ -898,6 +904,7 @@ class Context private constructor(
         validateExecutableCalls(postprocessed)
         defaultUntypedToAtom(postprocessed)
         markDefinitionsShadowedByRuntime(postprocessed)
+        reportDefinitionsShadowedByRuntime(postprocessed)
         return postprocessed
     }
 
@@ -922,9 +929,19 @@ class Context private constructor(
         source.code.filterIsInstance<FunctionDefinition>().forEach {
             if (systemFunctions[it.name] != null && !it.isShadowedByRuntime()) {
                 it.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
-                messageCollector.add(ShadowedByBuiltinMessage(it.name, it.position))
             }
         }
+    }
+
+    /**
+     * The warning for [markDefinitionsShadowedByRuntime], reported separately because the
+     * annotation has to be in place before the post-resolve rewriters run while the message must
+     * survive the `messageCollector.clear()` between them.
+     */
+    private fun reportDefinitionsShadowedByRuntime(source: ParsedSource) {
+        source.code.filterIsInstance<FunctionDefinition>()
+            .filter { it.isShadowedByRuntime() }
+            .forEach { messageCollector.add(ShadowedByBuiltinMessage(it.name, it.position)) }
     }
 
     /**

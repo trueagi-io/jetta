@@ -44,6 +44,42 @@ class ShadowedBuiltinDefinitionTest : GeneratorTestBase() {
             }
     }
 
+    /**
+     * A shadowed rule must not lend its VALUEDNESS to its name either. The reference stdlib
+     * redefines `cdr-atom` over `unify`, which is multivalued, so callers were lifted with a
+     * `map?` as if the callee returned a bag — while the call links to the builtin, which hands
+     * back a single `Expression`. The lift then met an `Expression` where it iterates a `List`
+     * (`IncompatibleClassChangeError` in `simpleMap`; in the reference file the same lie reached a
+     * lift lambda's descriptor and became a VerifyError at class load).
+     *
+     * The `if` here is what makes the shape reachable: a multivalued arm homogenizes the whole
+     * form, so the leak shows up in the arm as well as at the call.
+     */
+    @Test
+    fun `a shadowed definition does not make its callers multivalued`() {
+        val code = """
+            (= (cdr-atom _atom)
+              (chain (decons-atom _atom) _ht (unify (_head _tail) _ht _tail (Error bad))))
+            (: udft (-> Expression Atom))
+            (= (udft _params)
+              (if (== () _params) (%Undefined%)
+                (let _tail-params (cdr-atom _params)
+                (let _tail (udft _tail-params)
+                  (cons-atom %Undefined% _tail) ))))
+            !(assertEqual (udft (a b)) (%Undefined% %Undefined% %Undefined%))
+        """.trimIndent().d()
+        compile("ShadowedValuedness.metta", code, mapImpl, flatMapImpl) { registerExternals(it) }
+            .let { (result, mc) ->
+                val warning = mc.list().filterIsInstance<ShadowedByBuiltinMessage>()
+                assertEquals(1, warning.size, "expected one shadowing warning: ${mc.list()}")
+                val cls = result.toMap().toClasses()["ShadowedValuedness"]!!
+                net.singularity.jetta.runtime.JettaProgram.init("ShadowedValuedness")
+                // A wrong answer throws AssertionError out of `__main`, so a green invoke IS the
+                // assertion; before the fix this died in `simpleMap` instead.
+                cls.getMethod("__main").invoke(null)
+            }
+    }
+
     /** A name JeTTa does not ground is untouched — the ordinary case must not be swept up. */
     @Test
     fun `an ordinary definition is still emitted`() {
