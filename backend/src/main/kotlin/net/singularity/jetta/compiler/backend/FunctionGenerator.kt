@@ -659,9 +659,19 @@ open class FunctionGenerator(
                     // CanonicalForm lifting; genuinely inert data (and `quote`d content,
                     // evalCalls=false) is quoted as before.
                     val subType = sub.type
+                    // An APPLIED lambda is a `let`, and a `let` in an applicative position is a
+                    // value like any other call — evaluate it. Quoting it instead left the
+                    // `JettaFunction` itself inside the data (`(unknown-head (let $y $x $y))` came
+                    // out as `(unknown-head (<lambda> 5))` rather than `(unknown-head 5)`), and
+                    // before the `Grounded` wrap in the `is Lambda` arm below it did not even get
+                    // that far: storing a function into an `Atom[]` is an ArrayStoreException. A
+                    // lambda whose body is a BAG stays quoted — a `List` is no more storable in an
+                    // `Atom[]` than a function is, and lifting it is CanonicalForm's job.
+                    val appliedLambdaResult = (sub as? Expression)?.atoms?.firstOrNull() as? Lambda
                     if (evalCalls && sub is Expression &&
                         ((sub.resolved != null && sub.resolved?.isMultiValued != true) ||
-                            isGroundedArithmetic(sub))
+                            isGroundedArithmetic(sub) ||
+                            (appliedLambdaResult != null && appliedLambdaResult.returnType !is SeqType))
                     ) {
                         generateAtom(mv, sub, null, false)
                         if (subType is GroundedType && subType.isGroundedValue()) {
@@ -826,6 +836,12 @@ open class FunctionGenerator(
                 // expression keeps the call shape intact so the matcher / a
                 // downstream reduction can still see it.
                 generateAtom(mv, atom, null, false)
+                // …but a quoted `Expression` holds `Atom[]`, and a `JettaFunction` is not an Atom,
+                // so storing it raw threw `ArrayStoreException` the moment the quote was built —
+                // `(unknown-head (let $y $x $y))` was enough, since a `let` IS an applied lambda.
+                // `Grounded` is the wrapper for a value of any type (the same one `bind!` uses for
+                // a space token), and it keeps the function reachable for a later application.
+                wrapValueOnStackInGrounded(GroundedType.ANY)
             }
 
             is ArrowType -> {
