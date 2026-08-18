@@ -567,6 +567,9 @@ class FunctionRewriter(
     private val IF_EQUAL_KEYWORD = "if-equal"
     private val IF_EQUAL_MATCH_KEYWORD = "ifEqual"
 
+    /** The JIT-eval primitive, used to run an atom a program built at run time. */
+    private val EVAL_KEYWORD = "eval"
+
     private val specialAliases = mapOf(
         "%" to Predefined.MOD
     )
@@ -1170,11 +1173,21 @@ class FunctionRewriter(
         // (every use in the reference `stdlib.metta` and in the corpus), different for a program
         // that relies on stepwise control — which is the point of `chain` in minimal MeTTa.
         if (func is Symbol && func.name == CHAIN_KEYWORD && expression.atoms.size == 4) {
+            // A bare VARIABLE in the stepped position is the one shape where `let` is not enough.
+            // `chain` evaluates its first argument after substitution, so a variable there means
+            // "run the program this variable holds" — the reference `map-atom` builds a template
+            // with `atom-subst` and then does `(chain $map-expr $head-mapped …)` to run it. A `let`
+            // would bind the template ITSELF, unevaluated. Routing it through `eval` is the
+            // runtime-compilation path, which is exactly what evaluating a runtime-built atom is.
+            val stepped = expression.atoms[1]
+            val value = if (stepped is Variable)
+                Expression(Symbol(EVAL_KEYWORD, position = stepped.position), stepped, position = stepped.position)
+            else stepped
             return rewriteAtom(
                 Expression(
                     Symbol(LetRewriter.LET_KEYWORD, position = func.position),
                     expression.atoms[2],
-                    expression.atoms[1],
+                    value,
                     expression.atoms[3],
                     position = expression.position,
                 )

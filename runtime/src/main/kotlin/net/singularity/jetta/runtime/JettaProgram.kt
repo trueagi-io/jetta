@@ -797,6 +797,56 @@ open class JettaProgram {
             return branchResult(thenBranch.apply(args))
         }
 
+        /** Counter for the fresh names [sealed] mints; global, so two seals never collide. */
+        private val sealCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /**
+         * `sealed` — rename every variable in [atom] to a fresh one, EXCEPT those listed in
+         * [ignore]. Note the direction: the first argument is the list to LEAVE ALONE, which is
+         * how hyperon documents it ("replaces all occurrences of any var inside atom by unique
+         * variable, except list of variables to ignore"). That is what gives a template a locally
+         * scoped variable: `map-atom` seals its own `$map` so the recursion's variables cannot
+         * capture the user's, while keeping the one variable it is about to substitute for.
+         *
+         * Both arguments are INERT — the point is the term as written, not its value.
+         */
+        @JvmStatic
+        fun sealed(ignore: Atom, atom: Atom): Atom {
+            val keep = HashSet<String>()
+            collectVarNames(if (ignore is BoundAtom) ignore.atom else ignore, keep)
+            val renamed = HashMap<String, Variable>()
+            fun go(a: Atom): Atom = when (a) {
+                is Variable ->
+                    if (a.name in keep) a
+                    else renamed.getOrPut(a.name) { Variable("${a.name}#${sealCounter.incrementAndGet()}") }
+                is Expression -> Expression(a.atoms.map { go(it) })
+                else -> a
+            }
+            return go(if (atom is BoundAtom) atom.atom else atom)
+        }
+
+        /**
+         * `atom-subst` — substitute [value] for the variable named by [variable] throughout
+         * [template].
+         *
+         * Written natively rather than taken from the reference stdlib, whose definition is a
+         * minimal-MeTTa trick — `(chain (eval (noeval $atom)) $var (return $templ))` binds *the
+         * variable that `$var`'s VALUE names*, which a compiler that lowers `chain` onto `let`
+         * cannot express: our `let` binds the syntactic `$var`, not the variable it holds. As a
+         * builtin it shadows that rule (see `Context.markDefinitionsShadowedByRuntime`) and every
+         * call site links here instead. The operation itself is plain substitution.
+         */
+        @JvmStatic
+        fun `atom-subst`(value: Atom, variable: Atom, template: Atom): Atom {
+            val v = if (variable is BoundAtom) variable.atom else variable
+            val name = (v as? Variable)?.name ?: return template
+            return substituteVar(
+                if (template is BoundAtom) template.atom else template,
+                name,
+                if (value is BoundAtom) value.atom else value,
+            )
+        }
+
         /**
          * `get-metatype` — the atom's META-type: which of MeTTa's four kinds of atom it is, as
          * opposed to `get-type`, which answers with the `:` declarations in the space. The

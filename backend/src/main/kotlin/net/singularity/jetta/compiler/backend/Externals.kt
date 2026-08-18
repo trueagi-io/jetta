@@ -515,6 +515,35 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `sealed` — rename every variable in the second argument except those listed in the first,
+    // giving a template locally scoped variables. Both arguments INERT: the operation is on the
+    // terms as written. `atom-subst` — plain substitution; written natively because the reference
+    // definition relies on `chain` binding the variable that a VALUE names, which our `chain`→`let`
+    // lowering cannot express, so this shadows that rule. Both scalar.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "sealed",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "atom-subst",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0, 1, 2)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // `get-metatype` — which of MeTTa's four kinds of atom the argument is (Symbol / Variable /
     // Expression / Grounded), as opposed to `get-type`, which reads the `:` declarations. The
     // argument is INERT so `(get-metatype (+ 1 2))` is `Expression`, not the metatype of `3`.
