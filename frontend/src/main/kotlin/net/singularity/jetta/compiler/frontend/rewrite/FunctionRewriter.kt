@@ -560,6 +560,13 @@ class FunctionRewriter(
     private val UNIFY_KEYWORD = "unify"
     private val UNIFY_MATCH_KEYWORD = "unifyMatch"
 
+    /**
+     * minimal MeTTa's structural-comparison branch. Same lowering as [UNIFY_KEYWORD] minus the
+     * bindings — nothing is bound by an equality — so both branches take no parameters.
+     */
+    private val IF_EQUAL_KEYWORD = "if-equal"
+    private val IF_EQUAL_MATCH_KEYWORD = "ifEqual"
+
     private val specialAliases = mapOf(
         "%" to Predefined.MOD
     )
@@ -1024,6 +1031,32 @@ class FunctionRewriter(
         )
     }
 
+    /**
+     * Lower `(if-equal $a $b $then $else)` onto the runtime [ifEqual] helper. [lowerUnify]'s
+     * sibling: the same two-branch shape, but an equality binds nothing, so both branches are
+     * parameterless and no scope analysis is needed — only the recursion into them.
+     */
+    private fun lowerIfEqual(expression: Expression, scope: Set<String>): Atom {
+        fun branch(atom: Atom): Atom = Expression(
+            listOf(
+                Special(Predefined.LAMBDA),
+                Expression(emptyList(), position = atom.position),
+                lowerUnifyForms(atom, scope),
+            ),
+            position = atom.position,
+        )
+        return Expression(
+            listOf(
+                Symbol(IF_EQUAL_MATCH_KEYWORD, position = expression.position),
+                lowerUnifyForms(expression.atoms[1], scope),
+                lowerUnifyForms(expression.atoms[2], scope),
+                branch(expression.atoms[3]),
+                branch(expression.atoms[4]),
+            ),
+            position = expression.position,
+        )
+    }
+
     /** Variable names in [atom], in document order. */
     private fun varNamesIn(atom: Atom): List<String> {
         val out = mutableListOf<String>()
@@ -1049,6 +1082,7 @@ class FunctionRewriter(
         val name = (head as? Symbol)?.name
         if (head == PredefinedAtoms.QUOTE || name == Predefined.QUOTE) return atom
         if (name == UNIFY_KEYWORD && atom.atoms.size == 5) return lowerUnify(atom, scope)
+        if (name == IF_EQUAL_KEYWORD && atom.atoms.size == 5) return lowerIfEqual(atom, scope)
         if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {
             return atom.copy(
                 atoms = listOf(

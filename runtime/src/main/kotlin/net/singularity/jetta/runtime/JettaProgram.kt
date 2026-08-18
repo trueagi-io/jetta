@@ -1,5 +1,6 @@
 package net.singularity.jetta.runtime
 
+import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
@@ -794,6 +795,44 @@ open class JettaProgram {
             }
             val args = Array<Any?>(params.size) { i -> TypeEngine.resolve(Variable(params[i]), s) }
             return branchResult(thenBranch.apply(args))
+        }
+
+        /**
+         * `get-metatype` — the atom's META-type: which of MeTTa's four kinds of atom it is, as
+         * opposed to `get-type`, which answers with the `:` declarations in the space. The
+         * argument is INERT (hyperon does not reduce it either), so `(get-metatype (+ 1 2))` is
+         * `Expression`, not the metatype of `3`.
+         *
+         * `ArrowType` answers `Expression` because it is one: the rewriter folds the surface form
+         * `(-> A B)` into that IR node, and the reference stdlib's `is-function` relies on seeing
+         * a type as an Expression whose head it can compare with `->`.
+         */
+        @JvmStatic
+        fun `get-metatype`(atom: Atom): Atom = when (if (atom is BoundAtom) atom.atom else atom) {
+            is Variable -> Symbol("Variable")
+            is Expression, is ArrowType -> Symbol("Expression")
+            is Grounded<*> -> Symbol("Grounded")
+            else -> Symbol("Symbol")
+        }
+
+        /**
+         * `ifEqual <a> <b> <then> <else>` — the runtime of minimal MeTTa's
+         * `(if-equal $a $b $then $else)`, lowered by `FunctionRewriter`. Like [unifyMatch] the two
+         * atoms arrive UNREDUCED and the branches are lambdas so only the taken one is evaluated —
+         * the reference stdlib puts `(Error …)` in an else-branch, which must not run otherwise.
+         *
+         * The comparison is STRUCTURAL equality, not unification: `Expression` and `Symbol` define
+         * `equals` structurally, and hyperon's own `if-equal` compares atoms rather than matching
+         * them, so a variable here is a term to compare and binds nothing. Bound variables are
+         * substituted first ([Matcher.resolveDeep]), which is what the reference interpreter does
+         * before handing arguments to a grounded operation.
+         */
+        @JvmStatic
+        fun ifEqual(a: Atom, b: Atom, thenBranch: JettaFunction, elseBranch: JettaFunction): List<Atom> {
+            val left = Matcher.resolveDeep(if (a is BoundAtom) a.atom else a)
+            val right = Matcher.resolveDeep(if (b is BoundAtom) b.atom else b)
+            val taken = if (left == right) thenBranch else elseBranch
+            return branchResult(taken.apply(emptyArray()))
         }
 
         /** Normalise a branch lambda's result to the `List<Atom>` bag every JeTTa result is shaped as. */

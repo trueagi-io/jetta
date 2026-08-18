@@ -66,15 +66,26 @@ object JettaJit {
      * arrive inert (e.g. via `(quote …)`), never pre-reduced.
      */
     @JvmStatic
-    fun eval(code: Atom): List<Atom> {
+    fun eval(code: Any?): List<Atom> {
+        // An argument that is already a RESULT BAG means the call site evaluated it — JeTTa reduces
+        // eagerly wherever it reduces at all, so there is nothing left for `eval` to do and it is
+        // the identity. Same trade as `chain` / `function` / `return`: minimal MeTTa's stepping
+        // brackets carry no information for a compiler that does not step. The reference stdlib
+        // writes `(eval (get-metatype $atom))`, `(eval (if-equal …))`, `(eval (switch-minimal …))`
+        // — always a call, never data — and each arrived here as a `List` against a parameter typed
+        // `Atom`, which stored a List into the synthetic rule's `Atom[]` (ArrayStoreException in
+        // [compile]). `eval` still COMPILES a genuinely inert argument, which is the case it exists
+        // for: a program built at run time and handed over as data.
+        if (code is List<*>) return normalize(code)
+        val atom = code as? Atom ?: return normalize(code)
         val env = JitEnvRegistry.current()
         // The structural cache is sound only for the env-less (system-only) path: with
         // a forked env the result depends on WHICH program is running (owner classes)
         // and on its current rule set, which mutates on redefinition. Env-aware caching
         // + SwitchPoint invalidation is the follow-up; for now recompile per env-eval.
         val compiled =
-            if (env == null) cache.getOrPut(cacheKey(code)) { compile(code, null) }
-            else compile(code, env)
+            if (env == null) cache.getOrPut(cacheKey(atom)) { compile(atom, null) }
+            else compile(atom, env)
         val raw = compiled.clazz.getMethod(compiled.entryMethod).invoke(null)
         return normalize(raw)
     }

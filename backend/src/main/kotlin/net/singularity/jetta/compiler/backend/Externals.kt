@@ -470,9 +470,12 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/functions/JettaJit",
                 name = "eval",
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+                // Object, not Atom: the argument may arrive as an already-evaluated result BAG,
+                // which is the reference stdlib's shape throughout (`(eval (get-metatype …))`).
+                // `JettaJit.eval` passes such a bag through and compiles only genuine data.
+                descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
             true
         )
     )
@@ -509,6 +512,44 @@ fun registerExternals(context: Context) {
                 inertAtomParams = setOf(0)
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ANY, ArrowType(GroundedType.ATOM, GroundedType.ATOM), SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `get-metatype` — which of MeTTa's four kinds of atom the argument is (Symbol / Variable /
+    // Expression / Grounded), as opposed to `get-type`, which reads the `:` declarations. The
+    // argument is INERT so `(get-metatype (+ 1 2))` is `Expression`, not the metatype of `3`.
+    // Scalar: exactly one metatype per atom.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-metatype",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `ifEqual` — the runtime of minimal MeTTa's `(if-equal $a $b $then $else)`, emitted by
+    // FunctionRewriter. Same shape as `unifyMatch` below minus the bindings: the two atoms are
+    // INERT (hyperon does not reduce them either) and compared STRUCTURALLY, and the branches are
+    // lambdas so the untaken one — often an `(Error …)` — is not evaluated.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "ifEqual",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/runtime/functions/JettaFunction;Lnet/singularity/jetta/runtime/functions/JettaFunction;)Ljava/util/List;",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                SeqType(GroundedType.ATOM),
+            ),
             true
         )
     )
