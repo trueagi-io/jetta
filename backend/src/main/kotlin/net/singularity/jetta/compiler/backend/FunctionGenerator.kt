@@ -1478,6 +1478,14 @@ open class FunctionGenerator(
             // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
             // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
             generateQuote(mv, arg)
+        } else if (index in jvmSymbol.templateAtomParams && arg is Expression && isTemplate(arg)) {
+            // A parameter a USER function declares literally `Atom`, handed a TEMPLATE — a term
+            // carrying a variable nothing in scope binds, so there is no value to compute. Quote it
+            // structurally, as for an inert builtin parameter. See `JvmMethod.templateAtomParams`
+            // for why the same declaration does NOT suppress reduction of a computable argument:
+            // `(: ift (-> Bool Atom %Undefined%))` over `(add-atom &kb (Green $x))` has to perform
+            // the write, since JeTTa does not re-reduce a returned atom the way hyperon does.
+            generateQuote(mv, arg)
         } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 // A grounded VALUE reaching an `Atom`-typed parameter is evaluated, boxed and
                 // wrapped in a `Grounded` — which IS an Atom, where a bare box (Integer) is not,
@@ -1792,6 +1800,20 @@ open class FunctionGenerator(
     private fun containsVariable(atom: Atom): Boolean = when (atom) {
         is Variable -> true
         is Expression -> atom.atoms.any { containsVariable(it) }
+        else -> false
+    }
+
+    /**
+     * Whether [atom] is a TEMPLATE at this call site: it mentions a variable that nothing here binds
+     * — not a parameter of the enclosing function, not a destructured local — so no value for it
+     * exists and the term cannot be computed. Mirrors the rule `JettaJit.eval` applies to an atom it
+     * is asked to run, and it is what separates the reference `filter-atom`'s `(> $v 1)` (free `$v`,
+     * a template) from `(add-atom &kb (Green $x))` under a `match` (bound `$x`, computable).
+     */
+    private fun isTemplate(atom: Atom): Boolean = when (atom) {
+        is Variable ->
+            destructuredLocals[atom.name] == null && function.params.none { it.name == atom.name }
+        is Expression -> atom.atoms.any { isTemplate(it) }
         else -> false
     }
 

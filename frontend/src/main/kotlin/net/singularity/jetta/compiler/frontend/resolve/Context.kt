@@ -167,7 +167,14 @@ class Context private constructor(
         owner = owner,
         name = func.name,
         descriptor = func.getJvmDescriptor(),
-        signature = func.getSignature()
+        signature = func.getSignature(),
+        // A parameter the source declares literally `Atom` is hyperon's meta-type annotation. Only a
+        // builtin could say so before — `inertAtomParams` was reachable only from
+        // `registerExternals` — so a user function could not take a template, and the reference
+        // stdlib's `filter-atom` had its `(> $v 1)` reduced at the call site over a free variable.
+        // It maps to the CONDITIONAL flavour: see `JvmMethod.templateAtomParams` for why holding a
+        // user function's argument unconditionally is wrong for us where it is right for hyperon.
+        templateAtomParams = func.declaredAtomParams,
     )
 
     /**

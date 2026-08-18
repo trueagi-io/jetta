@@ -36,6 +36,17 @@ class FunctionRewriter(
     private val isReducibleName: (String) -> Boolean = { false },
 ) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
+
+    /**
+     * Per function, the parameter indices its `(: f (-> …))` declaration writes LITERALLY as `Atom`
+     * — hyperon's meta-type annotation, which says "hand this argument over as the TERM, do not
+     * reduce it". The distinction is invisible in [typeInfo] because `asType()` erases every type it
+     * does not know (`Number`, `Nat`, a user type) to `Atom` too, and reducing is right for those;
+     * so it has to be read off the declaration as written. Travels to codegen via
+     * `FunctionDefinition.declaredAtomParams` → `JvmMethod.templateAtomParams`, which holds the
+     * argument only when it is a template — see that field for why.
+     */
+    private val literalAtomParams = mutableMapOf<String, Set<Int>>()
     private val annotations = mutableMapOf<String, List<Atom>>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val runs = mutableListOf<Atom>()
@@ -266,6 +277,23 @@ class FunctionRewriter(
         return result
     }
 
+    /**
+     * The parameter positions of a `(-> T1 T2 … R)` declaration written literally as `Atom`. Only a
+     * flat arrow is inspected: a nested `(-> …)` parameter is a function value, not a term to hold
+     * unreduced. `%Undefined%` is deliberately NOT included — it is the gradual wildcard, and its
+     * argument is an ordinary value.
+     */
+    private fun literalAtomIndices(declaration: Atom): Set<Int> {
+        val types = (declaration as? Expression)?.atoms ?: return emptySet()
+        if ((types.firstOrNull() as? Symbol)?.name != Predefined.ARROW &&
+            (types.firstOrNull() as? Special)?.value != Predefined.ARROW
+        ) return emptySet()
+        // drop the arrow itself and the result type
+        val params = types.drop(1).dropLast(1)
+        // The surface spelling, as `asType()` matches it below — `GroundedType`'s own name is private.
+        return params.indices.filter { (params[it] as? Symbol)?.name == "Atom" }.toSet()
+    }
+
     private fun mkFunctions(): List<Atom> {
         val relationalCallees = computeRelationalCallees()
         return patterns.map { (name, list) ->
@@ -279,7 +307,8 @@ class FunctionRewriter(
                     typeInfo[name] as? ArrowType,
                     pattern.value,
                     annotations[name]?.toMutableList() ?: mutableListOf(),
-                    position = pattern.pattern.position
+                    position = pattern.pattern.position,
+                    declaredAtomParams = literalAtomParams[name].orEmpty(),
                 )
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
@@ -328,7 +357,8 @@ class FunctionRewriter(
                         )
                     }, returnType = arrowType?.types?.last()),
                     annotations[name]?.toMutableList() ?: mutableListOf(),
-                    position = list[0].pattern.position
+                    position = list[0].pattern.position,
+                    declaredAtomParams = literalAtomParams[name].orEmpty(),
                 )
             }
         }
@@ -1276,6 +1306,9 @@ class FunctionRewriter(
             Predefined.TYPE -> {
                 val symbol = expression.atoms[1] as? Symbol
                 if (symbol != null) {
+                    // Record which parameters were written LITERALLY as `Atom` before `asType()`
+                    // erases every unknown type to the same thing — see [literalAtomParams].
+                    literalAtomParams[symbol.name] = literalAtomIndices(expression.atoms[2])
                     typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
                     // ALSO keep the type as a space fact so it is visible at runtime
                     // (`get-doc` / future `get-type` query `&self`). This is additive: the
