@@ -167,11 +167,11 @@ class ImportResolutionPassTest {
 
     @Test
     fun `imported runs are spliced at the import position on first load`(@TempDir tmp: Path) {
-        write(tmp, "utils.metta", "!(println from-utils)")
+        write(tmp, "utils.metta", "!(println! from-utils)")
         write(tmp, "main.metta", """
-            !(println before)
+            !(println! before)
             !(import! &self utils)
-            !(println after)
+            !(println! after)
         """)
 
         val r = runPass(tmp, "main.metta")
@@ -190,7 +190,7 @@ class ImportResolutionPassTest {
         // C's Run must appear in main's transformed source exactly once
         // (idempotent load: subsequent imports of an already-loaded module
         // are no-ops for `!`-Runs).
-        write(tmp, "C.metta", "!(println from-C)")
+        write(tmp, "C.metta", "!(println! from-C)")
         write(tmp, "A.metta", "!(import! &self C)")
         write(tmp, "B.metta", "!(import! &self C)")
         write(tmp, "main.metta", """

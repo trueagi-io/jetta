@@ -161,7 +161,9 @@ class Generator(
     // Grounded ops that read mutable state or have effects / non-determinism: a function
     // calling any of these is NOT memoizable (its result isn't a pure function of its args).
     private val impureGrounded = setOf(
-        "match", "matchEval", "println", "print", "random", "seed", "generate",
+        // `println!` carries the reference interpreter's name; `print` was never registered at all,
+        // so its entry here was dead.
+        "match", "matchEval", "println!", "random", "seed", "generate",
         "superpose", "collapse", "eval", "assertEqual", "assertEqualToResult",
         "add-atom!", "remove-atom!", "new-space", "bind!", "get-state", "new-state",
         "change-state!", "get-type", "import!", "pragma!", "get-doc", "help!", "letMatch",

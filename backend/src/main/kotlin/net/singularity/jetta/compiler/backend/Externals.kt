@@ -35,9 +35,16 @@ fun registerExternals(context: Context) {
         ResolvedSymbol(
             JvmMethod(
                 owner = RuntimeNames.IO,
-                name = "println",
-                descriptor = "(Ljava/lang/Object;)V"
-            ), null, false
+                // The reference interpreter's name, bang included — hyperon's stdlib documents
+                // `println!` and nothing called `println`. Registered under the bare name, every
+                // hyperon-written `(println! …)` was an unresolved head and compiled as inert data:
+                // silent, undiagnosed, exit 0. See IO.
+                name = "println!",
+                // Returns the unit expression `()`, not void: the reference stdlib sequences prints
+                // as `(let () (println! …) NEXT)`, and a void result has nothing to hand a value
+                // position (`boxIfNeeded` met `Unit` and crashed the compiler).
+                descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ), ArrowType(GroundedType.ANY, GroundedType.ATOM), false
         )
     )
     context.addSystemFunction(

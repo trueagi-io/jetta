@@ -27,11 +27,11 @@
 
 ; Show the derivative of (x + x*x) as a symbolic expression:
 ;   => (Plus (Lit 1) (Plus (Mul (Lit 1) x) (Mul x (Lit 1))))   [i.e. 1 + (1*x + x*1)]
-!(println (d (Plus x (Mul x x))))
+!(println! (d (Plus x (Mul x x))))
 
 ; Show the derivative of (x * x * x):
 ;   => (Plus (Mul (Lit 1) (Mul x x)) (Mul x (Plus (Mul (Lit 1) x) (Mul x (Lit 1)))))
-!(println (d (Mul x (Mul x x))))
+!(println! (d (Mul x (Mul x x))))
 
 ; Verify the derivatives numerically at x = 3:
 ;   d/dx (x + x*x) = 1 + 2x  -> 7

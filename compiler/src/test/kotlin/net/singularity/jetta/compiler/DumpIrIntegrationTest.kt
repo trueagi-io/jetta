@@ -112,7 +112,7 @@ class DumpIrIntegrationTest {
             Source(
                 "Println.metta",
                 """
-                (println (+ 1 1))
+                (println! (+ 1 1))
                 """.trimMargin().replace('_', '$')
             )
         )

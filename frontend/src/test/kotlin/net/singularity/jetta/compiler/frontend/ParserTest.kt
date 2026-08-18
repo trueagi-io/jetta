@@ -118,17 +118,17 @@ class ParserTest : BaseFrontendTest() {
 
     @Test
     fun `parse a string`() {
-        justParse("""(println "Hello")""")
+        justParse("""(println! "Hello")""")
     }
 
     @Test
     fun `parse an empty string`() {
-        justParse("""(println "")""")
+        justParse("""(println! "")""")
     }
 
     @Test
     fun `parse special characters in the string`() {
-       justParse("""(println "Hello\n\tworld")""")
+       justParse("""(println! "Hello\n\tworld")""")
     }
 
     @Test

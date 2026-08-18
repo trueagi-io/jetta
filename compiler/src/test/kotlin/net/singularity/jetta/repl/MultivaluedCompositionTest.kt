@@ -53,7 +53,7 @@ class MultivaluedCompositionTest {
     fun `println over a guarded-recursion multivalued function does not VerifyError`() {
         val r = repl()
         r.eval(lookup)
-        r.eval("""!(println (lookup b (Cons (Pair a 1) (Cons (Pair b 2) Nil))))""").let {
+        r.eval("""!(println! (lookup b (Cons (Pair a 1) (Cons (Pair b 2) Nil))))""").let {
             assertTrue(it.isSuccess, it.messages.joinToString("\n"))
         }
     }

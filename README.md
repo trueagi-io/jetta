@@ -56,7 +56,7 @@ Create a file `hello.metta`:
 (= (greet $x) (Hello $x))
 
 ; Lines starting with `!` are *runs* — they execute.
-!(println (greet MeTTa))
+!(println! (greet MeTTa))
 ```
 
 Compile it to a directory, then run the generated program:
@@ -73,7 +73,7 @@ That's the whole loop. A few things worth knowing:
 
 - **`!expr` runs, a plain expression does not.** A top-level expression without
   `!` is added to the program's knowledge base (its *space*); only `!expr` forms
-  execute. To *see* a result in a compiled program, print it (`!(println …)`) or
+  execute. To *see* a result in a compiled program, print it (`!(println! …)`) or
   assert on it (`!(assertEqual …)`) — the generated `main` returns the last run's
   value but does not auto-print it. (The REPL, below, does print every result.)
 - **`-Djetta.dataDir=out`** tells the running program where to find the space

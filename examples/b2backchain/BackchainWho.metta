@@ -33,4 +33,4 @@
 (= (And T T) T)
 
 (= (ift T $then) $then)
-!(println (ift (deduce (Evaluation (mortal $x))) $x)) ; should be Plato
+!(println! (ift (deduce (Evaluation (mortal $x))) $x)) ; should be Plato

@@ -27,8 +27,8 @@ class AotBoolPatternDispatchTest {
     private val program = """
         (: ift (-> Bool Atom Atom))
         (= (ift True ${'$'}then) ${'$'}then)
-        !(println (ift (> 2 1) ok))
-        !(println (ift (> 1 2) no))
+        !(println! (ift (> 2 1) ok))
+        !(println! (ift (> 1 2) no))
     """.trimIndent()
 
     @Test
@@ -66,8 +66,8 @@ class AotBoolPatternDispatchTest {
             (= (yes) True)
             (: no (-> Bool))
             (= (no) False)
-            !(println (yes))
-            !(println (no))
+            !(println! (yes))
+            !(println! (no))
         """.trimIndent()
         assertEquals(listOf("True", "False"), compileAndRun(src, "RetBool"))
     }
@@ -82,7 +82,7 @@ class AotBoolPatternDispatchTest {
         val src = """
             (: ift (-> Bool Atom Atom))
             (= (ift True ${'$'}then) ${'$'}then)
-            !(println (ift True ok))
+            !(println! (ift True ok))
         """.trimIndent()
         assertEquals(listOf("ok"), compileAndRun(src, "ArgBool"))
     }
@@ -105,8 +105,8 @@ class AotBoolPatternDispatchTest {
             (= (croaks Fritz) True)
             (= (eat_flies Fritz) True)
             (= (green ${'$'}x) (frog ${'$'}x))
-            !(println (if (green Fritz) ok bad))
-            !(println (if (and (croaks Fritz) (eat_flies Fritz)) yes nope))
+            !(println! (if (green Fritz) ok bad))
+            !(println! (if (and (croaks Fritz) (eat_flies Fritz)) yes nope))
         """.trimIndent()
         assertEquals(listOf("ok", "yes"), compileAndRun(src, "AndSym"))
     }
@@ -121,12 +121,12 @@ class AotBoolPatternDispatchTest {
     @Test
     fun `booleans render as the MeTTa True and False everywhere, matching hyperon`() {
         val src = """
-            !(println True)
-            !(println (> 2 1))
-            !(println (< 2 1))
-            !(println (not True))
-            !(println (or False True))
-            !(println (Pair True False))
+            !(println! True)
+            !(println! (> 2 1))
+            !(println! (< 2 1))
+            !(println! (not True))
+            !(println! (or False True))
+            !(println! (Pair True False))
         """.trimIndent()
         assertEquals(
             listOf("True", "True", "False", "False", "True", "(Pair True False)"),
