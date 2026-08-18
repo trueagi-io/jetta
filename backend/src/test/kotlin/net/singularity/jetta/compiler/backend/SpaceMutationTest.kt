@@ -126,4 +126,49 @@ class SpaceMutationTest : GeneratorTestBase() {
                 assertEquals(before.size + 1, after.size, "get-atoms should grow by exactly one")
             }
     }
+
+    /**
+     * The space may arrive INDIRECTLY — as the value of a variable rather than a literal `&name`
+     * the compiler lowers to a String. `match` was given that treatment already; `add-atom`,
+     * `remove-atom` and `get-atoms` kept a `String` parameter, so an `Atom` reaching one of them
+     * was rejected at CLASS LOAD and took the whole class with it. That is how the reference
+     * stdlib is written throughout: `(= (add-reduct $dst $atom) (add-atom $dst $atom))`.
+     */
+    @Test
+    fun `a space passed as an argument reaches add-atom, remove-atom and get-atoms`() {
+        val code = """
+            (Parent Tom Bob)
+            (= (addto ${'$'}s ${'$'}a) (add-atom ${'$'}s ${'$'}a))
+            (= (dropfrom ${'$'}s ${'$'}a) (remove-atom ${'$'}s ${'$'}a))
+            (= (countof ${'$'}s) (get-atoms ${'$'}s))
+            (= (kids ${'$'}p) (match &self (Parent ${'$'}p ${'$'}k) ${'$'}k))
+        """.trimIndent()
+        compile("SpaceIndirect.metta", code, mapImpl, flatMapImpl) { registerExternals(it) }
+            .let { (result, mc) ->
+                assertTrue(mc.list().isEmpty(), mc.list().toString())
+                val cls = result.toMap().toClasses()["SpaceIndirect"]!!
+                JettaProgram.init("SpaceIndirect")
+
+                val addto = cls.getMethod("addto", Any::class.java, Atom::class.java)
+                val dropfrom = cls.getMethod("dropfrom", Any::class.java, Atom::class.java)
+                val countof = cls.getMethod("countof", Any::class.java)
+                val kids = cls.getMethod("kids", Atom::class.java)
+                val self = Symbol("&self")
+
+                val before = (countof.invoke(null, self) as List<*>).size
+                addto.invoke(null, self, expr("Parent", "Bob", "Ann"))
+                assertEquals(
+                    listOf("Ann"),
+                    (kids.invoke(null, Symbol("Bob")) as List<*>).map { it.toString() },
+                    "the atom added through a variable-held space must be matchable"
+                )
+                assertEquals(before + 1, (countof.invoke(null, self) as List<*>).size)
+
+                dropfrom.invoke(null, self, expr("Parent", "Bob", "Ann"))
+                assertEquals(before, (countof.invoke(null, self) as List<*>).size)
+            }
+    }
+
+    private fun expr(vararg names: String): Atom =
+        net.singularity.jetta.compiler.frontend.ir.Expression(names.map { Symbol(it) })
 }

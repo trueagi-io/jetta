@@ -177,9 +177,14 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "add-atom",
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                // The space is Object, like `match`'s: it can arrive INDIRECTLY, as the value of a
+                // variable rather than a literal `&name` lowered to a String. `JettaProgram`
+                // resolves either shape through `resolveSpaceName`. The reference stdlib passes it
+                // that way throughout — `(= (add-reduct $dst $atom) (add-atom $dst $atom))` — and a
+                // `String` parameter rejected the `Atom` at CLASS LOAD, taking the class with it.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
         )
     )
@@ -188,9 +193,10 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "remove-atom",
-                descriptor = "(Ljava/lang/String;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                // Object space — see `add-atom` above.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
         )
     )
@@ -199,9 +205,10 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "get-atoms",
-                descriptor = "(Ljava/lang/String;)Ljava/util/List;"
+                // Object space — see `add-atom` above.
+                descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
             ),
-            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
             true
         )
     )

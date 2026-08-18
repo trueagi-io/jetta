@@ -339,7 +339,7 @@ open class JettaProgram {
         fun nop(value: Any?): Atom = UNIT_ATOM
 
         /**
-         * `add-atom` — add [atom] to the space named [spaceName] as DATA (unreduced; the
+         * `add-atom` — add [atom] to [space] as DATA (unreduced; the
          * system-function signature types the argument `Atom`, suppressing call-site
          * reduction, matching hyperon). Bound variables in the atom ARE substituted first
          * ([Matcher.resolveDeep]): when `add-atom` runs inside a reduced match template
@@ -352,28 +352,34 @@ open class JettaProgram {
          * MeTTa symbol verbatim as the INVOKESTATIC target. Returns the unit atom `()` (an
          * ordinary Atom, as in hyperon) rather than `Unit`/void, so the result composes as
          * data when `add-atom` is nested in a larger expression.
+         *
+         * [space] is `Object`, not `String`, for the same reason `match`'s is
+         * ([resolveSpaceName]): the space can arrive INDIRECTLY, as the value of a variable
+         * rather than as a literal `&name` the compiler lowered to a String. The reference
+         * stdlib is written that way throughout — `(= (add-reduct $dst $atom) (add-atom $dst
+         * $atom))` — and a `String` parameter rejected the `Atom` at class load.
          */
         @JvmStatic
-        fun `add-atom`(spaceName: String, atom: Atom): Atom {
+        fun `add-atom`(space: Any?, atom: Atom): Atom {
             val resolved = Matcher.resolveDeep(atom)
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
                 .add(resolved as? Expression ?: Expression(listOf(resolved)))
             return UNIT_ATOM
         }
 
-        /** `remove-atom` — remove the first atom structurally equal to [atom] from [spaceName]. */
+        /** `remove-atom` — remove the first atom structurally equal to [atom] from [space]. */
         @JvmStatic
-        fun `remove-atom`(spaceName: String, atom: Atom): Atom {
+        fun `remove-atom`(space: Any?, atom: Atom): Atom {
             val resolved = Matcher.resolveDeep(atom)
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space)))
                 .remove(resolved as? Expression ?: Expression(listOf(resolved)))
             return UNIT_ATOM
         }
 
-        /** `get-atoms` — the full non-deterministic bag of atoms currently in [spaceName]. */
+        /** `get-atoms` — the full non-deterministic bag of atoms currently in [space]. */
         @JvmStatic
-        fun `get-atoms`(spaceName: String): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).getAtoms()
+        fun `get-atoms`(space: Any?): List<Atom> =
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getAtoms()
 
         /**
          * `import!` — runtime, order-sensitive module import (hyperon semantics).
