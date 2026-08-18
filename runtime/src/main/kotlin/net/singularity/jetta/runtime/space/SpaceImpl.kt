@@ -125,9 +125,11 @@ class SpaceImpl : Space {
             for (matchIndex in 0 until size) {
                 val m = packedIndex.getMatch(matchIndex)
                 // A match comes from ONE stored fact, so every binding shares its storeIndex. A
-                // ground pattern (no bindings) carries no storeIndex and cannot be filtered here —
-                // a known gap, but never a reduction `(= …)` lookup (which always binds a result var).
-                if (m.size() != 0 && m.getBinding(0).storeIndex >= wm) continue
+                // match that binds nothing (a ground pattern, or one whose variables all sit under
+                // a store variable) carries no storeIndex and cannot be filtered here — a known
+                // gap, but never a reduction `(= …)` lookup (which always binds a result var).
+                val storeIndex = m.storeIndexOrNull()
+                if (storeIndex >= 0 && storeIndex >= wm) continue
                 val bindings = packedIndex.resolveToAtoms(matchIndex, this)
                 val result = substituteVariablesA(dst, bindings)
                 val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)

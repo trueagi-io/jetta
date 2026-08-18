@@ -15,6 +15,9 @@ object IndexSerializer {
     private val MAGIC = byteArrayOf('J'.code.toByte(), 'T'.code.toByte(), 'S'.code.toByte(), 'I'.code.toByte())
     private const val VERSION: Byte = 2  // Version 2 for packed index format
 
+    /** On-disk sentinel for a match slot that binds no store position (see [PackedMatch]). */
+    private const val UNBOUND_STORE_INDEX = -1
+
     /**
      * Serialize an indexer to a file using packed format.
      *
@@ -140,6 +143,16 @@ object IndexSerializer {
             for (varIndex in 0 until match.size()) {
                 val binding = match.getBinding(varIndex)
 
+                if (binding == null) {
+                    // An unbound slot (see PackedMatch) has no store position to record.
+                    // UNBOUND_STORE_INDEX plus a zero-length path keeps the record
+                    // fixed-width, and no real storeIndex is ever negative, so a file
+                    // written before this sentinel existed reads back unchanged.
+                    writer.writeInt(UNBOUND_STORE_INDEX)
+                    writer.writeInt(0)
+                    continue
+                }
+
                 // Write store index
                 writer.writeInt(binding.storeIndex)
 
@@ -156,7 +169,7 @@ object IndexSerializer {
         val matchCount = reader.readInt()
 
         return List(matchCount) {
-            val bindings = Array(schema.size()) {
+            val bindings = Array<PackedBinding?>(schema.size()) {
                 // Read store index
                 val storeIndex = reader.readInt()
 
@@ -164,7 +177,7 @@ object IndexSerializer {
                 val pathLength = reader.readInt()
                 val atomPath = IntArray(pathLength) { reader.readInt() }
 
-                PackedBinding(storeIndex, atomPath)
+                if (storeIndex == UNBOUND_STORE_INDEX) null else PackedBinding(storeIndex, atomPath)
             }
 
             PackedMatch(bindings)

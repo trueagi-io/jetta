@@ -35,7 +35,9 @@ class PackedIndex(
         val subs = getSpaceVarSubstitutions(matchIndex)
 
         schema.variableNames.forEachIndexed { varIndex, varName ->
-            val packed = match.getBinding(varIndex)
+            // An unbound slot (see PackedMatch) contributes NO entry: the variable stays free,
+            // and substitution leaves a variable it finds no binding for as itself.
+            val packed = match.getBinding(varIndex) ?: return@forEachIndexed
             val atom = space.extractAtom(packed)
             bindings[varName] = if (subs.isNotEmpty()) applySubstitutions(atom, subs) else atom
         }
@@ -55,7 +57,9 @@ class PackedIndex(
         val subs = getSpaceVarSubstitutions(matchIndex)
         val out = HashMap<String, Atom>()
         schema.variableNames.forEachIndexed { varIndex, varName ->
-            val atom = space.extractAtomRaw(match.getBinding(varIndex))
+            // See [resolve]: an unbound slot contributes no entry.
+            val packed = match.getBinding(varIndex) ?: return@forEachIndexed
+            val atom = space.extractAtomRaw(packed)
             out[varName] = if (subs.isNotEmpty()) applySubstitutionsAtom(atom, subs) else atom
         }
         return out

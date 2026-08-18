@@ -121,8 +121,11 @@ class IndexerImpl(val pattern: Expression) : Indexer {
         val spaceVarBindings = mutableMapOf<String, SAtom>()
 
         if (matchAndCapture(pattern, expr, storeIndex, intArrayOf(), bindings, space, spaceVarBindings)) {
-            @Suppress("UNCHECKED_CAST")
-            return PackedMatch(bindings as Array<PackedBinding>) to spaceVarBindings
+            // Slots may legitimately stay null — a pattern sub-term unified with a store
+            // VARIABLE binds that variable and leaves the sub-term's own variables free (see
+            // [PackedMatch]). The array is handed over as-is; it used to be cast to a
+            // non-null element type, which turned every such match into an NPE downstream.
+            return PackedMatch(bindings) to spaceVarBindings
         }
 
         return null
