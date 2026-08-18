@@ -13,8 +13,9 @@ import net.singularity.jetta.compiler.frontend.ir.*
  * then treats it as any other lambda call. Variable type is inferred from
  * `$value`'s type via the existing type-inference logic.
  *
- * Form 2 (pattern-LHS, e.g. `(let (List $t) (get-type ...) $t)`) is left
- * untouched — it needs match-style unification, planned for a follow-up.
+ * Form 2 (pattern-LHS, e.g. `(let (List $t) (get-type ...) $t)`) is lowered onto the
+ * runtime `letMatch` helper, which unifies the pattern against each result and applies a
+ * lambda over the pattern's variables.
  *
  * Runs after [FunctionRewriter] and before [LambdaRewriter] so the synthesised
  * `(\ …)` form is then converted to a [Lambda] IR node.
@@ -111,12 +112,28 @@ class LetRewriter : Rewriter {
             // then evaluated with those bindings. Lowered to the runtime `letMatch` helper plus a
             // lambda over the pattern variables (document order): `(letMatch (List $t) VAL
             // (\ ($t) BODY))`. `letMatch` unifies, reads the bindings back, and applies the
-            // lambda per result. Limited to a single pattern variable for now — the common case
-            // and all the reference suite exercises (`(let (List $t) (get-type …) $t)`);
-            // multi-variable patterns fall through to the generic (inert) rewrite.
+            // lambda per result.
+            //
+            // ANY number of pattern variables lowers. This used to be capped at one, which left
+            // `(let ($head $tail) (decons-atom $x) …)` — the reference stdlib's dominant shape,
+            // and the whole point of `decons-atom` — falling through to the generic rewrite as an
+            // INERT term: the body was still evaluated (with the pattern variables free, so a
+            // `unify $head …` inside it "succeeded" against an unbound variable) and the `let`
+            // itself survived into the result as data. `letMatch` already binds N variables
+            // positionally in the same document order [collectPatternVars] produces here.
+            //
+            // DIVERGENCE, deliberate: only the PATTERN's variables are bound. A variable on the
+            // VALUE side that unification also binds — `(let ($a $b 3) (1 2 $c) ($a $b $c))`,
+            // where `$c` unifies with `3` — stays free in BODY (corpus `letlet.metta`). Closing
+            // it needs the parameter names threaded from here as data, the way `unify` does
+            // (see JettaProgram.unifyMatch): the runtime cannot collect them from the value,
+            // because by then an in-scope variable has become a VALUE that may itself contain
+            // variables, and picking those up would shift every positional argument. The
+            // reference stdlib always passes a ground value (`(decons-atom $x)`), so nothing
+            // there depends on it.
             if (lhs is Expression) {
                 val vars = collectPatternVars(lhs)
-                if (vars.size == 1) {
+                if (vars.isNotEmpty()) {
                     val value = rewriteAtom(rawValue)
                     val body = rewriteAtom(rawBody)
                     val paramList = Expression(vars.map { Variable(it) }, position = lhs.position)

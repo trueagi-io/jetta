@@ -380,6 +380,18 @@ class Context private constructor(
                 expression.type = GroundedType.ATOM
             }
 
+            is Grounded<*> -> {
+                // A LITERAL-headed expression — `(1 2 $d)` — is a data tuple, not an
+                // application: no value is callable, and a non-callable head is inert data by
+                // the same policy that makes an unresolved Symbol head data. Infer the
+                // elements' types (a nested call inside the tuple still needs them) and type
+                // the tuple itself ATOM, exactly as the expression-headed arm above does.
+                // Used to be a `TODO`, which crashed the whole compile on a shape the parser
+                // accepts and the runtime handles.
+                expression.atoms.forEach { inferType(it, scope) }
+                expression.type = GroundedType.ATOM
+            }
+
             is Variable -> {
                 // Variable-headed application — `($f x y)` in higher-order code.
                 // The variable's own ArrowType (if any) determines the result type;
