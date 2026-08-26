@@ -824,6 +824,22 @@ open class FunctionGenerator(
                     // lambda fields, AND falls back to generateNewVariable for
                     // truly free pattern variables (when className == null).
                     generateLoadVar(mv, atom, function.params, isStatic, className)
+                    if (paramType == GroundedType.ANY) {
+                        // An `Any` parameter is an `Object` slot the compiler cannot narrow, and a
+                        // quoted Expression holds `Atom[]` — so whatever it happens to carry must
+                        // be coerced before it is stored. A space reference is the case that
+                        // matters: it travels through a value position as a bare String (see
+                        // JettaProgram.asQuotedAtom), and storing that raw was an
+                        // ArrayStoreException as soon as the template was built — which is what
+                        // the reference `add-atoms` / `add-reducts` hit.
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/JettaProgram",
+                            "asQuotedAtom",
+                            "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                            false
+                        )
+                    }
                 }
             }
 
@@ -1486,6 +1502,22 @@ open class FunctionGenerator(
             // `(: ift (-> Bool Atom %Undefined%))` over `(add-atom &kb (Green $x))` has to perform
             // the write, since JeTTa does not re-reduce a returned atom the way hyperon does.
             generateQuote(mv, arg)
+        } else if (jvmSymbol.isParameterAtomType(index) && arg is Symbol && arg.name.startsWith("&")) {
+            // A SPACE reference passed to a parameter the callee declares `Atom`. In a value
+            // position a `&`-name is lowered to a bare String (`generateLoad`'s Symbol arm — the
+            // convention every space-taking BUILTIN reads, since their space parameter is typed
+            // `Object`). A user function is different: its descriptor says `Atom`, and `Atom` is an
+            // INTERFACE, so the verifier does not reject the String — it travels in as one and
+            // explodes further in, wherever something genuinely needs an Atom. The reference
+            // `add-atoms` / `add-reducts` (`(: add-atoms (-> SpaceType Expression (->)))`, whose
+            // body builds the template `(add-atom $space $b)`) died on exactly that with
+            // `ArrayStoreException: java.lang.String` at the AASTORE into the template's `Atom[]`.
+            //
+            // So hand such a callee the Symbol form instead, which [resolveSpaceName] reads just as
+            // happily. `&self` is resolved HERE to the owning module's space name, as the String
+            // convention does — a `Symbol("&self")` would instead be re-resolved against whichever
+            // program is running, which is not the module that wrote it.
+            generateQuote(mv, Symbol(if (arg.name == Predefined.SELF) moduleSpaceName else arg.name))
         } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 // A grounded VALUE reaching an `Atom`-typed parameter is evaluated, boxed and
                 // wrapped in a `Grounded` — which IS an Atom, where a bare box (Integer) is not,

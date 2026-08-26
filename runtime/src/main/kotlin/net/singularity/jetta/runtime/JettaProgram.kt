@@ -849,6 +849,34 @@ open class JettaProgram {
         }
 
         /**
+         * Coerce a value being materialised INTO quoted data to an [Atom]. Called from
+         * `generateQuote`'s variable arm for a slot whose static type is `Any`, i.e. whose JVM
+         * type is `Object` and whose contents the compiler cannot narrow.
+         *
+         * The `String` case is codegen's space/token convention, not a guess: a `&`-name in a
+         * VALUE position is lowered to its bare String (`&self` already resolved to the module
+         * name), while the same reference in quoted DATA is a `Symbol` — see [deref], which reads
+         * both. So a String arriving here is a NAME, and `Symbol` is the form every space-taking
+         * builtin accepts ([resolveSpaceName]). A genuine MeTTa string never reaches this arm: a
+         * `String`-typed parameter is a grounded value and is boxed into a `Grounded` by the arm
+         * above, and a string passed through an `Atom` parameter is already an Atom at the call
+         * site.
+         *
+         * Without this, an `Any` slot's raw contents went straight into the quoted `Expression`'s
+         * `Atom[]` — `ArrayStoreException: java.lang.String` the moment the template was built,
+         * which is what `(foldl-atom $tuple () $a $b (add-atom $space $b))` (the reference
+         * `add-atoms` / `add-reducts`) did. Same family as the `Lambda` arm's `Grounded` wrap.
+         */
+        @JvmStatic
+        fun asQuotedAtom(value: Any?): Atom = when (value) {
+            is BoundAtom -> asQuotedAtom(value.atom)
+            is Atom -> value
+            is String -> Symbol(value)
+            null -> UNIT_ATOM
+            else -> Grounded(value)
+        }
+
+        /**
          * `context-space` — the space that is the CONTEXT of the current evaluation, which the
          * reference stdlib threads explicitly into `metta` / `get-type-space` / `add-atom`
          * (`(chain (context-space) $space …)`, 14 call sites).
