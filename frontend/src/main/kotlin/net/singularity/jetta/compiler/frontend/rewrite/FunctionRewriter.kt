@@ -559,13 +559,26 @@ class FunctionRewriter(
             else -> atom
         }
 
-    private fun mkArrow(expression: Expression): Atom =
-        ArrowType(expression.atoms.drop(1).map {
+    private fun mkArrow(expression: Expression): Atom {
+        val components = expression.atoms.drop(1).map {
             when (it) {
                 is Expression -> mkArrow(it)
                 else -> it
             }
-        })
+        }
+        // `(->)` — an arrow with NO components — is hyperon's UNIT type, the return the reference
+        // stdlib declares for its side-effecting entries (`(: add-atoms (-> SpaceType Expression
+        // (->)))`, `assert`, `add-reducts`). It is not a function type: every `ArrowType` compiles
+        // to a `JettaFunction` (see `ArrowType.descriptor`), so `add-atoms` promised to return one
+        // and its `map?` lift then tried to cast the `()` it actually returns —
+        // `ClassCastException: Expression cannot be cast to JettaFunction` inside `simpleMap`.
+        //
+        // ATOM rather than UNIT, following `println!`: the unit VALUE is the expression `()`, and a
+        // genuinely void return breaks as soon as such a call sits in a `let` (it reaches
+        // `boxIfNeeded(Unit)` and crashes the compiler).
+        if (components.isEmpty()) return GroundedType.ATOM
+        return ArrowType(components)
+    }
 
     // Head symbols that arrive as ordinary IDENTs (not dedicated operator tokens like
     // `+`/`*`) and must be promoted to their Special form. Aliases map an alternate
