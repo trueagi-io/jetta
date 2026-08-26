@@ -12,6 +12,7 @@ import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.GroundedOps
 import net.singularity.jetta.runtime.functions.JettaCallSite
 import net.singularity.jetta.runtime.functions.JettaFunction
+import net.singularity.jetta.runtime.functions.JettaJit
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.functions.TypeEngine
@@ -845,6 +846,72 @@ open class JettaProgram {
                 name,
                 if (value is BoundAtom) value.atom else value,
             )
+        }
+
+        /**
+         * `context-space` — the space that is the CONTEXT of the current evaluation, which the
+         * reference stdlib threads explicitly into `metta` / `get-type-space` / `add-atom`
+         * (`(chain (context-space) $space …)`, 14 call sites).
+         *
+         * A space travels as a `Symbol` naming it (see [resolveSpaceName]), so this answers with
+         * the running program's name rather than the late-binding `&self`: `context-space` names
+         * the space current WHEN IT IS CALLED, and a result that says `&self` would instead be
+         * re-resolved wherever it is eventually used. The two coincide today ([currentSpaceName]
+         * is set once by [initInternal]); binding eagerly is what keeps them the same answer if
+         * evaluation ever becomes module-scoped.
+         */
+        @JvmStatic
+        fun `context-space`(): Atom = Symbol(currentSpaceName ?: "&self")
+
+        /**
+         * `_minimal-foldl-atom <list> <init> <a> <b> <op> <space>` — the grounded fold the
+         * reference `foldl-atom` stands on, and through it `add-atoms` / `add-reducts` /
+         * `for-each-in-atom`.
+         *
+         * [a] and [b] are VARIABLES naming the two slots of the [op] TEMPLATE, not values: each
+         * step substitutes the accumulator for [a] and the element for [b], then EVALUATES the
+         * result. Every argument arrives inert, which is what lets `(+ $a $b)` reach here as a
+         * template instead of arithmetic over unbound variables.
+         *
+         * Multivalued in the accumulator: a step that yields several results forks the fold, so
+         * the accumulator is carried as a BAG and each element maps every accumulator through the
+         * step. With single-valued results — every use in the reference file — the bag stays a
+         * singleton and this is an ordinary left fold.
+         *
+         * [space] is accepted and ignored: the step is evaluated in the running program's space,
+         * which is the space `context-space` handed the caller in the first place. It stays in the
+         * signature because the reference writes it, and because a module-scoped evaluator would
+         * need it.
+         *
+         * COST, deliberate: each step goes through [JettaJit.eval], and the JIT's structural cache
+         * is keyed on the step's text — the accumulator differs every time, so a fold over N
+         * elements is N compilations. Correct but linear in compiles; the env-aware cache is the
+         * fix, and this is the call site that makes it matter.
+         */
+        @JvmStatic
+        fun `_minimal-foldl-atom`(
+            list: Atom,
+            init: Atom,
+            a: Atom,
+            b: Atom,
+            op: Atom,
+            @Suppress("UNUSED_PARAMETER") space: Atom,
+        ): List<Atom> {
+            fun bare(x: Atom): Atom = if (x is BoundAtom) x.atom else x
+            val elements = (bare(list) as? Expression)?.atoms ?: return listOf(bare(init))
+            val aName = (bare(a) as? Variable)?.name ?: return listOf(bare(init))
+            val bName = (bare(b) as? Variable)?.name ?: return listOf(bare(init))
+            val template = bare(op)
+
+            var accumulators = listOf(bare(init))
+            for (element in elements) {
+                accumulators = accumulators.flatMap { acc ->
+                    val step = substituteVar(substituteVar(template, aName, acc), bName, element)
+                    JettaJit.eval(step)
+                }
+                if (accumulators.isEmpty()) return emptyList()
+            }
+            return accumulators
         }
 
         /**
