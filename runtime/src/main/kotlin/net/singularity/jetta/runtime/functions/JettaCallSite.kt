@@ -315,6 +315,22 @@ object JettaCallSite {
                 val b = reduceToBag(spaceName, atoms[2], depth + 1).firstOrNull() ?: atoms[2]
                 listOf(if (a == b) TRUE_SYMBOL else FALSE_SYMBOL)
             } else null
+            // (let <pattern> <value> <body>) — a `let` CONSTRUCTED at run time. A source-level one
+            // never reaches here: `LetRewriter` lowers it onto a lambda application or `letMatch`
+            // at compile time. But a rule BODY can build one, which is how the reference defines
+            // `lambda` — `(= ((lambda $var $body) $arg) (let $var $arg $body))` — so
+            // `((lambda $x (+ $x 1)) 2)` rewrites to `(let $x 2 (+ $x 1))` and that term now has
+            // to be run. Evaluate the value, unify the pattern against each result, and hand back
+            // the body with the bindings substituted; the caller reduces it further. A value that
+            // does not unify contributes nothing, exactly as `letMatch` does for a failed pattern.
+            SPECIAL_LET -> if (atoms.size == 4) {
+                reduceToBag(spaceName, atoms[2], depth + 1).mapNotNull { value ->
+                    val s = HashMap<String, Atom>()
+                    if (TypeEngine.unify(atoms[1], unwrapBound(value), s)) {
+                        TypeEngine.resolve(atoms[3], s)
+                    } else null
+                }
+            } else null
             else -> null
         }
     }
@@ -541,6 +557,7 @@ object JettaCallSite {
     private const val SPECIAL_EMPTY = "empty"
     private const val SPECIAL_IF = "if"
     private const val SPECIAL_EQ = "=="
+    private const val SPECIAL_LET = "let"
 
     /** hyperon's boolean symbols, produced by the runtime `==` special form. */
     private val TRUE_SYMBOL = Symbol("True")
