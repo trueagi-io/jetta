@@ -491,7 +491,7 @@ open class FunctionGenerator(
                         // the dispatch path but matches no rule/op and returns unchanged, so this
                         // stays 0-regression for inert data.
                         val headExpr = func as? Expression
-                        if (headExpr != null && headExpr.resolved == null) {
+                        if (headExpr != null) {
                             generateExpressionHeadDispatchCall(mv, atom)
                         } else {
                             generateQuote(mv, atom, evalCalls = true)
@@ -1724,7 +1724,26 @@ open class FunctionGenerator(
     private fun generateExpressionHeadDispatchCall(mv: LocalVariablesSorter, atom: Expression) {
         val head = atom.atoms.first()
         val arguments = atom.atoms.drop(1)
-        generateQuote(mv, head, evalCalls = true)
+        // A head that is a RESOLVED, single-valued call is EVALUATED, and its value becomes the
+        // head of the dispatched application. Two things depend on it. Its side effects have to
+        // run — `((add-atom …) (add-atom …))` is the hide idiom, and quoting the head instead
+        // silently dropped that first write (the tuple came out `(2)`, not `(1 2)`). And its VALUE
+        // is what makes the application a redex at all: `(= (is-socrates) (curry-a is Socrates))`
+        // means `((is-socrates) Human)` can only match the curry rule once the head has become
+        // `(curry-a is Socrates)`.
+        //
+        // Everything else — an unresolved head (`((curry +) 2)`, since curry/lambda live as space
+        // `=` facts and are never compiled), or a multivalued one whose value is a bag no head
+        // position can hold — is quoted as data, with `evalCalls` so a reducible scalar call nested
+        // INSIDE it still keeps its value-position semantics.
+        val headExpr = head as? Expression
+        val headResolved = headExpr?.resolved
+        if (headResolved != null && !headResolved.isMultiValued) {
+            generateAtom(mv, head, null, false)
+            boxIfNeeded(mv, head.type as? GroundedType)
+        } else {
+            generateQuote(mv, head, evalCalls = true)
+        }
         generateLoadInt(arguments.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
         arguments.forEachIndexed { i, arg ->
