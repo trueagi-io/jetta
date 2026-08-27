@@ -1836,6 +1836,18 @@ open class FunctionGenerator(
     }
 
     /**
+     * Whether [atom] is a `(quote X)` form. Such a term is not a pattern to match against — it is a
+     * request to take `X` as DATA, which [generateAtom] honours by peeling the quote. See the
+     * comparison branch in [generateBooleanExpr], where treating one as a pattern made
+     * `(== (quote $a) (quote $b))` compare the left side's VALUE with the right side's literal
+     * `(quote …)` term, and so answer False for every input.
+     */
+    private fun isQuoteForm(atom: Atom): Boolean {
+        val head = (atom as? Expression)?.atoms?.firstOrNull() ?: return false
+        return (head as? Special)?.value == Predefined.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE
+    }
+
+    /**
      * Whether [atom] is a TEMPLATE at this call site: it mentions a variable that nothing here binds
      * — not a parameter of the enclosing function, not a destructured local — so no value for it
      * exists and the term cannot be computed. Mirrors the rule `JettaJit.eval` applies to an atom it
@@ -2113,7 +2125,16 @@ open class FunctionGenerator(
                             // If the right side is an Expression containing Variables,
                             // use Matcher.match for structural pattern matching
                             // (e.g., (== $var0 (And $a $b)) should match (And X Y))
-                            if (right is Expression && containsVariable(right)) {
+                            //
+                            // A `(quote X)` right operand is excluded: it is not a pattern but a
+                            // request for X as DATA, which the left side's `generateAtom` grants by
+                            // peeling the quote. Treating it as a pattern made the two sides mean
+                            // different things — `(== (quote $a) (quote $b))`, which is how the
+                            // reference `noreduce-eq` is written, compared `$a`'s VALUE against the
+                            // literal term `(quote <value of $b>)` and was therefore False for every
+                            // input. `for-each-in-atom` tests termination with it, so it recursed
+                            // until the reduction pattern blew the stack.
+                            if (right is Expression && containsVariable(right) && !isQuoteForm(right)) {
                                 // Use Matcher.match(left, pattern) -> boolean
                                 generateAtom(mv, left, null, false)
                                 generateQuote(mv, right)
