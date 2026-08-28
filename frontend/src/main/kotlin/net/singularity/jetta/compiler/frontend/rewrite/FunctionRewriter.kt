@@ -561,8 +561,19 @@ class FunctionRewriter(
 
     private fun mkArrow(expression: Expression): Atom {
         val components = expression.atoms.drop(1).map {
-            when (it) {
-                is Expression -> mkArrow(it)
+            when {
+                // A nested ARROW is a function type and folds into an inner `ArrowType`. Anything
+                // else parenthesised in a type position is a type APPLICATION — `($F $a)`,
+                // `(Pair $a $b)`, `(List $a)` — and is left as it is, for `asType` to erase to
+                // `Atom` like every other user-defined type. Reading one as an arrow (dropping its
+                // head and taking the rest as the arrow's components) is what made
+                // `(: fmap (-> (-> $a $b) ($F $a) ($F $b)))` promise a FUNCTION for its second
+                // parameter and for its result: `($F $a)` became `(-> Atom)`, and since every
+                // `ArrowType` compiles to a `JettaFunction` — an INTERFACE, which the verifier does
+                // not check — the caller's `(Something 5)` travelled into that slot unchallenged
+                // and the multivalued lift cast it: `Expression cannot be cast to JettaFunction`
+                // inside `simpleMap`.
+                it is Expression && it.isArrow() -> mkArrow(it)
                 else -> it
             }
         }
@@ -579,6 +590,11 @@ class FunctionRewriter(
         if (components.isEmpty()) return GroundedType.ATOM
         return ArrowType(components)
     }
+
+    /** Whether this type-position expression is a function type `(-> …)` rather than a type
+     *  application like `($F $a)`. */
+    private fun Expression.isArrow(): Boolean =
+        atoms.firstOrNull().let { it is Special && it.value == Predefined.ARROW }
 
     // Head symbols that arrive as ordinary IDENTs (not dedicated operator tokens like
     // `+`/`*`) and must be promoted to their Special form. Aliases map an alternate
