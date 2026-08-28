@@ -1762,12 +1762,37 @@ open class FunctionGenerator(
         )
     }
 
+    /**
+     * Variable-headed application whose head carries a declared [ArrowType].
+     *
+     * The declaration promises a function, so the fast path is a direct `JettaFunction.apply`. It
+     * is only a promise: `JettaFunction` is an INTERFACE, and the verifier does not check interface
+     * types (it treats them as `Object`), so a value that is not a function reaches an arrow-typed
+     * slot unchallenged and only explodes here — `IncompatibleClassChangeError: Expression does not
+     * implement JettaFunction`. That is not a broken program but ordinary MeTTa:
+     * `(: fmap (-> (-> $a $b) ($F $a) ($F $b)))` declares an arrow parameter and
+     * `(fmap (curry-a + 2) (Something 5))` passes a curried TERM, because `curry-a` lives as a
+     * space `(= …)` fact and never becomes a compiled lambda — its partial application is an inert
+     * Expression.
+     *
+     * So the head is discriminated at runtime: a real `JettaFunction` takes the interface call,
+     * anything else goes through the [net.singularity.jetta.runtime.functions.JettaCallSite]
+     * dispatcher, which rewrites `(head args…)` by the space rules — the same treatment a head with
+     * no static arrow already gets in [generateDispatchCall]. Routing EVERY arrow-typed head
+     * through the dispatcher instead is not equivalent and was measured: it loses the 13
+     * genuine-lambda cases in `LambdaTest`/`HigherOrderPredicateTest`, whose heads are compiled
+     * lambdas the dispatcher cannot reproduce.
+     *
+     * The arms need no reconciling: `JettaFunction`'s SAM returns `Object` and so does the
+     * dispatcher, so both leave the same boxed shape and share the one trailing unbox to the
+     * arrow's declared return type.
+     */
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
         if (index < 0) throw IllegalArgumentException(variable.toString())
         val arrowType = variable.type as ArrowType
-        mv.visitVarInsn(Opcodes.ALOAD, index)
-        // Pack arguments into Object[] for the JettaFunction SAM.
+        // Pack arguments into Object[] for the JettaFunction SAM — once, into a local, since both
+        // arms consume the same array and generating it per arm would duplicate the argument code.
         generateLoadInt(arguments.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
         arguments.forEachIndexed { i, arg ->
@@ -1777,6 +1802,16 @@ open class FunctionGenerator(
             boxIfNeeded(mv, arg.type as? GroundedType)
             mv.visitInsn(Opcodes.AASTORE)
         }
+        val argsSlot = mv.newLocal(Type.getObjectType("[Ljava/lang/Object;"))
+        mv.visitVarInsn(Opcodes.ASTORE, argsSlot)
+
+        val dispatch = Label()
+        val done = Label()
+        mv.visitVarInsn(Opcodes.ALOAD, index)
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitTypeInsn(Opcodes.INSTANCEOF, arrowType.getJvmInterfaceName())
+        mv.visitJumpInsn(Opcodes.IFEQ, dispatch)
+        mv.visitVarInsn(Opcodes.ALOAD, argsSlot)
         mv.visitMethodInsn(
             Opcodes.INVOKEINTERFACE,
             arrowType.getJvmInterfaceName(),
@@ -1784,6 +1819,17 @@ open class FunctionGenerator(
             arrowType.getApplyJvmPlainDescriptor(),
             true
         )
+        mv.visitJumpInsn(Opcodes.GOTO, done)
+        mv.visitLabel(dispatch)
+        mv.visitVarInsn(Opcodes.ALOAD, argsSlot)
+        mv.visitInvokeDynamicInsn(
+            "apply",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            CALL_SITE_BOOTSTRAP_HANDLE,
+            // Static bootstrap arg: the space name to query for `(= …)` rules.
+            moduleSpaceName,
+        )
+        mv.visitLabel(done)
         val returnType = arrowType.types.last() as? GroundedType
         if (returnType != null) {
             unboxIfNeeded(mv, returnType)
