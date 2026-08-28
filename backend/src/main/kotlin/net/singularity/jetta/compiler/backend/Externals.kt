@@ -114,6 +114,22 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `matchReduceTemplate` — as above, but the TEMPLATE is reduced applicatively (arguments
+    // first, then the head) instead of one step at a time. The rewriter routes a template whose
+    // nested calls are written over the match's own pattern variables here: those variables are
+    // captured into the template lambda before the match runs, so the compiled path calls them
+    // unbound (see JettaProgram.matchReduceTemplate).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchReduceTemplate",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
@@ -542,6 +558,45 @@ fun registerExternals(context: Context) {
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
             false
+        )
+    )
+    // `context-space` — the space the current evaluation happens in, which the reference stdlib
+    // threads explicitly into `metta` / `get-type-space` / `add-atom`. No args; answers with a
+    // Symbol naming the space, the form every space-taking builtin already accepts. Scalar.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "context-space",
+                descriptor = "()Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+            ),
+            ArrowType(GroundedType.ATOM),
+            false
+        )
+    )
+    // `_minimal-foldl-atom` — the grounded fold the reference `foldl-atom` stands on (and through
+    // it `add-atoms` / `add-reducts` / `for-each-in-atom`). All six arguments are INERT: two of
+    // them are VARIABLES naming the slots of the operation TEMPLATE, so `(+ $a $b)` must arrive as
+    // data rather than as arithmetic over unbound variables. Multivalued — a step that yields
+    // several results forks the fold. See JettaProgram._minimal-foldl-atom.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "_minimal-foldl-atom",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;",
+                inertAtomParams = setOf(0, 1, 2, 3, 4, 5)
+            ),
+            ArrowType(
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                GroundedType.ATOM,
+                SeqType(GroundedType.ATOM),
+            ),
+            true
         )
     )
     // `get-metatype` — which of MeTTa's four kinds of atom the argument is (Symbol / Variable /

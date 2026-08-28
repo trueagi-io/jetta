@@ -491,7 +491,7 @@ open class FunctionGenerator(
                         // the dispatch path but matches no rule/op and returns unchanged, so this
                         // stays 0-regression for inert data.
                         val headExpr = func as? Expression
-                        if (headExpr != null && headExpr.resolved == null) {
+                        if (headExpr != null) {
                             generateExpressionHeadDispatchCall(mv, atom)
                         } else {
                             generateQuote(mv, atom, evalCalls = true)
@@ -668,14 +668,39 @@ open class FunctionGenerator(
                     // lambda whose body is a BAG stays quoted — a `List` is no more storable in an
                     // `Atom[]` than a function is, and lifting it is CanonicalForm's job.
                     val appliedLambdaResult = (sub as? Expression)?.atoms?.firstOrNull() as? Lambda
+                    // An application whose head is a variable of ARROW type is a call too, even
+                    // though nothing resolved it: the declaration `(: fmap-i (-> (-> $a $b) …))`
+                    // is what says `($f $x)` applies a function. Quoting it left the application
+                    // in the data — `(fmap-i (curry-a - 7) (Right 3))` answered
+                    // `(Right ((curry-a - 7) 3))` instead of `(Right 4)` — while every other
+                    // constructor argument was already being evaluated here. The head may hold a
+                    // compiled lambda or an inert curried term; [generateLambdaCall] discriminates
+                    // at run time, and a term nothing rewrites comes back inert, which is the
+                    // quoted shape anyway.
+                    val arrowHeadedCall = ((sub as? Expression)?.atoms?.firstOrNull() as? Variable)
+                        ?.type is ArrowType
                     if (evalCalls && sub is Expression &&
                         ((sub.resolved != null && sub.resolved?.isMultiValued != true) ||
                             isGroundedArithmetic(sub) ||
+                            arrowHeadedCall ||
                             (appliedLambdaResult != null && appliedLambdaResult.returnType !is SeqType))
                     ) {
                         generateAtom(mv, sub, null, false)
                         if (subType is GroundedType && subType.isGroundedValue()) {
                             wrapValueOnStackInGrounded(subType)
+                        } else if (arrowHeadedCall) {
+                            // The call's static type is the erased `Atom`, so what it leaves on the
+                            // stack is an `Object` the compiler cannot narrow — a reduced arrow
+                            // application answers with a boxed value as readily as with an Atom, and
+                            // an `Atom[]` store of the former is an ArrayStoreException. Coerce at
+                            // run time, as the `Any`-slot case above does.
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/JettaProgram",
+                                "asQuotedAtom",
+                                "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                                false
+                            )
                         }
                     } else {
                         generateQuote(mv, sub, evalCalls)
@@ -824,6 +849,22 @@ open class FunctionGenerator(
                     // lambda fields, AND falls back to generateNewVariable for
                     // truly free pattern variables (when className == null).
                     generateLoadVar(mv, atom, function.params, isStatic, className)
+                    if (paramType == GroundedType.ANY) {
+                        // An `Any` parameter is an `Object` slot the compiler cannot narrow, and a
+                        // quoted Expression holds `Atom[]` — so whatever it happens to carry must
+                        // be coerced before it is stored. A space reference is the case that
+                        // matters: it travels through a value position as a bare String (see
+                        // JettaProgram.asQuotedAtom), and storing that raw was an
+                        // ArrayStoreException as soon as the template was built — which is what
+                        // the reference `add-atoms` / `add-reducts` hit.
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/JettaProgram",
+                            "asQuotedAtom",
+                            "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                            false
+                        )
+                    }
                 }
             }
 
@@ -1486,6 +1527,22 @@ open class FunctionGenerator(
             // `(: ift (-> Bool Atom %Undefined%))` over `(add-atom &kb (Green $x))` has to perform
             // the write, since JeTTa does not re-reduce a returned atom the way hyperon does.
             generateQuote(mv, arg)
+        } else if (jvmSymbol.isParameterAtomType(index) && arg is Symbol && arg.name.startsWith("&")) {
+            // A SPACE reference passed to a parameter the callee declares `Atom`. In a value
+            // position a `&`-name is lowered to a bare String (`generateLoad`'s Symbol arm — the
+            // convention every space-taking BUILTIN reads, since their space parameter is typed
+            // `Object`). A user function is different: its descriptor says `Atom`, and `Atom` is an
+            // INTERFACE, so the verifier does not reject the String — it travels in as one and
+            // explodes further in, wherever something genuinely needs an Atom. The reference
+            // `add-atoms` / `add-reducts` (`(: add-atoms (-> SpaceType Expression (->)))`, whose
+            // body builds the template `(add-atom $space $b)`) died on exactly that with
+            // `ArrayStoreException: java.lang.String` at the AASTORE into the template's `Atom[]`.
+            //
+            // So hand such a callee the Symbol form instead, which [resolveSpaceName] reads just as
+            // happily. `&self` is resolved HERE to the owning module's space name, as the String
+            // convention does — a `Symbol("&self")` would instead be re-resolved against whichever
+            // program is running, which is not the module that wrote it.
+            generateQuote(mv, Symbol(if (arg.name == Predefined.SELF) moduleSpaceName else arg.name))
         } else if (jvmSymbol.isParameterAtomType(index) && argType is GroundedType && argType.isGroundedValue()) {
                 // A grounded VALUE reaching an `Atom`-typed parameter is evaluated, boxed and
                 // wrapped in a `Grounded` — which IS an Atom, where a bare box (Integer) is not,
@@ -1692,7 +1749,26 @@ open class FunctionGenerator(
     private fun generateExpressionHeadDispatchCall(mv: LocalVariablesSorter, atom: Expression) {
         val head = atom.atoms.first()
         val arguments = atom.atoms.drop(1)
-        generateQuote(mv, head, evalCalls = true)
+        // A head that is a RESOLVED, single-valued call is EVALUATED, and its value becomes the
+        // head of the dispatched application. Two things depend on it. Its side effects have to
+        // run — `((add-atom …) (add-atom …))` is the hide idiom, and quoting the head instead
+        // silently dropped that first write (the tuple came out `(2)`, not `(1 2)`). And its VALUE
+        // is what makes the application a redex at all: `(= (is-socrates) (curry-a is Socrates))`
+        // means `((is-socrates) Human)` can only match the curry rule once the head has become
+        // `(curry-a is Socrates)`.
+        //
+        // Everything else — an unresolved head (`((curry +) 2)`, since curry/lambda live as space
+        // `=` facts and are never compiled), or a multivalued one whose value is a bag no head
+        // position can hold — is quoted as data, with `evalCalls` so a reducible scalar call nested
+        // INSIDE it still keeps its value-position semantics.
+        val headExpr = head as? Expression
+        val headResolved = headExpr?.resolved
+        if (headResolved != null && !headResolved.isMultiValued) {
+            generateAtom(mv, head, null, false)
+            boxIfNeeded(mv, head.type as? GroundedType)
+        } else {
+            generateQuote(mv, head, evalCalls = true)
+        }
         generateLoadInt(arguments.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
         arguments.forEachIndexed { i, arg ->
@@ -1711,12 +1787,37 @@ open class FunctionGenerator(
         )
     }
 
+    /**
+     * Variable-headed application whose head carries a declared [ArrowType].
+     *
+     * The declaration promises a function, so the fast path is a direct `JettaFunction.apply`. It
+     * is only a promise: `JettaFunction` is an INTERFACE, and the verifier does not check interface
+     * types (it treats them as `Object`), so a value that is not a function reaches an arrow-typed
+     * slot unchallenged and only explodes here — `IncompatibleClassChangeError: Expression does not
+     * implement JettaFunction`. That is not a broken program but ordinary MeTTa:
+     * `(: fmap (-> (-> $a $b) ($F $a) ($F $b)))` declares an arrow parameter and
+     * `(fmap (curry-a + 2) (Something 5))` passes a curried TERM, because `curry-a` lives as a
+     * space `(= …)` fact and never becomes a compiled lambda — its partial application is an inert
+     * Expression.
+     *
+     * So the head is discriminated at runtime: a real `JettaFunction` takes the interface call,
+     * anything else goes through the [net.singularity.jetta.runtime.functions.JettaCallSite]
+     * dispatcher, which rewrites `(head args…)` by the space rules — the same treatment a head with
+     * no static arrow already gets in [generateDispatchCall]. Routing EVERY arrow-typed head
+     * through the dispatcher instead is not equivalent and was measured: it loses the 13
+     * genuine-lambda cases in `LambdaTest`/`HigherOrderPredicateTest`, whose heads are compiled
+     * lambdas the dispatcher cannot reproduce.
+     *
+     * The arms need no reconciling: `JettaFunction`'s SAM returns `Object` and so does the
+     * dispatcher, so both leave the same boxed shape and share the one trailing unbox to the
+     * arrow's declared return type.
+     */
     private fun generateLambdaCall(mv: LocalVariablesSorter, variable: Variable, arguments: List<Atom>) {
         val index = function.getParameterIndex(variable)
         if (index < 0) throw IllegalArgumentException(variable.toString())
         val arrowType = variable.type as ArrowType
-        mv.visitVarInsn(Opcodes.ALOAD, index)
-        // Pack arguments into Object[] for the JettaFunction SAM.
+        // Pack arguments into Object[] for the JettaFunction SAM — once, into a local, since both
+        // arms consume the same array and generating it per arm would duplicate the argument code.
         generateLoadInt(arguments.size)
         mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/Object")
         arguments.forEachIndexed { i, arg ->
@@ -1726,6 +1827,16 @@ open class FunctionGenerator(
             boxIfNeeded(mv, arg.type as? GroundedType)
             mv.visitInsn(Opcodes.AASTORE)
         }
+        val argsSlot = mv.newLocal(Type.getObjectType("[Ljava/lang/Object;"))
+        mv.visitVarInsn(Opcodes.ASTORE, argsSlot)
+
+        val dispatch = Label()
+        val done = Label()
+        mv.visitVarInsn(Opcodes.ALOAD, index)
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitTypeInsn(Opcodes.INSTANCEOF, arrowType.getJvmInterfaceName())
+        mv.visitJumpInsn(Opcodes.IFEQ, dispatch)
+        mv.visitVarInsn(Opcodes.ALOAD, argsSlot)
         mv.visitMethodInsn(
             Opcodes.INVOKEINTERFACE,
             arrowType.getJvmInterfaceName(),
@@ -1733,6 +1844,17 @@ open class FunctionGenerator(
             arrowType.getApplyJvmPlainDescriptor(),
             true
         )
+        mv.visitJumpInsn(Opcodes.GOTO, done)
+        mv.visitLabel(dispatch)
+        mv.visitVarInsn(Opcodes.ALOAD, argsSlot)
+        mv.visitInvokeDynamicInsn(
+            "apply",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            CALL_SITE_BOOTSTRAP_HANDLE,
+            // Static bootstrap arg: the space name to query for `(= …)` rules.
+            moduleSpaceName,
+        )
+        mv.visitLabel(done)
         val returnType = arrowType.types.last() as? GroundedType
         if (returnType != null) {
             unboxIfNeeded(mv, returnType)
@@ -1801,6 +1923,18 @@ open class FunctionGenerator(
         is Variable -> true
         is Expression -> atom.atoms.any { containsVariable(it) }
         else -> false
+    }
+
+    /**
+     * Whether [atom] is a `(quote X)` form. Such a term is not a pattern to match against — it is a
+     * request to take `X` as DATA, which [generateAtom] honours by peeling the quote. See the
+     * comparison branch in [generateBooleanExpr], where treating one as a pattern made
+     * `(== (quote $a) (quote $b))` compare the left side's VALUE with the right side's literal
+     * `(quote …)` term, and so answer False for every input.
+     */
+    private fun isQuoteForm(atom: Atom): Boolean {
+        val head = (atom as? Expression)?.atoms?.firstOrNull() ?: return false
+        return (head as? Special)?.value == Predefined.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE
     }
 
     /**
@@ -2081,7 +2215,16 @@ open class FunctionGenerator(
                             // If the right side is an Expression containing Variables,
                             // use Matcher.match for structural pattern matching
                             // (e.g., (== $var0 (And $a $b)) should match (And X Y))
-                            if (right is Expression && containsVariable(right)) {
+                            //
+                            // A `(quote X)` right operand is excluded: it is not a pattern but a
+                            // request for X as DATA, which the left side's `generateAtom` grants by
+                            // peeling the quote. Treating it as a pattern made the two sides mean
+                            // different things — `(== (quote $a) (quote $b))`, which is how the
+                            // reference `noreduce-eq` is written, compared `$a`'s VALUE against the
+                            // literal term `(quote <value of $b>)` and was therefore False for every
+                            // input. `for-each-in-atom` tests termination with it, so it recursed
+                            // until the reduction pattern blew the stack.
+                            if (right is Expression && containsVariable(right) && !isQuoteForm(right)) {
                                 // Use Matcher.match(left, pattern) -> boolean
                                 generateAtom(mv, left, null, false)
                                 generateQuote(mv, right)

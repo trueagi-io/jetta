@@ -119,8 +119,18 @@ class IndexerImpl(val pattern: Expression) : Indexer {
     private fun tryMatch(expr: Expression, storeIndex: Int, space: SpaceImpl): Pair<PackedMatch, Map<String, SAtom>>? {
         val bindings = Array<PackedBinding?>(schema.size()) { null }
         val spaceVarBindings = mutableMapOf<String, SAtom>()
+        val varAliases = mutableMapOf<String, SAtom>()
 
-        if (matchAndCapture(pattern, expr, storeIndex, intArrayOf(), bindings, space, spaceVarBindings)) {
+        if (matchAndCapture(pattern, expr, storeIndex, intArrayOf(), bindings, space, spaceVarBindings, varAliases)) {
+            // A store variable that met a pattern VARIABLE is bound only WEAKLY — folded in here,
+            // and only where the match found nothing concrete for that name. It cannot be a real
+            // binding: the same store variable may meet a pattern variable in one position and a
+            // value in another (`(implies ($P $x) (Green Sam))` against `(implies (Frog $x) (Green
+            // $x))` — `$x` meets the pattern's `$x` on the left and `Sam` on the right), and the
+            // concrete one is the answer. Recorded eagerly it poisoned that name, and the honest
+            // consistency check in the Symbol arm then REJECTED the match (a3_twoside went to an
+            // empty bag).
+            varAliases.forEach { (name, alias) -> spaceVarBindings.putIfAbsent(name, alias) }
             // Slots may legitimately stay null — a pattern sub-term unified with a store
             // VARIABLE binds that variable and leaves the sub-term's own variables free (see
             // [PackedMatch]). The array is handed over as-is; it used to be cast to a
@@ -138,7 +148,8 @@ class IndexerImpl(val pattern: Expression) : Indexer {
         currentPath: IntArray,
         bindings: Array<PackedBinding?>,
         space: SpaceImpl,
-        spaceVarBindings: MutableMap<String, SAtom>
+        spaceVarBindings: MutableMap<String, SAtom>,
+        varAliases: MutableMap<String, SAtom>
     ): Boolean {
         if (patternExpr.atoms.size != expr.atoms.size) return false
 
@@ -149,6 +160,23 @@ class IndexerImpl(val pattern: Expression) : Indexer {
 
             when (patternAtom) {
                 is Variable -> {
+                    // Variable AGAINST variable: the two are unified, so the STORE's variable is
+                    // bound to the pattern's just as much as the other way round — and a template
+                    // written in terms of the store's variable needs that binding to render. The
+                    // pattern-side capture below alone left it unsubstituted: `(= ((lambda $var
+                    // $body) $arg) (let $var $arg $body))` queried by `((lambda $x (+ $x 1)) 2)`
+                    // rendered `(let $var 2 (+ $x 1))` — `$body` and `$arg` substituted (they meet
+                    // non-variables, handled by the arms below) while `$var`, the one position where
+                    // both sides are variables, stayed as written.
+                    // Recorded only when nothing is recorded yet, and NEVER a reason to fail the
+                    // match: one store variable legitimately meets several different pattern
+                    // variables. The reduce query is the standard case — `(= (f $x) $x)` against
+                    // `(= (f $a) $r)` has `$x` meeting `$a` on the left and the result variable
+                    // `$r` on the right — and rejecting that took `a3_twoside` and
+                    // `b0_chaining_prelim` from a result to an empty bag.
+                    if (exprAtom is Variable) {
+                        varAliases.putIfAbsent(exprAtom.name, patternAtom.toSAtom())
+                    }
                     val varIndex = schema.getIndex(patternAtom.name)
                     val existing = bindings[varIndex]
                     val current = PackedBinding(storeIndex, newPath)
@@ -189,7 +217,7 @@ class IndexerImpl(val pattern: Expression) : Indexer {
                         }
                     } else if (exprAtom !is Expression) {
                         return false
-                    } else if (!matchAndCapture(patternAtom, exprAtom, storeIndex, newPath, bindings, space, spaceVarBindings)) {
+                    } else if (!matchAndCapture(patternAtom, exprAtom, storeIndex, newPath, bindings, space, spaceVarBindings, varAliases)) {
                         return false
                     }
                 }

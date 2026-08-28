@@ -12,6 +12,7 @@ import net.singularity.jetta.compiler.frontend.ir.Variable
 import net.singularity.jetta.runtime.functions.GroundedOps
 import net.singularity.jetta.runtime.functions.JettaCallSite
 import net.singularity.jetta.runtime.functions.JettaFunction
+import net.singularity.jetta.runtime.functions.JettaJit
 import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.functions.TypeEngine
@@ -453,6 +454,28 @@ open class JettaProgram {
         }
 
         /**
+         * `matchReduceTemplate` — match, then reduce each substituted TEMPLATE applicatively
+         * ([JettaCallSite.reduceTemplateBag]).
+         *
+         * The rewriter routes a template whose nested CALLS are written over the match's own
+         * pattern variables here, because that is the shape the compiled path cannot express: the
+         * template lambda captures those variables when it is created, which is before the match
+         * has run, so `(TV $y)` is compiled with `$y` unbound and matches everything. Substituted
+         * first and reduced after, the same term is ordinary ground evaluation — c3's
+         * `(stv (* $s (s-tv (TV $y))) (* $c (c-tv (TV $y))))`, four calls over three pattern
+         * variables, which no single lift can drive.
+         *
+         * Multivalued: each match contributes its template's whole result bag.
+         */
+        @JvmStatic
+        fun matchReduceTemplate(space: Any?, src: Atom, dst: Atom): List<Atom> {
+            val here = currentSpaceName ?: ""
+            return match(space, src, dst).flatMap { result ->
+                JettaCallSite.reduceTemplateBag(here, if (result is BoundAtom) result.atom else result)
+            }
+        }
+
+        /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
          * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
          * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —
@@ -845,6 +868,100 @@ open class JettaProgram {
                 name,
                 if (value is BoundAtom) value.atom else value,
             )
+        }
+
+        /**
+         * Coerce a value being materialised INTO quoted data to an [Atom]. Called from
+         * `generateQuote`'s variable arm for a slot whose static type is `Any`, i.e. whose JVM
+         * type is `Object` and whose contents the compiler cannot narrow.
+         *
+         * The `String` case is codegen's space/token convention, not a guess: a `&`-name in a
+         * VALUE position is lowered to its bare String (`&self` already resolved to the module
+         * name), while the same reference in quoted DATA is a `Symbol` — see [deref], which reads
+         * both. So a String arriving here is a NAME, and `Symbol` is the form every space-taking
+         * builtin accepts ([resolveSpaceName]). A genuine MeTTa string never reaches this arm: a
+         * `String`-typed parameter is a grounded value and is boxed into a `Grounded` by the arm
+         * above, and a string passed through an `Atom` parameter is already an Atom at the call
+         * site.
+         *
+         * Without this, an `Any` slot's raw contents went straight into the quoted `Expression`'s
+         * `Atom[]` — `ArrayStoreException: java.lang.String` the moment the template was built,
+         * which is what `(foldl-atom $tuple () $a $b (add-atom $space $b))` (the reference
+         * `add-atoms` / `add-reducts`) did. Same family as the `Lambda` arm's `Grounded` wrap.
+         */
+        @JvmStatic
+        fun asQuotedAtom(value: Any?): Atom = when (value) {
+            is BoundAtom -> asQuotedAtom(value.atom)
+            is Atom -> value
+            is String -> Symbol(value)
+            null -> UNIT_ATOM
+            else -> Grounded(value)
+        }
+
+        /**
+         * `context-space` — the space that is the CONTEXT of the current evaluation, which the
+         * reference stdlib threads explicitly into `metta` / `get-type-space` / `add-atom`
+         * (`(chain (context-space) $space …)`, 14 call sites).
+         *
+         * A space travels as a `Symbol` naming it (see [resolveSpaceName]), so this answers with
+         * the running program's name rather than the late-binding `&self`: `context-space` names
+         * the space current WHEN IT IS CALLED, and a result that says `&self` would instead be
+         * re-resolved wherever it is eventually used. The two coincide today ([currentSpaceName]
+         * is set once by [initInternal]); binding eagerly is what keeps them the same answer if
+         * evaluation ever becomes module-scoped.
+         */
+        @JvmStatic
+        fun `context-space`(): Atom = Symbol(currentSpaceName ?: "&self")
+
+        /**
+         * `_minimal-foldl-atom <list> <init> <a> <b> <op> <space>` — the grounded fold the
+         * reference `foldl-atom` stands on, and through it `add-atoms` / `add-reducts` /
+         * `for-each-in-atom`.
+         *
+         * [a] and [b] are VARIABLES naming the two slots of the [op] TEMPLATE, not values: each
+         * step substitutes the accumulator for [a] and the element for [b], then EVALUATES the
+         * result. Every argument arrives inert, which is what lets `(+ $a $b)` reach here as a
+         * template instead of arithmetic over unbound variables.
+         *
+         * Multivalued in the accumulator: a step that yields several results forks the fold, so
+         * the accumulator is carried as a BAG and each element maps every accumulator through the
+         * step. With single-valued results — every use in the reference file — the bag stays a
+         * singleton and this is an ordinary left fold.
+         *
+         * [space] is accepted and ignored: the step is evaluated in the running program's space,
+         * which is the space `context-space` handed the caller in the first place. It stays in the
+         * signature because the reference writes it, and because a module-scoped evaluator would
+         * need it.
+         *
+         * COST, deliberate: each step goes through [JettaJit.eval], and the JIT's structural cache
+         * is keyed on the step's text — the accumulator differs every time, so a fold over N
+         * elements is N compilations. Correct but linear in compiles; the env-aware cache is the
+         * fix, and this is the call site that makes it matter.
+         */
+        @JvmStatic
+        fun `_minimal-foldl-atom`(
+            list: Atom,
+            init: Atom,
+            a: Atom,
+            b: Atom,
+            op: Atom,
+            @Suppress("UNUSED_PARAMETER") space: Atom,
+        ): List<Atom> {
+            fun bare(x: Atom): Atom = if (x is BoundAtom) x.atom else x
+            val elements = (bare(list) as? Expression)?.atoms ?: return listOf(bare(init))
+            val aName = (bare(a) as? Variable)?.name ?: return listOf(bare(init))
+            val bName = (bare(b) as? Variable)?.name ?: return listOf(bare(init))
+            val template = bare(op)
+
+            var accumulators = listOf(bare(init))
+            for (element in elements) {
+                accumulators = accumulators.flatMap { acc ->
+                    val step = substituteVar(substituteVar(template, aName, acc), bName, element)
+                    JettaJit.eval(step)
+                }
+                if (accumulators.isEmpty()) return emptyList()
+            }
+            return accumulators
         }
 
         /**

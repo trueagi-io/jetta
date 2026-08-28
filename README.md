@@ -13,17 +13,19 @@ between compile time and call time. The behavioural reference is the Rust
 interpreter [`trueagi-io/hyperon-experimental`](https://github.com/trueagi-io/hyperon-experimental);
 JeTTa aims to produce byte-for-byte identical answers on its test suite.
 
-- **Version:** `0.8.0` · **License:** MIT · **Runtime:** Java 17+
+- **Version:** `0.9.0` · **License:** MIT · **Runtime:** Java 17+
 
 > **Status.** JeTTa is under active development. The fundamentals — symbols,
-> pattern match, equality, chaining, non-determinism, spaces, module imports and
-> most of the type system (GADTs, dependent types, propagation, inference) — work
-> today, and as of `0.8.0` so do mutable spaces and state cells. New in this
-> release: hyperon's own `stdlib.metta` **compiles and links** as a library, so
-> stdlib entries written in MeTTa come from the reference file rather than being
-> reimplemented. The current frontier is the minimal-MeTTa runner plumbing the
-> rest of that file stands on (`metta`, `collapse-bind`, `context-space`),
-> grounded values / PLN, and higher-order currying.
+> pattern match, equality, chaining, non-determinism, spaces, mutable state and
+> module imports — work today, and so does the type system (GADTs, dependent
+> types, propagation, inference). New in `0.9.0`: **higher-order currying** and
+> **PLN truth values**, which complete groups `c` and `d` of the reference suite
+> and bring it to 21 of 22. Since `0.8.0`, hyperon's own `stdlib.metta`
+> **compiles and links** as a library, so stdlib entries written in MeTTa come
+> from the reference file rather than being reimplemented. The frontier is the
+> minimal-MeTTa runner the rest of that file stands on (`metta`,
+> `collapse-bind`, the `assert*`/`collapse` family) and type errors on
+> constructor applications — the one topic test still open.
 > See [correctness](#compatibility--correctness) below.
 
 ---
@@ -195,15 +197,15 @@ kept under `docs/`).
 ## Compatibility & correctness
 
 Every program is checked against `hyperon-experimental` for the same answer.
-Group-by-group coverage of the reference topic suite (`a`–`g`) — **19 of 22
-topic tests pass** as of `0.8.0`:
+Group-by-group coverage of the reference topic suite (`a`–`g`) — **21 of 22
+topic tests pass** as of `0.9.0`:
 
 | Group | Feature | Pass | Status |
 | --- | --- | --- | --- |
 | a | symbols / match | 3 / 3 | ✅ full |
-| b | equality · chaining · non-det | 5 / 6 | core done · inert constructors left |
-| c | grounded values · spaces · PLN | 2 / 3 | spaces + grounded ops done · PLN next |
-| d | types (GADT · dependent · propagation · auto) | 4 / 5 | only currying left |
+| b | equality · chaining · non-det | 5 / 6 | core done · type errors on constructor applications left |
+| c | grounded values · spaces · PLN | 3 / 3 | ✅ full · grounded ops, spaces, PLN truth values |
+| d | types (GADT · dependent · propagation · auto) | 5 / 5 | ✅ full · currying + higher-order `fmap` |
 | e | mutation / states | 3 / 3 | ✅ full · KB writes + state cells |
 | f | modules / imports | 1 / 1 | ✅ full · runtime-ordered `import!` |
 | g | doc atoms (`get-doc` / `help!`) | 1 / 1 | ✅ full |

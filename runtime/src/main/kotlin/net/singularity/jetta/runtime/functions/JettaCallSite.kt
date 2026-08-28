@@ -49,6 +49,14 @@ object JettaCallSite {
     /** Reduction budget — guards against non-terminating rule cycles like `(= (foo) (foo))`. */
     private const val MAX_REDUCTION_STEPS = 1024
 
+    /** Nesting budget for [reduceTemplateBag]'s applicative walk, and a cap on how far one
+     *  template may fork. A template is a written term, so both are far above anything real. */
+    private const val MAX_TEMPLATE_DEPTH = 64
+    private const val MAX_TEMPLATE_BRANCHES = 1024
+
+    /** `quote` — a data boundary the template walk does not enter. */
+    private const val QUOTE_HEAD = "quote"
+
     @JvmStatic
     fun dispatch(spaceName: String, head: Any?, args: Array<Any?>): Any? {
         if (head is JettaFunction) return head.apply(args)
@@ -315,12 +323,115 @@ object JettaCallSite {
                 val b = reduceToBag(spaceName, atoms[2], depth + 1).firstOrNull() ?: atoms[2]
                 listOf(if (a == b) TRUE_SYMBOL else FALSE_SYMBOL)
             } else null
+            // (let <pattern> <value> <body>) — a `let` CONSTRUCTED at run time. A source-level one
+            // never reaches here: `LetRewriter` lowers it onto a lambda application or `letMatch`
+            // at compile time. But a rule BODY can build one, which is how the reference defines
+            // `lambda` — `(= ((lambda $var $body) $arg) (let $var $arg $body))` — so
+            // `((lambda $x (+ $x 1)) 2)` rewrites to `(let $x 2 (+ $x 1))` and that term now has
+            // to be run. Evaluate the value, unify the pattern against each result, and hand back
+            // the body with the bindings substituted; the caller reduces it further. A value that
+            // does not unify contributes nothing, exactly as `letMatch` does for a failed pattern.
+            SPECIAL_LET -> if (atoms.size == 4) {
+                reduceToBag(spaceName, atoms[2], depth + 1).mapNotNull { value ->
+                    val s = HashMap<String, Atom>()
+                    if (TypeEngine.unify(atoms[1], unwrapBound(value), s)) {
+                        TypeEngine.resolve(atoms[3], s)
+                    } else null
+                }
+            } else null
             else -> null
         }
     }
 
     /** Drop a [BoundAtom] wrapper (templates reachable in [reduceToBag] are already ground). */
     private fun unwrapBound(atom: Atom): Atom = if (atom is BoundAtom) atom.atom else atom
+
+    /**
+     * Reduce a match TEMPLATE that the space has already substituted the match's bindings into —
+     * `(stv (* 0.8 (s-tv (TV (Evaluation …)))) …)` — to its result BAG.
+     *
+     * The compiled path cannot do this one. A template is compiled as DATA with only the calls it
+     * can prove reducible evaluated in place, and its pattern variables are not values at all:
+     * they are captured into the template lambda when it is CREATED, which is before the match has
+     * run, so a call written over them receives an unbound `Variable` (c3's `(TV $y)` matched every
+     * `.tv` fact in the space). Here the whole term arrives ground, and one applicative walk
+     * answers it: reduce the ARGUMENTS first — each may itself be a bag, so the parent runs once
+     * per combination — then take one step on the head. That step is:
+     *
+     *  * a MULTIVALUED compiled function, whose bag IS the result ([invokeMultivaluedRegistry]).
+     *    Preferred over the `=`-rules in the space, which hold the same function's clauses and
+     *    would re-derive it interpretively;
+     *  * otherwise [reduceBag] — space rules, runtime-constructed special forms, and the registry
+     *    (a single-valued compiled function, or a grounded operator such as `*`);
+     *  * otherwise the term is its own normal form. A data constructor (`stv`, `Cons`) has no rule
+     *    and no registry entry, so it stays exactly as written — which is what makes this safe to
+     *    run over a template that is mostly data.
+     *
+     * `quote` is a boundary, as everywhere else: its content is data and is not walked.
+     */
+    @JvmStatic
+    fun reduceTemplateBag(spaceName: String, atom: Atom): List<Atom> = reduceTemplate(spaceName, atom, 0)
+
+    private fun reduceTemplate(spaceName: String, atom: Atom, depth: Int): List<Atom> {
+        val inner = unwrapBound(atom)
+        if (depth >= MAX_TEMPLATE_DEPTH || inner !is Expression || inner.atoms.isEmpty()) {
+            return listOf(inner)
+        }
+        val head = inner.atoms[0]
+        if (opHeadName(head) == QUOTE_HEAD) return listOf(inner)
+        // Argument bags, crossed: `(f (a) (b))` where both reduce to two values runs `f` four
+        // times, the same product the compiled `flat-map?` lifts build. Bounded, because a
+        // template that forks unboundedly is a runaway, not an answer.
+        var combos: List<List<Atom>> = listOf(emptyList())
+        for (arg in inner.atoms.drop(1)) {
+            val bag = reduceTemplate(spaceName, arg, depth + 1)
+            val next = ArrayList<List<Atom>>(combos.size * bag.size)
+            for (prefix in combos) {
+                for (value in bag) {
+                    if (next.size >= MAX_TEMPLATE_BRANCHES) break
+                    next.add(prefix + value)
+                }
+            }
+            combos = next
+        }
+        val out = ArrayList<Atom>(combos.size)
+        for (args in combos) {
+            val expr = Expression(listOf(head) + args)
+            val bag = invokeMultivaluedRegistry(expr)
+            if (bag != null) out.addAll(bag) else out.addAll(reduceBag(spaceName, expr))
+        }
+        return out
+    }
+
+    /**
+     * Invoke [expr]'s head as a MULTIVALUED compiled function and return its bag, or null when the
+     * head is not one (not registered, single-valued, or a different arity — a partial application
+     * is not a call). The single-valued twin is [reduceViaRegistry], which [reduceBag] reaches;
+     * this exists because a bag cannot be the value of one reduction STEP, so the step-based
+     * reducer declines it, while a template's argument position takes a bag quite happily.
+     *
+     * The same two throws [reduceViaRegistry] absorbs are absorbed here, for the same reason: a
+     * term built at run time may hand the compiled body a shape it cannot take, and inert is
+     * always a valid MeTTa normal form.
+     */
+    private fun invokeMultivaluedRegistry(expr: Expression): List<Atom>? {
+        val name = opHeadName(Matcher.resolveBinding(expr.atoms[0])) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: return null
+        if (!entry.multivalued) return null
+        if (entry.paramTypes.size != expr.atoms.size - 1) return null
+        val args = arrayOfNulls<Any?>(expr.atoms.size - 1)
+        for (i in 1 until expr.atoms.size) args[i - 1] = expr.atoms[i]
+        val result = try {
+            JettaLinkRegistry.invoke(entry, args)
+        } catch (_: ClassCastException) {
+            return null
+        } catch (_: NullPointerException) {
+            return null
+        }
+        val list = result as? List<*> ?: return null
+        return list.map { unwrapBound(toAtom(it)) }
+    }
+
 
     /**
      * One rewrite step: query the space for `(= expr $r)` and return the
@@ -541,6 +652,7 @@ object JettaCallSite {
     private const val SPECIAL_EMPTY = "empty"
     private const val SPECIAL_IF = "if"
     private const val SPECIAL_EQ = "=="
+    private const val SPECIAL_LET = "let"
 
     /** hyperon's boolean symbols, produced by the runtime `==` special form. */
     private val TRUE_SYMBOL = Symbol("True")
