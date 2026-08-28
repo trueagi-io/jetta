@@ -454,6 +454,28 @@ open class JettaProgram {
         }
 
         /**
+         * `matchReduceTemplate` — match, then reduce each substituted TEMPLATE applicatively
+         * ([JettaCallSite.reduceTemplateBag]).
+         *
+         * The rewriter routes a template whose nested CALLS are written over the match's own
+         * pattern variables here, because that is the shape the compiled path cannot express: the
+         * template lambda captures those variables when it is created, which is before the match
+         * has run, so `(TV $y)` is compiled with `$y` unbound and matches everything. Substituted
+         * first and reduced after, the same term is ordinary ground evaluation — c3's
+         * `(stv (* $s (s-tv (TV $y))) (* $c (c-tv (TV $y))))`, four calls over three pattern
+         * variables, which no single lift can drive.
+         *
+         * Multivalued: each match contributes its template's whole result bag.
+         */
+        @JvmStatic
+        fun matchReduceTemplate(space: Any?, src: Atom, dst: Atom): List<Atom> {
+            val here = currentSpaceName ?: ""
+            return match(space, src, dst).flatMap { result ->
+                JettaCallSite.reduceTemplateBag(here, if (result is BoundAtom) result.atom else result)
+            }
+        }
+
+        /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
          * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
          * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —

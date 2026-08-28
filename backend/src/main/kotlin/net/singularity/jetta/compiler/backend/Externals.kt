@@ -114,6 +114,22 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `matchReduceTemplate` — as above, but the TEMPLATE is reduced applicatively (arguments
+    // first, then the head) instead of one step at a time. The rewriter routes a template whose
+    // nested calls are written over the match's own pattern variables here: those variables are
+    // captured into the template lambda before the match runs, so the compiled path calls them
+    // unbound (see JettaProgram.matchReduceTemplate).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "matchReduceTemplate",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(

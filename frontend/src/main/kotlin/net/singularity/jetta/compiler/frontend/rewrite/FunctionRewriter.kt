@@ -793,6 +793,46 @@ class FunctionRewriter(
             }
         }
 
+        // A template whose nested CALLS are written over the match's OWN pattern variables, and
+        // which the single-call lift above declined — c3's Implication rule,
+        //
+        //   (match &self (.tv (Implication $y $x) (stv $s $c))
+        //     (stv (* $s (s-tv (TV $y))) (* $c (c-tv (TV $y)))))
+        //
+        // four calls over three pattern variables. No single lift drives that, and the general
+        // `__matchTmpl` path below cannot either: it compiles the template as a lambda, and a
+        // pattern variable is CAPTURED into that lambda when it is created — before the match has
+        // run. So `(TV $y)` was compiled with `$y` unbound and answered with every `.tv` fact in
+        // the space, while `$s` and `$c` were substituted only at the very end, into a term whose
+        // arithmetic had long since been frozen as data: `(stv (* 0.8 (s-tv <the whole store>)) …)`.
+        //
+        // Substituting first and reducing after turns it into ordinary ground evaluation, which is
+        // what `matchReduceTemplate` does — one applicative walk per match, arguments before
+        // heads. A data constructor has neither a rule nor a registry entry, so the parts of the
+        // template that are data stay exactly as written.
+        //
+        // Narrow deliberately: only USER function calls count (`isFunctionCall` reads `patterns`),
+        // so a template built of system calls — `(add-atom &self (foo $x))`, the `hide` idiom —
+        // keeps the lambda path below, where their own runtime `resolveDeep` substitutes the
+        // bindings.
+        if (template is Expression) {
+            val nestedCalls = collectNestedFunctionCalls(template)
+            val matchVars = collectVariableNames(expression.atoms[2])
+            val dependsOnMatchVars = nestedCalls.any { call ->
+                collectVariableNames(call).any { it in matchVars }
+            }
+            if (dependsOnMatchVars) {
+                return expression.copy(
+                    listOf(
+                        Symbol("matchReduceTemplate"),
+                        expression.atoms[1],
+                        quoteAtom(expression.atoms[2]),
+                        quoteAtom(template)
+                    )
+                )
+            }
+        }
+
         // General case: the template CONTAINS a reducible call (a system builtin such as
         // add-atom/remove-atom, a user function, or an imported one) but is not one of the
         // specific single-call shapes handled above — e.g. a tuple of side-effecting calls
