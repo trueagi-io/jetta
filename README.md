@@ -195,7 +195,7 @@ kept under `docs/`).
 ## Compatibility & correctness
 
 Every program is checked against `hyperon-experimental` for the same answer.
-Group-by-group coverage of the reference topic suite (`a`–`g`) — **19 of 22
+Group-by-group coverage of the reference topic suite (`a`–`g`) — **20 of 22
 topic tests pass** as of `0.8.0`:
 
 | Group | Feature | Pass | Status |
@@ -203,7 +203,7 @@ topic tests pass** as of `0.8.0`:
 | a | symbols / match | 3 / 3 | ✅ full |
 | b | equality · chaining · non-det | 5 / 6 | core done · inert constructors left |
 | c | grounded values · spaces · PLN | 2 / 3 | spaces + grounded ops done · PLN next |
-| d | types (GADT · dependent · propagation · auto) | 4 / 5 | only currying left |
+| d | types (GADT · dependent · propagation · auto) | 5 / 5 | ✅ full · currying + higher-order `fmap` |
 | e | mutation / states | 3 / 3 | ✅ full · KB writes + state cells |
 | f | modules / imports | 1 / 1 | ✅ full · runtime-ordered `import!` |
 | g | doc atoms (`get-doc` / `help!`) | 1 / 1 | ✅ full |
