@@ -80,4 +80,38 @@ class ArrowHeadDiscriminationTest : GeneratorTestBase() {
             """.trimIndent().v()
         )
     }
+
+    /**
+     * The call nested in a DATA CONSTRUCTOR, which is where the reference `fmap-i` puts it:
+     * `(= (fmap-i $f (Right $x)) (Right ($f $x)))`. Nothing resolves an arrow-headed application,
+     * so the quote path took it for data and answered `(Right ((curry-a - 7) 3))`.
+     */
+    @Test
+    fun `an arrow-declared call inside a constructor is evaluated`() {
+        run(
+            "ArrowHeadInConstructor",
+            """
+            (= ((curry-a ~f ~a) ~b) (~f ~a ~b))
+            (: wrap (-> (-> Atom Atom) Atom Atom))
+            (= (wrap ~f ~x) (Wrapped (~f ~x)))
+            !(assertEqual (wrap (curry-a - 7) 3) (Wrapped 4))
+            """.trimIndent().v()
+        )
+    }
+
+    /** The reference `fmap-i` over `Either`, verbatim in shape. */
+    @Test
+    fun `the reference fmap-i maps a curried term over a constructor`() {
+        run(
+            "ArrowHeadFmapI",
+            """
+            (= ((curry-a ~f ~a) ~b) (~f ~a ~b))
+            (: fmap-i (-> (-> ~a ~b) (~F ~a) (~F ~b)))
+            (= (fmap-i ~f (Left ~x)) (Left (~f ~x)))
+            (= (fmap-i ~f (Right ~x)) (Right (~f ~x)))
+            !(assertEqual (fmap-i (curry-a - 7) (Right 3)) (Right 4))
+            !(assertEqual (fmap-i (curry-a + 2) (Left 5)) (Left 7))
+            """.trimIndent().v()
+        )
+    }
 }

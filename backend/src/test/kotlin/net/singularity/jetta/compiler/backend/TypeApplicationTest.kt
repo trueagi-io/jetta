@@ -73,4 +73,27 @@ class TypeApplicationTest : GeneratorTestBase() {
             """.trimIndent().v()
         )
     }
+
+    /**
+     * The reference `fmap` in full: the recursive clause makes the call multivalued, so its result is
+     * lifted through `simpleMap` — the lift whose `JettaFunction` cast the mis-read result type used
+     * to fail.
+     */
+    @Test
+    fun `the reference fmap recurses through the multivalued lift`() {
+        run(
+            "TypeAppFmap",
+            """
+            (= ((curry-a ~f ~a) ~b) (~f ~a ~b))
+            (: fmap (-> (-> ~a ~b) (~F ~a) (~F ~b)))
+            (= (fmap ~f (~C0)) (~C0))
+            (= (fmap ~f (~C ~x)) (~C (~f ~x)))
+            (= (fmap ~f (~C ~x ~xs)) (~C (~f ~x) (fmap ~f ~xs)))
+            !(assertEqual (fmap (curry-a + 2) (Something 5)) (Something 7))
+            !(assertEqual
+              (fmap (curry-a + 2) (UntypedC 5 (UntypedC 8 (Null))))
+              (UntypedC 7 (UntypedC 10 (Null))))
+            """.trimIndent().v()
+        )
+    }
 }

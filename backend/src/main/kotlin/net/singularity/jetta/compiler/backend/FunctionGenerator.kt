@@ -668,14 +668,39 @@ open class FunctionGenerator(
                     // lambda whose body is a BAG stays quoted — a `List` is no more storable in an
                     // `Atom[]` than a function is, and lifting it is CanonicalForm's job.
                     val appliedLambdaResult = (sub as? Expression)?.atoms?.firstOrNull() as? Lambda
+                    // An application whose head is a variable of ARROW type is a call too, even
+                    // though nothing resolved it: the declaration `(: fmap-i (-> (-> $a $b) …))`
+                    // is what says `($f $x)` applies a function. Quoting it left the application
+                    // in the data — `(fmap-i (curry-a - 7) (Right 3))` answered
+                    // `(Right ((curry-a - 7) 3))` instead of `(Right 4)` — while every other
+                    // constructor argument was already being evaluated here. The head may hold a
+                    // compiled lambda or an inert curried term; [generateLambdaCall] discriminates
+                    // at run time, and a term nothing rewrites comes back inert, which is the
+                    // quoted shape anyway.
+                    val arrowHeadedCall = ((sub as? Expression)?.atoms?.firstOrNull() as? Variable)
+                        ?.type is ArrowType
                     if (evalCalls && sub is Expression &&
                         ((sub.resolved != null && sub.resolved?.isMultiValued != true) ||
                             isGroundedArithmetic(sub) ||
+                            arrowHeadedCall ||
                             (appliedLambdaResult != null && appliedLambdaResult.returnType !is SeqType))
                     ) {
                         generateAtom(mv, sub, null, false)
                         if (subType is GroundedType && subType.isGroundedValue()) {
                             wrapValueOnStackInGrounded(subType)
+                        } else if (arrowHeadedCall) {
+                            // The call's static type is the erased `Atom`, so what it leaves on the
+                            // stack is an `Object` the compiler cannot narrow — a reduced arrow
+                            // application answers with a boxed value as readily as with an Atom, and
+                            // an `Atom[]` store of the former is an ArrayStoreException. Coerce at
+                            // run time, as the `Any`-slot case above does.
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/JettaProgram",
+                                "asQuotedAtom",
+                                "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                                false
+                            )
                         }
                     } else {
                         generateQuote(mv, sub, evalCalls)
