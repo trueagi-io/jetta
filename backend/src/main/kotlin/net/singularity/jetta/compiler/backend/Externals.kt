@@ -320,6 +320,34 @@ fun registerExternals(context: Context) {
             )
         )
     }
+    // The multiset operations over expressions
+    // ([net.singularity.jetta.runtime.AtomSetOps]). ATOM parameters: the operand is a data
+    // expression like `(a b c d d)`, which must arrive un-evaluated — read as an application
+    // its head `a` means nothing.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/AtomSetOps",
+                name = "unique-atom",
+                descriptor = "($ATOM_D)$ATOM_D",
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    listOf("union-atom", "intersection-atom", "subtraction-atom").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = "net/singularity/jetta/runtime/AtomSetOps",
+                    name = op,
+                    descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                ),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
     // `car-atom` / `cdr-atom` — head and tail of an expression (`(car-atom (a b c))` → `a`,
     // `(cdr-atom (a b c))` → `(b c)`). Argument is ATOM so a bound list variable arrives as
     // its Expression value; result is an Atom (an element, or a tail Expression). Pure and
