@@ -163,19 +163,86 @@ class Context private constructor(
         }
     }
 
-    private fun SymbolDef.toJvm() = JvmMethod(
-        owner = owner,
-        name = func.name,
-        descriptor = func.getJvmDescriptor(),
-        signature = func.getSignature(),
+    private fun SymbolDef.toJvm(): JvmMethod {
         // A parameter the source declares literally `Atom` is hyperon's meta-type annotation. Only a
         // builtin could say so before — `inertAtomParams` was reachable only from
         // `registerExternals` — so a user function could not take a template, and the reference
         // stdlib's `filter-atom` had its `(> $v 1)` reduced at the call site over a free variable.
-        // It maps to the CONDITIONAL flavour: see `JvmMethod.templateAtomParams` for why holding a
-        // user function's argument unconditionally is wrong for us where it is right for hyperon.
-        templateAtomParams = func.declaredAtomParams,
-    )
+        //
+        // Which flavour it maps to depends on whether the argument can still be needed as a VALUE.
+        // Holding every such argument unconditionally is what hyperon does and what JeTTa cannot
+        // yet afford: hyperon keeps reducing a function's RESULT, so an unreduced term handed on
+        // is merely deferred work, while JeTTa returns its result as it stands — `(ift True
+        // (add-atom &kb (Green $x)))` would never perform the write (e1_kb_write).
+        //
+        // But that only bites when the parameter REACHES the result. When it does not — it is
+        // consumed by the clause guards alone, as in `(: eqa (-> Atom Atom Type))` with
+        // `(= (eqa $x $x) T)`, which compiles to `(match ((== $var0 $var1) => T))` — no reduced
+        // value of it is ever returned, so holding the term is both what hyperon does and free of
+        // the re-reduction debt. Deciding per parameter rather than per function keeps
+        // `(: f (-> Atom Atom …))` precise when one of its arguments escapes and the other does not.
+        val declared = func.declaredAtomParams
+        val escaping = if (declared.isEmpty()) emptySet() else resultVariableNames(func.body)
+        val destructured = if (declared.isEmpty()) emptySet() else destructuredParamIndices(func.body)
+        val held = declared.filterTo(mutableSetOf()) {
+            func.params.getOrNull(it)?.name !in escaping && it !in destructured
+        }
+        return JvmMethod(
+            owner = owner,
+            name = func.name,
+            descriptor = func.getJvmDescriptor(),
+            signature = func.getSignature(),
+            inertAtomParams = held,
+            templateAtomParams = declared - held,
+        )
+    }
+
+    /**
+     * The variable names that can appear in what [atom] EVALUATES TO, as opposed to those it
+     * merely inspects on the way. A `Match` branch's `cond` is a guard — `(== $var0 $var1)`
+     * decides which branch runs and contributes nothing to its value — so only branch bodies are
+     * followed. Everything else contributes every variable it holds.
+     *
+     * Conservative in the direction that preserves today's behaviour: a shape whose result
+     * positions are not obvious (a `Lambda` — its body may be returned, applied, or captured)
+     * reports ALL of its variables, which keeps the parameter on the existing reduce-the-argument
+     * path.
+     */
+    private fun resultVariableNames(atom: Atom): Set<String> = when (atom) {
+        is Variable -> setOf(atom.name)
+        is Match -> atom.branches.flatMapTo(mutableSetOf()) { resultVariableNames(it.body) }
+        is Expression -> atom.atoms.flatMapTo(mutableSetOf()) { resultVariableNames(it) }
+        is Lambda -> allVariableNames(atom.body)
+        else -> emptySet()
+    }
+
+    /**
+     * Indices of the parameters some clause takes APART. A destructured parameter escapes to the
+     * result through its pieces rather than by name — `(= (ev (Plus $a $b)) (+ (ev $a) (ev $b)))`
+     * compiles to a guard over `$var0` plus `DestructureBinding($a <- $var0[1])`, so `$var0`
+     * itself appears nowhere in the branch body while its parts carry the whole computation.
+     * Reading only [resultVariableNames] would call such a parameter unused and hold the
+     * argument as a term, which silently stops `(ev (d (Mul x x) x))` from evaluating anything.
+     */
+    private fun destructuredParamIndices(atom: Atom): Set<Int> = when (atom) {
+        is Match -> atom.branches.flatMapTo(mutableSetOf()) { branch ->
+            branch.destructuredBindings.map { it.paramIndex } + destructuredParamIndices(branch.body)
+        }
+        is Expression -> atom.atoms.flatMapTo(mutableSetOf()) { destructuredParamIndices(it) }
+        is Lambda -> destructuredParamIndices(atom.body)
+        else -> emptySet()
+    }
+
+    /** Every variable name anywhere in [atom], guards included. */
+    private fun allVariableNames(atom: Atom): Set<String> = when (atom) {
+        is Variable -> setOf(atom.name)
+        is Match -> atom.branches.flatMapTo(mutableSetOf()) {
+            allVariableNames(it.body) + (it.cond?.let(::allVariableNames) ?: emptySet())
+        }
+        is Expression -> atom.atoms.flatMapTo(mutableSetOf()) { allVariableNames(it) }
+        is Lambda -> allVariableNames(atom.body)
+        else -> emptySet()
+    }
 
     /**
      * Record [owner] among ALL the modules that define [func]'s name, beside the single-owner
