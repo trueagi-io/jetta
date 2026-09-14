@@ -284,6 +284,42 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // The reference stdlib's `*-math` family plus `min-atom`/`max-atom`
+    // ([net.singularity.jetta.runtime.MathOps]). Every parameter is ATOM rather than DOUBLE:
+    // the answers are not type-uniform (`(abs-math -5)` is `5`, `(sqrt-math 9)` is `3.0`), and
+    // an ATOM slot is also what lets a non-numeric operand reach the method so it can answer
+    // the reference's `(Error … (BadArgType 1 Number String))` instead of failing to verify.
+    val ATOM_D = "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+    listOf(
+        "sqrt-math", "abs-math", "trunc-math", "ceil-math", "floor-math", "round-math",
+        "sin-math", "asin-math", "cos-math", "acos-math", "tan-math", "atan-math",
+        "isnan-math", "isinf-math", "min-atom", "max-atom",
+    ).forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = "net/singularity/jetta/runtime/MathOps",
+                    name = op,
+                    descriptor = "($ATOM_D)$ATOM_D",
+                ),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
+    listOf("pow-math", "log-math").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = "net/singularity/jetta/runtime/MathOps",
+                    name = op,
+                    descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                ),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
     // `car-atom` / `cdr-atom` — head and tail of an expression (`(car-atom (a b c))` → `a`,
     // `(cdr-atom (a b c))` → `(b c)`). Argument is ATOM so a bound list variable arrives as
     // its Expression value; result is an Atom (an element, or a tail Expression). Pure and
