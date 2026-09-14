@@ -742,6 +742,23 @@ open class JettaProgram {
         }
 
         /**
+         * Eval-time type check for an INERT application — a term with no `=` rule, so no
+         * compiled function and therefore no [typeCheckError] prologue to run. `Cons` in
+         * `(Cons S (Cons Z Nil))` is data: nothing reduces it, and until this check nothing
+         * held it against its declared `(: Cons (-> $t (List $t) (List $t)))` either.
+         *
+         * Returns the `(Error …)` term when the application is mistyped and [expr] itself
+         * otherwise. Typed `Expression`->`Expression` on purpose: the caller has just built an
+         * `Expression` on the stack and may be about to store it into an `Atom[]` or pass it to
+         * an `Expression` parameter, and an `Atom`-typed result would need a cast the verifier
+         * does not infer. Both outcomes really are Expressions ([TypeEngine.errorExpr] builds
+         * one).
+         */
+        @JvmStatic
+        fun typeCheckInert(expr: Expression): Expression =
+            typeCheckError(expr) as? Expression ?: expr
+
+        /**
          * `letMatch <pattern> <value> <body>` — the runtime of MeTTa's Form-2 pattern-`let`
          * (`(let (List $t) VALUE BODY)`), lowered by `LetRewriter`. [pattern] is the LHS
          * unreduced data (`(List $t)`), [value] the evaluated RHS (a result bag `List`, or a

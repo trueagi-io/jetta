@@ -40,6 +40,13 @@ class Generator(
      * space — the D2.3 eval-time-type-check opt-in set threaded to each [FunctionGenerator].
      */
     private val declaredTypeNames: Set<String> = emptySet(),
+    /**
+     * Names whose `:` declaration is an ARROW — the constructors and functions an inert
+     * application can be type-checked against ([Companion.declaredArrowNamesOf]). A subset of
+     * [declaredTypeNames]: `(: Green Color)` declares a type but not an application shape, so
+     * `(Green Sam)` has nothing to check.
+     */
+    private val declaredArrowNames: Set<String> = emptySet(),
 ) {
     private var lambdaCount = 1
 
@@ -131,7 +138,9 @@ class Generator(
                             )
                         }
                     }
-                    FunctionGenerator(mv, node, true, null, moduleSpaceName, className, declaredTypeNames).generate()
+                    FunctionGenerator(
+                        mv, node, true, null, moduleSpaceName, className, declaredTypeNames, declaredArrowNames,
+                    ).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
                         val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(
@@ -380,6 +389,25 @@ class Generator(
                 val head = fact.atoms.firstOrNull()
                 val isTypeFact = (head as? Special)?.value == ":" || (head as? Symbol)?.name == ":"
                 if (isTypeFact && fact.atoms.size >= 3) (fact.atoms[1] as? Symbol)?.name else null
+            }.toSet()
+
+        /**
+         * The subset of [declaredTypeNamesOf] whose declared type is an ARROW — the names an
+         * INERT application can be checked against at eval time (`Cons`, `S`, `List`), as
+         * opposed to those merely given a type (`(: Green Color)`, nothing to apply). Passed as
+         * [declaredArrowNames]; keeping it separate from the prologue's opt-in set is what stops
+         * a program's plain data constructors from paying for a per-construction check.
+         */
+        fun declaredArrowNamesOf(atoms: List<Expression>): Set<String> =
+            atoms.mapNotNull { fact ->
+                val head = fact.atoms.firstOrNull()
+                val isTypeFact = (head as? Special)?.value == ":" || (head as? Symbol)?.name == ":"
+                if (!isTypeFact || fact.atoms.size < 3) return@mapNotNull null
+                val declared = fact.atoms[2] as? Expression ?: return@mapNotNull null
+                val arrowHead = declared.atoms.firstOrNull()
+                val isArrow = (arrowHead as? Special)?.value == Predefined.ARROW ||
+                    (arrowHead as? Symbol)?.name == Predefined.ARROW
+                if (isArrow) (fact.atoms[1] as? Symbol)?.name else null
             }.toSet()
     }
 }

@@ -33,6 +33,12 @@ open class FunctionGenerator(
      * (backchaining, symbolic interpreters) pays no per-call type-check cost.
      */
     private val declaredTypeNames: Set<String> = emptySet(),
+    /**
+     * Names whose `:` declaration is an arrow. A quoted application headed by one of them is an
+     * INERT application — data with a declared shape — and is type-checked where it is built
+     * ([maybeEmitInertTypeCheck]).
+     */
+    private val declaredArrowNames: Set<String> = emptySet(),
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
@@ -642,7 +648,45 @@ open class FunctionGenerator(
         }
     }
 
+    /**
+     * Build [atom] as data on the stack, then type-check it if it is an inert application of a
+     * name with a declared arrow (see [maybeEmitInertTypeCheck]).
+     *
+     * The check runs on the TERM AS QUOTED and never descends into it, and that is load-bearing
+     * rather than an economy: the expected side of `assertEqualToResult` is quoted data that
+     * legitimately contains the very term whose error is being asserted —
+     * `((Error (Cons S (Cons Z Nil)) (BadArgType …)))` — one level below its own top. Checking
+     * sub-terms would rewrite that into a doubly-wrapped error and break every such assertion,
+     * which is the structural-replacement hazard D2.2 was bitten by.
+     */
     private fun generateQuote(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
+        generateQuoteTerm(mv, atom, evalCalls)
+        maybeEmitInertTypeCheck(mv, atom)
+    }
+
+    /**
+     * An inert application `(Cons S (Cons Z Nil))` has no `=` rule, hence no compiled function
+     * and no [maybeEmitTypeCheckPrologue] — so nothing held it against `Cons`'s declared arrow
+     * until here. Emitted only for a quoted Expression headed by a Symbol with an arrow
+     * declaration; `JettaProgram.typeCheckInert` answers the `(Error …)` term when the
+     * application is mistyped and the term itself otherwise, keeping the stack's `Expression`
+     * type either way.
+     */
+    private fun maybeEmitInertTypeCheck(mv: LocalVariablesSorter, atom: Atom) {
+        if (atom !is Expression) return
+        val head = atom.atoms.firstOrNull() as? Symbol ?: return
+        if (head.name !in declaredArrowNames) return
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/JettaProgram",
+            "typeCheckInert",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;)" +
+                "Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            false,
+        )
+    }
+
+    private fun generateQuoteTerm(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
         when (atom) {
             is Expression -> {
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
@@ -705,7 +749,7 @@ open class FunctionGenerator(
                             )
                         }
                     } else {
-                        generateQuote(mv, sub, evalCalls)
+                        generateQuoteTerm(mv, sub, evalCalls)
                     }
                     mv.visitInsn(Opcodes.AASTORE)
                 }

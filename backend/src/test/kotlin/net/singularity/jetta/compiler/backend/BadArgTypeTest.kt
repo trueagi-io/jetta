@@ -246,6 +246,51 @@ class BadArgTypeTest : GeneratorTestBase() {
      * The destructuring flavour keeps working — the prologue moved from the top of `generateMatch`
      * to the top of the function body, which for a Match-bodied function is the same place.
      */
+    // --- an INERT application is checked too (b5 Cons) -------------------------------------
+
+    /**
+     * b5's list. `Cons` has a declared arrow but no `=` rule, so it is data: no compiled
+     * function, no type-check prologue, and until the check moved to where the term is BUILT
+     * nothing held `(Cons S (Cons Z Nil))` against `(: Cons (-> $t (List $t) (List $t)))`.
+     *
+     * The second assertion is also the guard for the structural-replacement hazard: its
+     * EXPECTED side is quoted data containing that same mistyped term inside `(Error …)`. The
+     * check looks at the quoted term's own head and never descends, so the expected side is
+     * emitted verbatim; were it to recurse, this would come out doubly wrapped and fail.
+     */
+    @Test
+    fun `an inert application is type-checked against its declared arrow`() = runLenient(
+        "BadArgCons",
+        $$"""
+            (: List (-> Type Type))
+            (: Nil (List $t))
+            (: Cons (-> $t (List $t) (List $t)))
+            (: Z Nat)
+            (: S (-> Nat Nat))
+            !(assertEqualToResult
+               (Cons (S Z) (Cons Z Nil))
+              ((Cons (S Z) (Cons Z Nil))))
+            !(assertEqualToResult
+              (Cons S (Cons Z Nil))
+              ((Error (Cons S (Cons Z Nil)) (BadArgType 2 (List (-> Nat Nat)) (List Nat)))))
+        """.trimIndent()
+    )
+
+    /**
+     * A name given a type that is NOT an arrow declares no application shape, so an expression
+     * headed by it is ordinary data — `declaredArrowNames` excludes it and no check is emitted.
+     */
+    @Test
+    fun `an application headed by a non-arrow declared name is left alone`() = runLenient(
+        "BadArgNonArrow",
+        """
+            (: Color Property)
+            (: Green Color)
+            !(assertEqualToResult (Green Sam) ((Green Sam)))
+            !(assertEqualToResult (Color Green) ((Color Green)))
+        """.trimIndent()
+    )
+
     @Test
     fun `a destructuring declared function is still type-checked`() = runLenient(
         "BadArgMatchRule",

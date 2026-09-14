@@ -164,6 +164,7 @@ class Compiler(
         // facts. Threaded to Generator so only declared functions get the eval-time type-check
         // prologue (untyped hot code stays uninstrumented). A `:` fact head is `Special`/`Symbol` ":".
         val declaredTypeNamesByProgram = mutableMapOf<String, Set<String>>()
+        val declaredArrowNamesByProgram = mutableMapOf<String, Set<String>>()
         allSources.forEachIndexed { i, preRewriteSource ->
             val resolvedSource = resolved[i]
             val programName = resolvedSource.getJvmClassName().substringAfterLast('/')
@@ -171,6 +172,7 @@ class Compiler(
             val fingerprint = SpaceDigest.of(space.getAtoms())
             fingerprints[programName] = fingerprint
             declaredTypeNamesByProgram[programName] = Generator.declaredTypeNamesOf(space.getAtoms())
+            declaredArrowNamesByProgram[programName] = Generator.declaredArrowNamesOf(space.getAtoms())
             val ext = storageStrategy.manifestExtensionFor(preRewriteSource, cache, importsBySource)
             SpaceDirectorySerializer.save(
                 space = space,
@@ -202,6 +204,7 @@ class Compiler(
                 spaceAtomCount = fingerprint?.atomCount,
                 spaceContentHash = fingerprint?.contentHash,
                 declaredTypeNames = declaredTypeNamesByProgram[programName] ?: emptySet(),
+                declaredArrowNames = declaredArrowNamesByProgram[programName] ?: emptySet(),
             )
             val compiled = generator.generate(it)
             compiled.forEach(::writeResult)
