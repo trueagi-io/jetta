@@ -723,6 +723,69 @@ open class JettaProgram {
         }
 
         /**
+         * `id <x>` — the identity function. `stdlib.metta` defines it as `(= (id $x) $x)`, and
+         * that definition works when a program imports the compiled stdlib; grounded here so
+         * it also works for a program that does not. A user (or the stdlib) redefining `id`
+         * shadows this, by the same route any builtin-shadowing rule takes.
+         */
+        @JvmStatic
+        fun id(x: Atom): Atom = x
+
+        /**
+         * `=alpha <a> <b>` — alpha-equivalence: the two terms are structurally equal up to a
+         * consistent RENAMING of their variables, so `(=alpha (Father $X) (Father $Y))` is
+         * True while `(=alpha (Father $X) (Son $X))` is False. Grounded in the reference
+         * (it is not one of `stdlib.metta`'s MeTTa-level definitions).
+         *
+         * The renaming must be a bijection, checked in both directions: without the reverse
+         * map `(f $a $b)` and `(f $c $c)` would pass, since `$a`->`$c` and `$b`->`$c` are both
+         * consistent read one way.
+         */
+        @JvmStatic
+        fun `=alpha`(a: Atom, b: Atom): Atom {
+            val left = Matcher.resolveDeep(if (a is BoundAtom) a.atom else a)
+            val right = Matcher.resolveDeep(if (b is BoundAtom) b.atom else b)
+            return Symbol(if (alphaEquivalent(left, right, HashMap(), HashMap())) "True" else "False")
+        }
+
+        private fun alphaEquivalent(
+            a: Atom,
+            b: Atom,
+            forward: MutableMap<String, String>,
+            backward: MutableMap<String, String>,
+        ): Boolean = when {
+            a is Variable && b is Variable -> {
+                val f = forward.putIfAbsent(a.name, b.name) ?: b.name
+                val r = backward.putIfAbsent(b.name, a.name) ?: a.name
+                f == b.name && r == a.name
+            }
+            a is Variable || b is Variable -> false
+            a is Expression && b is Expression ->
+                a.atoms.size == b.atoms.size &&
+                    a.atoms.indices.all { alphaEquivalent(a.atoms[it], b.atoms[it], forward, backward) }
+            a is Expression || b is Expression -> false
+            else -> a == b
+        }
+
+        /**
+         * `get-type-space <space> <atom>` — [get-type] against a NAMED space rather than the
+         * running module's own. The space arrives by the usual convention (a baked `&`-name
+         * String, or a Symbol) and is resolved through [resolveSpaceName], the same route
+         * `match`/`add-atom` take.
+         *
+         * Unlike [selfAtoms] this does not apply the run watermark: the watermark models
+         * hyperon's interleaved top-level, where a rule declared BELOW a run is invisible to
+         * it, and that ordering is a property of the running module — an explicitly named
+         * space is read whole.
+         */
+        @JvmStatic
+        fun `get-type-space`(space: Any?, atom: Atom): List<Atom> {
+            val atoms = SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getAtoms()
+            val t = TypeEngine.inferType(derefDeep(atom), atoms)
+            return if (t == null) emptyList() else listOf(t)
+        }
+
+        /**
          * Eval-time type check for a user-function application (phase D2.3). [callExpr] is the
          * reconstructed `(f arg…)` (built by the generated function's prologue via
          * [net.singularity.jetta.runtime.functions.JettaCallSite.nonReduced]). Returns the inert

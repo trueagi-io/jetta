@@ -396,6 +396,48 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `id` — identity. Ordinary (reduced) ATOM argument: `(id (+ 1 2))` is `3` in the
+    // reference, since `id` is declared `(-> $t $t)` and not over the `Atom` meta-type.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "id",
+                descriptor = "($ATOM_D)$ATOM_D",
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `=alpha` — alpha-equivalence. Both operands are INERT: they are terms to compare, and
+    // their variables are part of the comparison rather than something to bind or reduce.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "=alpha",
+                descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `get-type-space` — `get-type` against a named space. Space arg is Object (the baked
+    // `&`-name String convention every space-taking builtin reads); the atom arg is inert ATOM
+    // for the same reason as `get-type` — it is type-checked as written, not evaluated.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-type-space",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;",
+                inertAtomParams = setOf(1)
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     // `get-doc` / `help!` — documentation. The argument is ATOM (unreduced) so a documented
     // symbol arrives as its Symbol and an application `(f a b)` as an inert Expression; get-doc
     // queries the `@doc`/`:` facts in `&self` and returns a `@doc-formal` structure (or `Empty`),
