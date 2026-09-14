@@ -58,6 +58,7 @@ open class FunctionGenerator(
             // No binding-stack interaction: emit the body directly, no push/pop, no
             // exception-safe finally (there is no frame to unwind). generateReturn also
             // skips its pop when usesMatcher is false.
+            maybeEmitTypeCheckPrologue(mv)
             generateAtom(mv, function.body, null, true)
             mv.visitMaxs(maxStack, maxLocals)
             return
@@ -75,6 +76,7 @@ open class FunctionGenerator(
         mv.visitTryCatchBlock(tryStart, tryEnd, finallyHandler, null)
 
         mv.visitLabel(tryStart)
+        maybeEmitTypeCheckPrologue(mv)
         generateAtom(mv, function.body, null, true)
         mv.visitLabel(tryEnd)
 
@@ -984,7 +986,6 @@ open class FunctionGenerator(
     }
 
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
-        maybeEmitTypeCheckPrologue(mv)
         // A Match whose clauses are provably mutually exclusive (FunctionRewriter did not
         // mark the function multivalued) has at most one matching branch, so it compiles to
         // a scalar dispatch — an if-else chain returning each branch value directly, with no

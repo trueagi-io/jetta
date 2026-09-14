@@ -210,4 +210,53 @@ class BadArgTypeTest : GeneratorTestBase() {
             !(assertEqualToResult (Foo A B) ((Foo A B)))
         """.trimIndent()
     )
+
+    // --- the check reaches a function whose rule does not destructure (b5 of-same-type) ------
+
+    /**
+     * b5's `of-same-type`. Its rule `(= (of-same-type $x $y) T)` binds its parameters and
+     * destructures nothing, so the body carries no `Match` — and the type-check prologue used to
+     * be emitted from `generateMatch` alone, which meant a linear-rule function was never checked
+     * at all and answered `T` for every pair. Both operands share one tvar, so the second one is
+     * the error position once the first has bound it.
+     */
+    @Test
+    fun `a linear-rule declared function is type-checked`() = runLenient(
+        "BadArgLinearRule",
+        $$"""
+            (: Color Property)
+            (: Green Color)
+            (: Red Color)
+            (: Shape Property)
+            (: Circle Shape)
+            (: of-same-type (-> $t $t Type))
+            (= (of-same-type $x $y) T)
+            !(assertEqual (of-same-type Color Shape) T)
+            !(assertEqual (of-same-type Green Red) T)
+            !(assertEqualToResult
+              (of-same-type Green Color)
+              ((Error (of-same-type Green Color) (BadArgType 2 Color Property))))
+            !(assertEqualToResult
+              (of-same-type Green Circle)
+              ((Error (of-same-type Green Circle) (BadArgType 2 Color Shape))))
+        """.trimIndent()
+    )
+
+    /**
+     * The destructuring flavour keeps working — the prologue moved from the top of `generateMatch`
+     * to the top of the function body, which for a Match-bodied function is the same place.
+     */
+    @Test
+    fun `a destructuring declared function is still type-checked`() = runLenient(
+        "BadArgMatchRule",
+        $$"""
+            (: Z Nat)
+            (: S (-> Nat Nat))
+            (: eq (-> $t $t Type))
+            (= (eq $x $x) T)
+            !(assertEqual (eq Z Z) T)
+            !(assertEqualToResult (eq Z (S Z)) ((eq Z (S Z))))
+            !(assertEqualToResult (eq Z S) ((Error (eq Z S) (BadArgType 2 Nat (-> Nat Nat)))))
+        """.trimIndent()
+    )
 }
