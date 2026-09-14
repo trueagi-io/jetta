@@ -216,4 +216,53 @@ class TypeEngineTest {
             TypeEngine.checkApp(badList, atoms),
         )
     }
+
+    // --- the `Atom` meta-type (b5 `eqa`) --------------------------------------------------
+
+    /** `(: eqa (-> Atom Atom Type))(: Z Nat)(: Add (-> Nat Nat Nat))` — b5's declarations. */
+    private val eqaAtoms = listOf(
+        typeFact(sym("eqa"), arrow(sym("Atom"), sym("Atom"), sym("Type"))),
+        typeFact(sym("Z"), sym("Nat")),
+        typeFact(sym("S"), arrow(sym("Nat"), sym("Nat"))),
+        typeFact(sym("Add"), arrow(sym("Nat"), sym("Nat"), sym("Nat"))),
+    )
+
+    @Test
+    fun `an Atom parameter accepts an argument of any type`() {
+        // Was (BadArgType 1 Atom Nat): `Atom` is the meta-type, not a type Nat must unify with.
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), sym("Z")), eqaAtoms))
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), expr(sym("Add"), sym("Z"), sym("Z"))), eqaAtoms))
+        // Arguments of two DIFFERENT types are equally fine — `Atom` constrains nothing, so
+        // unlike `(-> $t $t Type)` it does not tie the two positions together.
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), sym("S")), eqaAtoms))
+    }
+
+    @Test
+    fun `an Atom parameter accepts an argument that is itself ill-typed`() {
+        // `(A B)` applies a non-arrow head, so inferType is null. A real type would reject the
+        // call; the meta-type never inspects the argument at all.
+        val illTyped = expr(sym("A"), sym("B"), sym("C"))
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), illTyped), eqaAtoms))
+        assertEquals(sym("Type"), TypeEngine.inferType(expr(sym("eqa"), sym("Z"), illTyped), eqaAtoms))
+    }
+
+    @Test
+    fun `an Atom parameter does not weaken its siblings`() {
+        // `(: half (-> Atom Nat Type))` — position 1 waves anything through, position 2 does not.
+        val atoms = eqaAtoms + typeFact(sym("half"), arrow(sym("Atom"), sym("Nat"), sym("Type")))
+        assertNull(TypeEngine.checkApp(expr(sym("half"), sym("S"), sym("Z")), atoms))
+        assertEquals(
+            TypeEngine.TypeError(2, sym("Nat"), arrow(sym("Nat"), sym("Nat"))),
+            TypeEngine.checkApp(expr(sym("half"), sym("Z"), sym("S")), atoms),
+        )
+    }
+
+    @Test
+    fun `Atom stays an ordinary term for unification`() {
+        // The meta-type is read ONLY in the arrow-apply loops. `unify` is shared with the
+        // pattern paths (`letMatch`, `if-unify`), where a wildcard `Atom` would make the bare
+        // symbol match any term.
+        assertFalse(TypeEngine.unify(sym("Atom"), sym("Z"), HashMap()))
+        assertTrue(TypeEngine.unify(sym("Atom"), sym("Atom"), HashMap()))
+    }
 }

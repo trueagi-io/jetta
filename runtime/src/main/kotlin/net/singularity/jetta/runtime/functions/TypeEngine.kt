@@ -34,6 +34,7 @@ object TypeEngine {
     private val UNDEF = Symbol("%Undefined%")
     private val STATE_MONAD = Symbol("StateMonad")
     private const val UNDEF_NAME = "%Undefined%"
+    private const val ATOM_META_NAME = "Atom"
 
     /** Monotonic source of globally-unique variable suffixes for [instantiate]. */
     private val freshCounter = AtomicLong(0)
@@ -52,6 +53,16 @@ object TypeEngine {
     }
 
     private fun isUndef(a: Atom): Boolean = nameOf(a) == UNDEF_NAME
+
+    /**
+     * `Atom` is the meta-type, not a type: a parameter declared `Atom` takes its argument as a
+     * TERM, so neither the argument's inferred type nor even its well-typedness says anything
+     * about whether the call is legal — `(: eqa (-> Atom Atom Type))` accepts `Z` and
+     * `(Add Z Z)` alike. It is deliberately NOT folded into [isUndef]/[unify]: unification is
+     * shared with the pattern paths (`letMatch`, `if-unify`), where a wildcard `Atom` would make
+     * the symbol match any term. Only the two arrow-apply loops consult it.
+     */
+    private fun isMetaAtom(t: Atom): Boolean = nameOf(t) == ATOM_META_NAME
 
     // --- unification ----------------------------------------------------------------------
 
@@ -288,6 +299,7 @@ object TypeEngine {
         if (params.size != args.size) return null
         val s = HashMap<String, Atom>()
         for (i in args.indices) {
+            if (isMetaAtom(params[i])) continue
             val at = inferType(args[i], atoms) ?: return null
             if (!unify(params[i], at, s)) return null
         }
@@ -327,6 +339,7 @@ object TypeEngine {
         if (params.size != args.size) return null
         val s = HashMap<String, Atom>()
         for (i in args.indices) {
+            if (isMetaAtom(params[i])) continue
             val at = inferType(args[i], atoms) ?: return null
             if (!unify(params[i], at, s)) {
                 return TypeError(i + 1, applySubst(params[i], s), at)
