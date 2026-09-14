@@ -1012,12 +1012,26 @@ class Context private constructor(
      * such a rule expecting it to be called deserves to know it will not be.
      */
     private fun markDefinitionsShadowedByRuntime(source: ParsedSource) {
-        source.code.filterIsInstance<FunctionDefinition>().forEach {
-            if (systemFunctions[it.name] != null && !it.isShadowedByRuntime()) {
-                it.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
-            }
+        source.code.filterIsInstance<FunctionDefinition>().forEach { def ->
+            if (def.isShadowedByRuntime()) return@forEach
+            val builtin = systemFunctions[def.name] ?: return@forEach
+            // Shadowing is per NAME AND ARITY, not per name. A builtin can only swallow a call
+            // it could actually serve: `(= (div $x $y $accum) …)` is a three-argument rule and
+            // the grounded `div` takes two, so the rule is reachable and must be compiled.
+            // hyperon agrees — `he_minimalmetta.metta` defines exactly that `div/3` on top of
+            // the grounded `div/2` and calls it. Marking it shadowed left `(div 350000 5 0)`
+            // inert with no method and no diagnostic.
+            if (builtinArity(builtin) != def.params.size) return@forEach
+            def.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
         }
     }
+
+    /**
+     * How many arguments a builtin takes. Read off the JVM descriptor (its last entry is the
+     * return type) rather than the `arrowType`, which is null for some system functions.
+     */
+    private fun builtinArity(builtin: ResolvedSymbol): Int =
+        builtin.jvmMethod.descriptor.parseDescriptor().size - 1
 
     /**
      * The warning for [markDefinitionsShadowedByRuntime], reported separately because the
@@ -1543,7 +1557,7 @@ class Context private constructor(
         }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
-                val resolved = resolve(atom.name)
+                val resolved = resolve(atom.name, expression.arguments().size)
                 val expectedArity = resolved?.arrowType()?.let { it.types.size - 1 }
                 // The guard used to require `definedFunctions[atom.name] != null`, i.e. it only
                 // covered USER-defined callees. A system function has no entry there, so an
@@ -1935,6 +1949,27 @@ class Context private constructor(
 
     fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolveUserFunction(name)
+
+    /**
+     * Resolve a call head knowing how many arguments the CALL SITE passes. A builtin still wins
+     * a tie, but it no longer wins when it could not serve the call at all: hyperon's
+     * `he_minimalmetta.metta` defines `(= (div $x $y $accum) …)` on top of the grounded `div/2`
+     * and calls the three-argument one, and resolving by name alone handed that call the
+     * builtin, whose arity does not match — so the caller marked the application inert and
+     * `(div 350000 5 0)` never reduced, with no method emitted and no diagnostic.
+     *
+     * Falls back to the by-name answer when neither candidate matches, leaving the existing
+     * arity-mismatch handling (inert application + runtime dispatch) exactly as it was.
+     */
+    fun resolve(name: String, arity: Int): ResolvedSymbol? {
+        val system = systemFunctions[name]
+        if (system != null && arityOf(system) == arity) return system
+        val user = resolveUserFunction(name)
+        if (user != null && arityOf(user) == arity) return user
+        return system ?: user
+    }
+
+    private fun arityOf(symbol: ResolvedSymbol): Int? = symbol.arrowType()?.let { it.types.size - 1 }
 
     private fun resolveUserFunction(name: String): ResolvedSymbol? {
         val primary = primaryOwner(name) ?: return null

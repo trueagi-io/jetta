@@ -150,10 +150,20 @@ class Generator(
                             null,
                             null
                         )
-                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", mainDesc, false)
-                        if (!mainDesc.endsWith("V")) {
-                            mv.visitInsn(Opcodes.POP)
-                        }
+                        // `__main` runs on a deep-stacked thread rather than directly: minimal
+                        // MeTTa is continuation-passing, so its recursion depth is the program's
+                        // iteration count (hyperon's own `he_minimalmetta` recurses 70000 times)
+                        // and a default JVM stack overflows around a thousand. See
+                        // [net.singularity.jetta.runtime.DeepStack]; `-Djetta.stackSize=0`
+                        // restores the direct call.
+                        mv.visitLdcInsn(className.replace('/', '.'))
+                        mv.visitMethodInsn(
+                            Opcodes.INVOKESTATIC,
+                            "net/singularity/jetta/runtime/DeepStack",
+                            "runMain",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
                         mv.visitInsn(Opcodes.RETURN)
                         mv.visitMaxs(1, 1)
                     }

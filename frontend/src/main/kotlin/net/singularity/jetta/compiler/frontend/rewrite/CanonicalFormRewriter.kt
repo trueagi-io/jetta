@@ -166,6 +166,35 @@ class CanonicalFormRewriter(
      */
     private fun Expression.isIfForm(): Boolean = atoms[0].isIf() && !isMisappliedSpecial()
 
+    /**
+     * Rewrite the LAMBDA arguments of a lifted call, leaving the call itself alone.
+     *
+     * A multivalued argument registered for a lift is spliced into the `map?`/`flat-map?` node
+     * verbatim, so its own lambda arguments were never rewritten and the multivalued calls
+     * inside THEM never got their lift. That is minimal MeTTa's shape exactly:
+     * `(chain (unify $d True A (chain (eval …) $i $i)) $r $r)` lifts the `unify`, whose else
+     * branch is a lambda holding a `chain` over a bag — which compiled to a lambda with an
+     * `Atom` parameter applied straight to a `List` (ClassCastException at run time). The same
+     * form written OUTSIDE a lift — `(chain (eval …) $d (unify …))` — was always fine, which is
+     * why this went unnoticed.
+     *
+     * Only the lambda positions are touched. Rewriting the call itself would collapse it to its
+     * own lift variable (it is registered in `multivaluedCalls`), which is precisely what the
+     * splice is avoiding; the compound-lift path next to this one can afford a full
+     * `rewriteAtom` because its sources are NOT registered.
+     */
+    private fun rewriteLambdaArguments(atom: Expression): Expression {
+        var changed = false
+        val atoms = atom.atoms.map {
+            if (it is Lambda) {
+                val rewritten = rewriteAtom(it)
+                if (rewritten !== it) changed = true
+                rewritten
+            } else it
+        }
+        return if (changed) atom.copy(atoms = atoms) else atom
+    }
+
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {
             is Expression -> {
@@ -231,7 +260,7 @@ class CanonicalFormRewriter(
                         expression,
                         position = expression.position
                     ),
-                    replacement[0].second,
+                    rewriteLambdaArguments(replacement[0].second),
                     position = expression.position
                 ),
                 op = PredefinedAtoms.FLAT_MAP_

@@ -2,6 +2,7 @@ package net.singularity.jetta.test
 
 import net.singularity.jetta.compiler.Compiler
 import net.singularity.jetta.compiler.logger.LogLevel
+import net.singularity.jetta.runtime.DeepStack
 import net.singularity.jetta.runtime.JettaProgram
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -182,7 +183,18 @@ class JettaTestRunner {
         val savedContextLoader = Thread.currentThread().contextClassLoader
         Thread.currentThread().contextClassLoader = classLoader
         return try {
-            if (method.parameterCount == 0) method.invoke(null) else method.invoke(null, emptyArray<String>())
+            // Deep-stacked, exactly as the generated `main` runs it: a minimal-MeTTa program
+            // recurses once per iteration and overflows a default stack long before it is
+            // wrong. DeepStack rethrows whatever the program threw, so the classification
+            // below is unchanged.
+            DeepStack.run({
+                try {
+                    if (method.parameterCount == 0) method.invoke(null)
+                    else method.invoke(null, emptyArray<String>())
+                } catch (e: InvocationTargetException) {
+                    throw e.targetException ?: e
+                }
+            }, runTimeoutMillis())
             TestStatus.PASS to "OK"
         } catch (e: InvocationTargetException) {
             // Reflection wraps the underlying throwable; unwrap once so AssertionError is
@@ -192,11 +204,28 @@ class JettaTestRunner {
                 else -> TestStatus.RUN_EXCEPTION to "${cause::class.qualifiedName}: ${cause.message ?: ""}"
             }
         } catch (t: Throwable) {
-            // Class-loading or reflection-setup failures land here — e.g. JVM verifier
+            // DeepStack rethrows the program's own throwable UNWRAPPED, so an assertion failure
+            // arrives here rather than inside an InvocationTargetException — classify it the
+            // same way, or every failing assertion would read as RUN_EXCEPTION. Everything else
+            // here is a class-loading or reflection-setup failure, e.g. the JVM verifier
             // rejecting the bytecode of a buggy compile that returned exit 0.
-            TestStatus.RUN_EXCEPTION to "${t::class.qualifiedName}: ${t.message ?: ""}"
+            when (t) {
+                is AssertionError -> TestStatus.ASSERT_FAIL to (t.message ?: t.toString())
+                is DeepStack.TimeoutException -> TestStatus.RUN_EXCEPTION to "timeout: ${t.message}"
+                else -> TestStatus.RUN_EXCEPTION to "${t::class.qualifiedName}: ${t.message ?: ""}"
+            }
         } finally {
             Thread.currentThread().contextClassLoader = savedContextLoader
         }
     }
+
+    /**
+     * How long a single program may run before the sweep abandons it. A corpus contains
+     * programs that do not terminate — the reference interpreter fails to finish eleven of the
+     * MeTTa-TS files either — and since [DeepStack] gives each run a 256 MB stack, a runaway
+     * recursion now takes minutes to hit the wall instead of milliseconds. Override with
+     * `-Djetta.testTimeoutSeconds`; 0 waits forever.
+     */
+    private fun runTimeoutMillis(): Long =
+        (System.getProperty("jetta.testTimeoutSeconds")?.toLongOrNull() ?: 30L) * 1000L
 }

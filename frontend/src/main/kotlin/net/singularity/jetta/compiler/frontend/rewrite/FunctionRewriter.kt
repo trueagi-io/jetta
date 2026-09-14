@@ -1321,7 +1321,8 @@ class FunctionRewriter(
                 // and needn't special-case arity (they destructure `atoms[3]` directly).
                 func is Special && func.value == Predefined.IF && it.atoms.size == 3 ->
                     it.copy(atoms = it.atoms + Expression(emptyList()))
-                func is Symbol && specials.contains(func.name) -> mkSpecialFromSymbol(it)
+                func is Symbol && specials.contains(func.name) && !isOutOfShapeAsSpecial(it) ->
+                    mkSpecialFromSymbol(it)
                 else -> it
             }
         }
@@ -1331,6 +1332,20 @@ class FunctionRewriter(
         expression.copy(atoms = expression.atoms.map {
             rewriteAtom(it)
         })
+
+    /**
+     * Whether turning this head into a `Special` would produce a form the grounded operator
+     * cannot serve. `div`, `mod`, `and`, … are WORDS, so a program may legitimately define its
+     * own function of the same name at a different arity — hyperon's `he_minimalmetta.metta`
+     * defines `(= (div $x $y $accum) …)` on top of the grounded `div/2` and calls it.
+     *
+     * Made a `Special` regardless, such a call was `isMisappliedSpecial` from then on: the
+     * resolver stamped it inert data before ever looking for a user function, so `(div 10 5 0)`
+     * never reduced and nothing diagnosed it. Left a `Symbol`, it resolves — or stays inert
+     * exactly as any other unresolved application does.
+     */
+    private fun isOutOfShapeAsSpecial(expression: Expression): Boolean =
+        mkSpecialFromSymbol(expression).isMisappliedSpecial()
 
     private fun mkSpecialFromSymbol(expression: Expression): Expression {
         val atoms = expression.atoms.mapIndexed { index, atom ->
