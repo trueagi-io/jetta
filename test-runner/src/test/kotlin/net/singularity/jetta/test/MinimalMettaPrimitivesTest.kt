@@ -199,4 +199,25 @@ class MinimalMettaPrimitivesTest {
             )
         )
     }
+
+    /**
+     * `he_evaluation.metta` verbatim. `metta` and `evalc` are the reference's full-interpreter
+     * and space-scoped entry points, grounded here on the same JIT-eval path as `eval`;
+     * `for-each-in-atom` applies a NAMED function to each element for its effect.
+     */
+    @Test
+    fun `the evaluation entry points answer`(@TempDir tmp: Path) {
+        assertPasses(
+            runOne(
+                tmp.toFile(), "EvalEntries",
+                $$"""
+                    (= (double $x) (+ $x $x))
+                    !(assertEqual (metta (double 5) %Undefined% &self) 10)
+                    !(assertEqual (evalc (+ 5 5) &self) 10)
+                    !(assertEqual (chain (+ 2 3) $x (* $x 2)) 10)
+                    !(assertEqual (for-each-in-atom (1 3 5 62 2 5) println!) ())
+                """
+            )
+        )
+    }
 }

@@ -396,6 +396,22 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `for-each-in-atom` — apply a function to each element for its effect, answer `()`.
+    // Both parameters are INERT: the first is a data tuple whose head means nothing as an
+    // application, and the second is the NAME of a function, which must not be reduced at the
+    // call site (`println!` with no argument is not what is meant).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "for-each-in-atom",
+                descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // `id` — identity. Ordinary (reduced) ATOM argument: `(id (+ 1 2))` is `3` in the
     // reference, since `id` is declared `(-> $t $t)` and not over the `Atom` meta-type.
     context.addSystemFunction(
@@ -598,6 +614,31 @@ fun registerExternals(context: Context) {
                 descriptor = "(Ljava/lang/Object;)Ljava/util/List;"
             ),
             ArrowType(GroundedType.ANY, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `evalc` / `metta` — the space-scoped and full-interpreter flavours of `eval`. Same
+    // Object-typed code argument and same result bag; the extra arguments (space, and for
+    // `metta` the expected type) are accepted for reference compatibility. See JettaJit.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/functions/JettaJit",
+                name = "evalc",
+                descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ANY, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/functions/JettaJit",
+                name = "metta",
+                descriptor = "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.ANY, SeqType(GroundedType.ATOM)),
             true
         )
     )

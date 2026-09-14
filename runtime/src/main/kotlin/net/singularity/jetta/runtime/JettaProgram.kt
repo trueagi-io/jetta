@@ -723,6 +723,29 @@ open class JettaProgram {
         }
 
         /**
+         * `for-each-in-atom <expression> <function>` — apply [func] to every element of
+         * [expr] for its EFFECT, answering the unit atom `()`. `stdlib.metta` defines it in
+         * MeTTa (over `chain`/`decons-atom`/`unify`), so a program importing the compiled
+         * stdlib already has it; grounded here for one that does not.
+         *
+         * Each application is built as a term and handed to the same JIT-eval path a
+         * variable-headed call takes, which is what makes `println!` — a name, not a compiled
+         * callee at this site — reach its method.
+         */
+        @JvmStatic
+        fun `for-each-in-atom`(expr: Atom, func: Atom): Atom {
+            val items = (derefDeep(if (expr is BoundAtom) expr.atom else expr) as? Expression)?.atoms
+                ?: return UNIT_ATOM
+            val head = if (func is BoundAtom) func.atom else func
+            for (item in items) {
+                net.singularity.jetta.runtime.functions.JettaJit.eval(
+                    Expression(atoms = listOf(head, item))
+                )
+            }
+            return UNIT_ATOM
+        }
+
+        /**
          * `id <x>` — the identity function. `stdlib.metta` defines it as `(= (id $x) $x)`, and
          * that definition works when a program imports the compiled stdlib; grounded here so
          * it also works for a program that does not. A user (or the stdlib) redefining `id`

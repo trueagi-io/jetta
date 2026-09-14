@@ -102,6 +102,27 @@ object JettaJit {
         return normalize(raw)
     }
 
+    /**
+     * `evalc <atom> <space>` — the reference's space-scoped `eval`. The space argument is
+     * accepted and, for `&self`, redundant: [eval] already runs against the program whose
+     * `JitEnv` is current, which IS `&self`. A DIFFERENT space would need the JIT env to be
+     * rebuilt from that space's rules, which is the same missing piece as an env-aware eval
+     * cache; no corpus or suite program passes anything but `&self`.
+     */
+    @JvmStatic
+    fun evalc(code: Any?, space: Any?): List<Atom> = eval(code)
+
+    /**
+     * `metta <atom> <type> <space>` — the reference's full interpreter entry point: reduce
+     * [code] to its answers. JeTTa reduces eagerly wherever it reduces at all, so this is
+     * [eval]: the difference in hyperon is that `eval` takes ONE step while `metta` runs to a
+     * fixpoint, and a compiled call has already run to one. The TYPE argument is a checking
+     * hint the reference uses to reject a mistyped program before running it; type errors here
+     * are reported by the eval-time `BadArgType` paths instead.
+     */
+    @JvmStatic
+    fun metta(code: Any?, type: Any?, space: Any?): List<Atom> = eval(code)
+
     private fun cacheKey(code: Atom): String = code.toString()
 
     /**
