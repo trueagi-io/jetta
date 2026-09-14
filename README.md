@@ -13,20 +13,21 @@ between compile time and call time. The behavioural reference is the Rust
 interpreter [`trueagi-io/hyperon-experimental`](https://github.com/trueagi-io/hyperon-experimental);
 JeTTa aims to produce byte-for-byte identical answers on its test suite.
 
-- **Version:** `0.9.0` · **License:** MIT · **Runtime:** Java 17+
+- **Version:** `0.9.1` · **License:** MIT · **Runtime:** Java 17+
 
 > **Status.** JeTTa is under active development. The fundamentals — symbols,
 > pattern match, equality, chaining, non-determinism, spaces, mutable state and
 > module imports — work today, and so does the type system (GADTs, dependent
-> types, propagation, inference). New in `0.9.0`: **higher-order currying** and
-> **PLN truth values**, which complete groups `c` and `d` of the reference suite
-> and bring it to 21 of 22. Since `0.8.0`, hyperon's own `stdlib.metta`
-> **compiles and links** as a library, so stdlib entries written in MeTTa come
-> from the reference file rather than being reimplemented. The frontier is the
-> minimal-MeTTa runner the rest of that file stands on (`metta`,
-> `collapse-bind`, the `assert*`/`collapse` family) and type errors on
-> constructor applications — the one topic test still open.
-> See [correctness](#compatibility--correctness) below.
+> types, propagation, inference). **The reference topic suite now passes in
+> full, 22 of 22.** Completing it took eval-time type errors on data —
+> constructor applications and functions whose rules destructure nothing are
+> checked against their declared arrows — and the `Atom` meta-type, which is no
+> longer treated as a type an argument must match. Since `0.8.0`, hyperon's own
+> `stdlib.metta` **compiles and links** as a library, so stdlib entries written
+> in MeTTa come from the reference file rather than being reimplemented. The
+> frontier is the minimal-MeTTa runner the rest of that file stands on (`metta`,
+> `collapse-bind`, the `assert*`/`collapse` family) and the wider MeTTa-TS
+> parity corpus. See [correctness](#compatibility--correctness) below.
 
 ---
 
@@ -197,13 +198,13 @@ kept under `docs/`).
 ## Compatibility & correctness
 
 Every program is checked against `hyperon-experimental` for the same answer.
-Group-by-group coverage of the reference topic suite (`a`–`g`) — **21 of 22
-topic tests pass** as of `0.9.0`:
+Group-by-group coverage of the reference topic suite (`a`–`g`) — **all 22 topic
+tests pass** as of `0.9.1`:
 
 | Group | Feature | Pass | Status |
 | --- | --- | --- | --- |
 | a | symbols / match | 3 / 3 | ✅ full |
-| b | equality · chaining · non-det | 5 / 6 | core done · type errors on constructor applications left |
+| b | equality · chaining · non-det | 6 / 6 | ✅ full · incl. eval-time `BadArgType` on data |
 | c | grounded values · spaces · PLN | 3 / 3 | ✅ full · grounded ops, spaces, PLN truth values |
 | d | types (GADT · dependent · propagation · auto) | 5 / 5 | ✅ full · currying + higher-order `fmap` |
 | e | mutation / states | 3 / 3 | ✅ full · KB writes + state cells |

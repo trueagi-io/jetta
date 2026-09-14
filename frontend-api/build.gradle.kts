@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "net.singularity.jetta"
-version = "0.9.0"
+version = "0.9.1"
 
 repositories {
     mavenCentral()
