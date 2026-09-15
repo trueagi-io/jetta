@@ -546,7 +546,7 @@ class CanonicalFormRewriter(
                         }
                         // A rule shadowed by a builtin counts as ABSENT here — see [userDefinition].
                         val def = userDefinition(f.name)
-                        val userMultivalued = def != null && def.isMultivalued()
+                        val userMultivalued = def != null && def.multivalued
                         // A system multivalued function (e.g. `superpose`, `generate`):
                         // present in systemFunctions with isMultiValued, absent from
                         // definedFunctions. `match` is already excluded above.
@@ -726,7 +726,7 @@ class CanonicalFormRewriter(
         // constructor or a system builtin, absent from definedFunctions. Treat those as not
         // multivalued rather than asserting (`!!`) and NPE-ing (crashed if2/smartdispatch/…).
         val head = atoms[0]
-        if (head is Symbol && userDefinition(head.name)?.isMultivalued() == true) return true
+        if (head is Symbol && userDefinition(head.name)?.multivalued == true) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
         }
@@ -774,7 +774,7 @@ class CanonicalFormRewriter(
 
     private fun isMultivaluedHead(name: String): Boolean {
         if (name == "match") return false
-        return userDefinition(name)?.isMultivalued()
+        return userDefinition(name)?.multivalued
             ?: (context.resolve(name)?.isMultiValued == true)
     }
 
@@ -790,8 +790,8 @@ class CanonicalFormRewriter(
      * (`IncompatibleClassChangeError: Expression does not implement List` in `simpleMap`, or a
      * VerifyError when the lift's lambda inherited the lie in its descriptor).
      */
-    private fun userDefinition(name: String): FunctionDefinition? =
-        context.definedFunctions[name]?.func?.takeUnless { it.isShadowedByRuntime() }
+    private fun userDefinition(name: String): Context.SymbolDef? =
+        context.definedFunctions[name]?.takeUnless { it.shadowedByRuntime }
 
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
         (userDefinition(name)?.arrowType?.types

@@ -98,7 +98,49 @@ class Context private constructor(
         messageCollector.clear()
     }
 
-    data class SymbolDef(val owner: String, val func: FunctionDefinition)
+    /**
+     * A function this context can resolve a call to. Two flavours, and the type says which:
+     *  - being COMPILED here — [func] is its definition, body included;
+     *  - LINKED from an already-compiled module's `.jctx` interface — [linked] is that entry and
+     *    [func] is null, because there IS no body on this side of the compile.
+     *
+     * Everything a call site needs is available either way and should be read through the
+     * accessors below rather than off [func], which is null exactly when there is nothing to
+     * analyse. The nullability is the point: a pass that wants a BODY cannot silently get a
+     * plausible-looking stub, it has to say what a linked module means for it.
+     */
+    data class SymbolDef(
+        val owner: String,
+        val func: FunctionDefinition?,
+        val linked: ModuleInterfaceEntry? = null,
+    ) {
+        val name: String get() = func?.name ?: linked!!.name
+
+        /** The declared MeTTa type — refined in place for a source function, final for a linked one. */
+        val arrowType: ArrowType? get() = func?.arrowType ?: linked?.declaredType
+
+        val multivalued: Boolean get() = func?.isMultivalued() ?: (linked?.multivalued == true)
+
+        /** A source rule the resolver will not link a call to, because a builtin serves that name
+         *  and arity. Never true for a linked entry: its module already dropped those. */
+        val shadowedByRuntime: Boolean get() = func?.isShadowedByRuntime() == true
+
+        /** The JVM descriptor, or null for a function that never got an arrow type. */
+        val descriptor: String?
+            get() = linked?.descriptor ?: func?.takeIf { it.arrowType != null }?.getJvmDescriptor()
+
+        /** How many arguments a call must pass, or null when the type is unknown. */
+        val arity: Int? get() = arrowType?.let { it.types.size - 1 }
+
+        /**
+         * The parameter variables to bind when this function's NAME is used as a value and has to
+         * eta-expand into `(\ params (f params))`. A linked module has no parameter list to reuse,
+         * so one is synthesized from the arity — these are fresh binders, and the lambda that gets
+         * built is the only thing that ever reads them.
+         */
+        fun parameterVariables(): List<Variable> =
+            func?.params ?: List(arity ?: 0) { Variable("p$it") }
+    }
 
     /**
      * The module INTERFACE for everything resolved in this context, serialized to `<program>.jctx`
@@ -128,18 +170,22 @@ class Context private constructor(
     fun linkerTable(): List<ModuleInterfaceEntry> =
         resolvedFunctions.entries
             .filter { (name, def) ->
-                !name.startsWith("__") && name != "main" && def.func.arrowType != null &&
-                        !def.func.isShadowedByRuntime()
+                !name.startsWith("__") && name != "main" && def.arrowType != null &&
+                        !def.shadowedByRuntime
             }
             .map { (name, def) ->
+                // A linked module's entry is already an interface entry: pass it through rather
+                // than rebuild it, so the program's table says exactly what that module's own
+                // table said and a call linked through either one behaves identically.
+                def.linked?.let { return@map it }
                 val jvm = def.toJvm()
                 ModuleInterfaceEntry(
                     name = name,
                     owner = def.owner,
                     descriptor = jvm.descriptor,
-                    multivalued = def.func.isMultivalued(),
+                    multivalued = def.multivalued,
                     signature = jvm.signature,
-                    declaredType = def.func.arrowType,
+                    declaredType = def.arrowType,
                     inertAtomParams = jvm.inertAtomParams,
                     templateAtomParams = jvm.templateAtomParams,
                 )
@@ -176,6 +222,10 @@ class Context private constructor(
     }
 
     private fun SymbolDef.toJvm(): JvmMethod {
+        // A linked module's interface already carries the answer, computed when THAT module was
+        // compiled and with the body analysis below applied to a body this compile cannot see.
+        linked?.let { return it.toJvmMethod() }
+        val func = func!!
         // A parameter the source declares literally `Atom` is hyperon's meta-type annotation. Only a
         // builtin could say so before — `inertAtomParams` was reachable only from
         // `registerExternals` — so a user function could not take a template, and the reference
@@ -261,15 +311,16 @@ class Context private constructor(
      * `resolvedFunctions` (whose last writer wins). Keyed by owner, so the repeated resolution
      * rounds over one source refresh that module's entry instead of appending to it.
      */
-    private fun recordFunctionOwner(owner: String, func: FunctionDefinition) {
-        val current = functionOwners[func.name].orEmpty()
-        functionOwners[func.name] = current.filterNot { it.owner == owner } + SymbolDef(owner, func)
+    private fun recordFunctionOwner(def: SymbolDef) {
+        val current = functionOwners[def.name].orEmpty()
+        functionOwners[def.name] = current.filterNot { it.owner == def.owner } + def
     }
 
     private fun addResolvedFunction(owner: String, func: FunctionDefinition) {
         logger.debug { "Registered function: ${func.name} :: ${func.arrowType ?: "untyped"} (owner=$owner)" }
-        resolvedFunctions[func.name] = SymbolDef(owner, func)
-        recordFunctionOwner(owner, func)
+        val def = SymbolDef(owner, func)
+        resolvedFunctions[func.name] = def
+        recordFunctionOwner(def)
         main?.let {
             val lastCall = when (it.body) {
                 is Expression -> (it.body as Expression).atoms.last()
@@ -294,8 +345,31 @@ class Context private constructor(
             source.code.filter { it is FunctionDefinition && it.annotations.contains(PredefinedAtoms.EXPORT) }
                 .map { it as FunctionDefinition }
         external.forEach {
-            resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
-            recordFunctionOwner(source.getJvmClassName(), it)
+            val def = SymbolDef(source.getJvmClassName(), it)
+            resolvedFunctions[it.name] = def
+            recordFunctionOwner(def)
+        }
+    }
+
+    /**
+     * Register a module compiled EARLIER, from its `.jctx` interface: each entry becomes a
+     * function whose calls link against the class the entry names. None of that module's source
+     * is parsed, resolved or generated here — that is the whole point of the artifact.
+     *
+     * The entries land in the same three tables a source module's functions land in, so every
+     * downstream consumer sees a linked module exactly as it sees a compiled-here one: call
+     * resolution ([resolve]), the multi-owner union ([visibleAlternativeOwners] — which is what
+     * makes a user rule ADD to an imported one, the way the reference interpreter answers both
+     * `99` and `42` for a redefined `id`), the multivalued lift, and the linker table this very
+     * artifact is written from.
+     */
+    fun addLinkedModule(entries: List<ModuleInterfaceEntry>) {
+        entries.forEach { entry ->
+            val def = SymbolDef(entry.owner, func = null, linked = entry)
+            logger.debug { "Linked function: ${entry.name} :: ${entry.declaredType ?: "untyped"} (owner=${entry.owner})" }
+            resolvedFunctions[entry.name] = def
+            definedFunctions[entry.name] = def
+            recordFunctionOwner(def)
         }
     }
 
@@ -556,7 +630,10 @@ class Context private constructor(
     private fun refineFunctionArrowTypes(): Boolean {
         var changed = false
         resolvedFunctions.toList().forEach { (_, def) ->
-            val arrowType = def.func.arrowType ?: return@forEach
+            // Nothing to refine for a module linked from its artifact: its type was settled when
+            // that module was compiled, and there is no body here to collect a better one from.
+            val func = def.func ?: return@forEach
+            val arrowType = func.arrowType ?: return@forEach
             val paramTypes = arrowType.types.dropLast(1)
             val currentReturn = arrowType.types.last()
 
@@ -564,8 +641,8 @@ class Context private constructor(
             //    (e.g. `$n` typed Int by a comparison or an arithmetic operand).
             val refinedParams = if (paramTypes.any { it == GroundedType.ATOM }) {
                 val inferredParamTypes = mutableMapOf<String, Atom>()
-                collectVariableTypes(def.func.body, inferredParamTypes)
-                def.func.params.mapIndexed { index, param ->
+                collectVariableTypes(func.body, inferredParamTypes)
+                func.params.mapIndexed { index, param ->
                     if (paramTypes[index] == GroundedType.ATOM) {
                         val inferred = inferredParamTypes[param.name]
                         if (inferred != null && inferred != GroundedType.ATOM) {
@@ -590,7 +667,7 @@ class Context private constructor(
             //    (Atom/Any) toward a concrete grounded type, never a SeqType (the
             //    multivalued List contract owns that), so this is monotonic and the
             //    enclosing fixpoint converges.
-            val bodyType = inferReturnFromBody(def.func)
+            val bodyType = inferReturnFromBody(func)
             val refinedReturn = if ((currentReturn == GroundedType.ATOM || currentReturn == GroundedType.ANY) &&
                 bodyType != null && bodyType != GroundedType.ATOM && bodyType != GroundedType.ANY &&
                 bodyType !is SeqType
@@ -602,8 +679,8 @@ class Context private constructor(
 
             val refinedTypes = refinedParams + refinedReturn
             if (refinedTypes != arrowType.types) {
-                def.func.arrowType = ArrowType(refinedTypes)
-                addResolvedFunction(def.owner, def.func)
+                func.arrowType = ArrowType(refinedTypes)
+                addResolvedFunction(def.owner, func)
                 changed = true
             }
         }
@@ -1475,7 +1552,7 @@ class Context private constructor(
                 // an argument slot typed `Atom`, or any value position with no expectation at
                 // all, gives no suggested type, and an untyped callee has no arrow type — and
                 // asserting them threw instead (the `!!`s this replaces).
-                val declared = def.func.arrowType
+                val declared = def.arrowType
                 if (suggestedType != null && declared != null && suggestedType != declared) {
                     messageCollector.add(IncompatibleTypesMessage(suggestedType, declared, atom.position))
                     return
@@ -1486,10 +1563,11 @@ class Context private constructor(
                     atom.type = GroundedType.ATOM
                     return
                 }
+                val params = def.parameterVariables()
                 val wrapper = Lambda(
-                    def.func.params,
+                    params,
                     declared,
-                    Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position),
+                    Expression(listOf(atom) + params, declared.types.last(), null, atom.position),
                     position = atom.position
                 )
                 resolveAtom(wrapper, scope, suggestedType)
@@ -1987,13 +2065,13 @@ class Context private constructor(
         val primary = primaryOwner(name) ?: return null
         val alternatives = visibleAlternativeOwners(name, primary)
         if (alternatives.isEmpty()) {
-            return ResolvedSymbol(primary.toJvm(), primary.func.arrowType, primary.func.isMultivalued())
+            return ResolvedSymbol(primary.toJvm(), primary.arrowType, primary.multivalued)
         }
         // More than one visible module defines this name: the call answers with the union of
         // their results, so its type gains a bag and it counts as multivalued from here on
         // (`MarkMultivaluedFunctionsRewriter` reads `isMultiValued` off the resolved symbol, and
         // `Expression.type` is stamped from this arrow type).
-        val arrowType = primary.func.arrowType?.let {
+        val arrowType = primary.arrowType?.let {
             ArrowType(it.types.dropLast(1) + SeqType(it.types.last()))
         }
         return ResolvedSymbol(primary.toJvm(), arrowType, true, alternatives.map { it.toJvm() })
@@ -2037,15 +2115,15 @@ class Context private constructor(
     private fun visibleAlternativeOwners(name: String, primary: SymbolDef): List<SymbolDef> {
         val visible = visibleOwners ?: return emptyList()
         if (primary.owner !in visible) return emptyList()
-        if (primary.func.arrowType == null || primary.func.isMultivalued()) return emptyList()
-        val descriptor = primary.func.getJvmDescriptor()
+        if (primary.arrowType == null || primary.multivalued) return emptyList()
+        val descriptor = primary.descriptor ?: return emptyList()
         if (descriptor.endsWith(")V")) return emptyList()
         return functionOwners[name].orEmpty().filter {
             it.owner != primary.owner &&
                 it.owner in visible &&
-                it.func.arrowType != null &&
-                !it.func.isMultivalued() &&
-                it.func.getJvmDescriptor() == descriptor
+                it.arrowType != null &&
+                !it.multivalued &&
+                it.descriptor == descriptor
         }
     }
 
