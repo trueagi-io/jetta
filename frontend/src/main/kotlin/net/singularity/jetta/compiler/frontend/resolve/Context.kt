@@ -101,36 +101,39 @@ class Context private constructor(
     data class SymbolDef(val owner: String, val func: FunctionDefinition)
 
     /**
-     * One entry of the cross-JVM linker table (the P1 `.jctx` artifact): a user
-     * function's MeTTa name plus everything a runtime `findStatic` needs to LINK
-     * against its already-compiled JVM method — [owner] (the internal class name),
-     * [descriptor] (its JVM signature), and whether it returns a non-determinism bag.
-     */
-    data class LinkerSymbol(
-        val name: String,
-        val owner: String,
-        val descriptor: String,
-        val multivalued: Boolean,
-    )
-
-    /**
-     * The linker table for variable-head dispatch in a COMPILED binary. Serialized to
-     * `<program>.jctx` at compile time and loaded by `JettaProgram.init`; `JettaCallSite`
-     * uses it to resolve `($f x)` when `$f` names a user function, so an AOT run links
-     * against the compiled method instead of leaving the application inert. The resolved
-     * table is the AOT-computed linker symbol table — recomputing it at runtime is exactly
-     * the redundant work the partial-eval architecture exists to kill.
+     * The module INTERFACE for everything resolved in this context, serialized to `<program>.jctx`
+     * at compile time. It carries more than a linker table because it has two readers:
+     *  - the RUNTIME (`JettaProgram.init` → `JettaLinkRegistry`) reads the first four columns to
+     *    resolve `($f x)` when `$f` names a user function, so an AOT run links against the compiled
+     *    method instead of leaving the application inert;
+     *  - the COMPILER reads the whole entry when it IMPORTS an ALREADY-COMPILED module, so a call
+     *    into it resolves without re-parsing and re-resolving that module's source. That needs the
+     *    declared MeTTa type and the `Atom`-parameter flavours on top of the JVM descriptor — see
+     *    [ModuleInterfaceEntry].
+     * Either way the table is the AOT-computed symbol table; recomputing it at load time is
+     * exactly the redundant work the partial-eval architecture exists to kill.
      *
-     * Skips synthetic entries (`__eval*`, `__main*`) and `main`, and any function that never
-     * got an arrow type (no JVM descriptor to link against).
+     * Context-global (owner disambiguates), so every program's `.jctx` carries the full set.
+     * Skips synthetic entries (`__eval*`, `__main*`) and `main`, and any function that never got
+     * an arrow type (no JVM descriptor to link against).
      */
-    fun linkerTable(): List<LinkerSymbol> =
+    fun linkerTable(): List<ModuleInterfaceEntry> =
         resolvedFunctions.entries
             .filter { (name, def) ->
                 !name.startsWith("__") && name != "main" && def.func.arrowType != null
             }
             .map { (name, def) ->
-                LinkerSymbol(name, def.owner, def.func.getJvmDescriptor(), def.func.isMultivalued())
+                val jvm = def.toJvm()
+                ModuleInterfaceEntry(
+                    name = name,
+                    owner = def.owner,
+                    descriptor = jvm.descriptor,
+                    multivalued = def.func.isMultivalued(),
+                    signature = jvm.signature,
+                    declaredType = def.func.arrowType,
+                    inertAtomParams = jvm.inertAtomParams,
+                    templateAtomParams = jvm.templateAtomParams,
+                )
             }
 
     private data class AtomWithTypeInfo(val atom: Atom, val info: Scope)

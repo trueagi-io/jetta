@@ -12,6 +12,7 @@ import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.resolve.ModuleInterface
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ImportResolutionPass
@@ -185,13 +186,14 @@ class Compiler(
             )
         }
 
-        // Linker table for variable-head dispatch in the compiled binary (P1). Written once
-        // per program as `<program>.jctx` beside its `.class`; loaded by JettaProgram.init so
-        // JettaCallSite can link `($f x)` (with `$f` naming a user fn) against the compiled
-        // method instead of leaving the application inert. The table is context-global (owner
-        // disambiguates), so every program's `.jctx` carries the full set — cheap and lets a
-        // program dispatch to any resolved function.
-        val linkerTableText = renderLinkerTable(context.linkerTable())
+        // The module interface, written once per program as `<program>.jctx` beside its
+        // `.class`. Two readers: JettaProgram.init loads it so JettaCallSite can link `($f x)`
+        // (with `$f` naming a user fn) against the compiled method instead of leaving the
+        // application inert (P1), and the compiler reads it to call INTO an already-compiled
+        // module without re-resolving its source. Context-global (owner disambiguates), so every
+        // program's `.jctx` carries the full set — cheap and lets a program dispatch to any
+        // resolved function. See Context.linkerTable / ModuleInterface.
+        val linkerTableText = ModuleInterface.renderAll(context.linkerTable())
 
         resolved.forEach {
             // autoTable = true: AOT is a closed world (rules fixed at compile), so memoizing
@@ -244,14 +246,6 @@ class Compiler(
     }
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
-
-    /**
-     * Serialize the linker table as tab-separated lines `name\towner\tdescriptor\tmultivalued`
-     * (one function per line). A plain text format keeps `.jctx` diffable and trivial to parse
-     * at runtime without pulling a serialization dependency into the runtime module.
-     */
-    private fun renderLinkerTable(entries: List<Context.LinkerSymbol>): String =
-        entries.joinToString("\n") { "${it.name}\t${it.owner}\t${it.descriptor}\t${it.multivalued}" }
 
     private fun writeLinkerTable(programName: String, text: String) {
         val file = File(outputDir + File.separator + "$programName.jctx")

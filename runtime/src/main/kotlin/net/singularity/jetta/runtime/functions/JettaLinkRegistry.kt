@@ -12,7 +12,8 @@ import kotlin.io.path.readText
 
 /**
  * The runtime half of P1 variable-head dispatch: a `name → compiled-method` linker table
- * for a COMPILED (AOT) JeTTa binary. Loaded from `<program>.jctx` by `JettaProgram.init`,
+ * for a COMPILED (AOT) JeTTa binary. Loaded from the first four columns of `<program>.jctx` — the
+ * module interface, whose remaining columns serve the compiler — by `JettaProgram.init`,
  * it lets [JettaCallSite.dispatch] resolve `($f x)` — where `$f` is a Symbol naming a user
  * function — by LINKING against that function's already-loaded compiled JVM method, instead
  * of leaving the application inert (the AOT binary has no `JitEnv`, so it cannot JIT-compile
@@ -62,7 +63,11 @@ object JettaLinkRegistry {
         file.readText().lineSequence().forEach { line ->
             if (line.isBlank()) return@forEach
             val parts = line.split('\t')
-            if (parts.size != 4) return@forEach
+            // At least the four linking columns. A `.jctx` also carries the compile-time interface
+            // (declared type, `Atom`-parameter flavours) in later columns, which nothing here needs
+            // — accepting extra columns rather than requiring exactly four is what lets the artifact
+            // grow for the compiler without breaking an older runtime.
+            if (parts.size < 4) return@forEach
             val (name, owner, descriptor, multivalued) = parts
             try {
                 val ownerClass = Class.forName(owner.replace('/', '.'), false, loader)
