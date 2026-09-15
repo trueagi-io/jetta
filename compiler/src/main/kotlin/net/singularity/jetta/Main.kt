@@ -8,11 +8,15 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
 import net.singularity.jetta.compiler.Compiler
+import net.singularity.jetta.compiler.frontend.rewrite.PrecompiledModuleResolver
+import net.singularity.jetta.compiler.modules.ArtifactModuleResolver
 import net.singularity.jetta.compiler.VersionInfo
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.repl.InvalidInputException
 import net.singularity.jetta.repl.Repl
 import net.singularity.jetta.repl.ReplImpl
+import java.io.File
+import java.nio.file.Path
 import kotlin.system.exitProcess
 
 
@@ -23,6 +27,11 @@ class Compile : CliktCommand("jettac") {
     private val interactive by option("-i", "--interactive", help = "Interactive mode").flag()
     private val debug  by option("-D", "--debug", help = "Debug mode").flag()
     private val dumpIr by option("--ir", help = "Dump fully typed IR to .jir files").flag()
+    private val modulePath by option(
+        "--module-path",
+        help = "Directories of already-compiled modules to LINK an import! against " +
+                "instead of compiling the module's source (separated by '" + File.pathSeparator + "')",
+    ).default("")
 
     init {
         versionOption(VersionInfo.VERSION, names = setOf("--version"))
@@ -96,7 +105,20 @@ class Compile : CliktCommand("jettac") {
     private fun runCompiler() {
         if (!noGreetings) println(greetings())
         val logLevel = if (debug) LogLevel.DEBUG else LogLevel.INFO
-        val compiler = Compiler(sources, output, logLevel = logLevel, dumpIr = dumpIr)
+        val modules = modulePath.split(File.pathSeparator)
+            .filter { it.isNotBlank() }
+            .map { Path.of(it) }
+        val compiler = Compiler(
+            sources,
+            output,
+            logLevel = logLevel,
+            dumpIr = dumpIr,
+            precompiledModules = if (modules.isEmpty()) {
+                PrecompiledModuleResolver.NONE
+            } else {
+                ArtifactModuleResolver(modules)
+            },
+        )
         val code = compiler.compile()
         if (code != 0) exitProcess(code)
     }

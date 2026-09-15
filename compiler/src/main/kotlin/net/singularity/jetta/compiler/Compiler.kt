@@ -19,6 +19,7 @@ import net.singularity.jetta.compiler.frontend.rewrite.ImportResolutionPass
 import net.singularity.jetta.compiler.frontend.rewrite.LambdaRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.LetRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.ModuleCompilationCache
+import net.singularity.jetta.compiler.frontend.rewrite.PrecompiledModuleResolver
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
@@ -29,6 +30,8 @@ import net.singularity.jetta.compiler.logger.LogConfig
 import net.singularity.jetta.compiler.storage.DeepCopyStrategy
 import net.singularity.jetta.compiler.storage.SpaceDigest
 import net.singularity.jetta.compiler.storage.StorageStrategy
+import net.singularity.jetta.runtime.space.ManifestExtension
+import net.singularity.jetta.runtime.space.ModuleLoad
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceImpl
 import java.io.File
@@ -43,6 +46,8 @@ class Compiler(
     val logLevel: LogLevel = LogLevel.DEBUG,
     val dumpIr: Boolean = false,
     val storageStrategy: StorageStrategy = DeepCopyStrategy,
+    /** Where an `import!` looks for an already-compiled module before reading its source. */
+    val precompiledModules: PrecompiledModuleResolver = PrecompiledModuleResolver.NONE,
 ) {
 
     init {
@@ -74,7 +79,7 @@ class Compiler(
         addSystemFunctions(context)
         val parser = createParserFacade()
         val cache = ModuleCompilationCache()
-        val importPass = ImportResolutionPass(parser, cache, messageCollector)
+        val importPass = ImportResolutionPass(parser, cache, messageCollector, precompiledModules)
 
         // Phase 1: parse user-supplied sources and resolve their imports. The pass leaves
         // each user source with the import! Runs removed and fills the cache with every
@@ -83,6 +88,17 @@ class Compiler(
             println("Compiling ${source.filename}")
             val raw = parser.parse(source, messageCollector)
             importPass.resolve(raw, Paths.get(source.filename))
+        }
+
+        // Linked modules first: a module imported as ARTIFACTS contributes its interface to the
+        // resolver and its atoms to the shared space, and nothing else — no rewriting, no
+        // resolution, no codegen. Both halves have to be in place before the rewriter chain runs
+        // below, because `FunctionRewriter`'s `isReducibleName` already asks the context whether a
+        // head resolves, and the space is what the pattern indexer and a reflective `match &self`
+        // read.
+        cache.precompiled.values.forEach { module ->
+            context.addLinkedModule(module.entries)
+            module.atoms.forEach(context.getSpace()::add)
         }
 
         // Phase 2: build a deterministic compilation queue. Imported modules are placed
@@ -174,7 +190,11 @@ class Compiler(
             fingerprints[programName] = fingerprint
             declaredTypeNamesByProgram[programName] = Generator.declaredTypeNamesOf(space.getAtoms())
             declaredArrowNamesByProgram[programName] = Generator.declaredArrowNamesOf(space.getAtoms())
-            val ext = storageStrategy.manifestExtensionFor(preRewriteSource, cache, importsBySource)
+            val ext = withPrecompiledModules(
+                storageStrategy.manifestExtensionFor(preRewriteSource, cache, importsBySource),
+                preRewriteSource,
+                cache,
+            )
             SpaceDirectorySerializer.save(
                 space = space,
                 directory = Path(outputDir),
@@ -213,6 +233,33 @@ class Compiler(
             writeLinkerTable(programName, linkerTableText)
         }
         return true to messageCollector.list()
+    }
+
+    /**
+     * Append the linked modules [source] imports to its manifest extension.
+     *
+     * The strategy computes `loadModules` by walking the import graph of PARSED sources, and a
+     * precompiled module has none — it was never parsed here. But the runtime needs it listed for
+     * the same reason a source-imported module is: `init` registers each listed module's space so
+     * the `(import! …)` still in the program's body has something to copy from.
+     */
+    private fun withPrecompiledModules(
+        extension: ManifestExtension,
+        source: ParsedSource,
+        cache: ModuleCompilationCache,
+    ): ManifestExtension {
+        val names = cache.precompiledImports[canonicalPath(source)].orEmpty()
+        if (names.isEmpty()) return extension
+        return when (extension) {
+            is ManifestExtension.DeepCopy -> {
+                val existing = extension.loadModules.map { it.spaceId }.toSet()
+                val added = names.sorted()
+                    .filterNot { it in existing }
+                    .map { ModuleLoad(spaceId = it, jtsf = "$it.jtsf") }
+                ManifestExtension.DeepCopy(loadModules = extension.loadModules + added)
+            }
+            is ManifestExtension.Alias -> extension
+        }
     }
 
     private fun canonicalPath(source: ParsedSource): Path =
