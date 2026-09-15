@@ -8,9 +8,8 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
 import net.singularity.jetta.compiler.Compiler
+import net.singularity.jetta.compiler.frontend.rewrite.PrecompiledModuleResolver
 import net.singularity.jetta.compiler.modules.ArtifactModuleResolver
-import net.singularity.jetta.compiler.modules.CompositeModuleResolver
-import net.singularity.jetta.compiler.modules.ShippedModuleResolver
 import net.singularity.jetta.compiler.VersionInfo
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.repl.InvalidInputException
@@ -28,6 +27,10 @@ class Compile : CliktCommand("jettac") {
     private val interactive by option("-i", "--interactive", help = "Interactive mode").flag()
     private val debug  by option("-D", "--debug", help = "Debug mode").flag()
     private val dumpIr by option("--ir", help = "Dump fully typed IR to .jir files").flag()
+    private val stdlib by option(
+        "--stdlib",
+        help = "Import the standard library automatically, as the reference interpreter does",
+    ).flag()
     private val modulePath by option(
         "--module-path",
         help = "Directories of already-compiled modules to LINK an import! against " +
@@ -114,14 +117,15 @@ class Compile : CliktCommand("jettac") {
             output,
             logLevel = logLevel,
             dumpIr = dumpIr,
-            // The shipped standard library is always available; `--module-path` entries are
-            // consulted first, and both lose to a module whose source sits next to the program.
-            precompiledModules = CompositeModuleResolver(
-                buildList {
-                    if (modules.isNotEmpty()) add(ArtifactModuleResolver(modules))
-                    add(ShippedModuleResolver())
-                }
-            ),
+            // `--module-path` entries are consulted first; the shipped standard library is
+            // always behind them (the Compiler appends it), and both lose to a module whose
+            // source sits next to the program.
+            precompiledModules = if (modules.isEmpty()) {
+                PrecompiledModuleResolver.NONE
+            } else {
+                ArtifactModuleResolver(modules)
+            },
+            autoImportStdlib = stdlib,
         )
         val code = compiler.compile()
         if (code != 0) exitProcess(code)

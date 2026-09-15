@@ -194,6 +194,12 @@ object JettaCallSite {
             if (bodies.size > 1) return bodies.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
         }
         val nf = reduceToFixedPoint(spaceName, atom)
+        // `Empty` is the reference interpreter's marker for "no result", not a symbol that can be
+        // a value: its own stdlib defines `(= (empty) Empty)` and reducing to it yields the empty
+        // bag. This only started to matter when that library began arriving in the space — a
+        // reasoning rule's `(if (== …) (empty) …)` reduced through the rule and handed back the
+        // SYMBOL, so a program that must answer `()` answered `(Empty)` instead.
+        if (nf is Symbol && nf.name == EMPTY_RESULT) return emptyList()
         val bag = executeSpecialForm(spaceName, nf, depth) ?: return listOf(nf)
         return bag.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
     }
@@ -644,6 +650,9 @@ object JettaCallSite {
     /** Mirror of `Predefined.PATTERN` — kept local to avoid a frontend-resolve dependency. */
     private const val PATTERN_EQ = "="
     private const val REDUCE_VAR = "__reduce_r"
+
+    /** The reference interpreter's "no result" symbol — see [reduceToBag]. */
+    private const val EMPTY_RESULT = "Empty"
 
     // D3 increment D.1 — special-form head names (mirror `Predefined`, kept local by the
     // same convention as PATTERN_EQ). `match`/`empty` have no `Predefined` entry (they are

@@ -11,6 +11,11 @@ import net.singularity.jetta.compiler.frontend.MessageLevel
 import net.singularity.jetta.compiler.frontend.ParserFacade
 import net.singularity.jetta.compiler.frontend.Source
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.modules.ShippedModuleResolver
+import net.singularity.jetta.compiler.modules.CompositeModuleResolver
+import net.singularity.jetta.compiler.frontend.ir.Symbol
+import net.singularity.jetta.compiler.frontend.ir.Run
+import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.resolve.Context
 import net.singularity.jetta.compiler.frontend.resolve.ModuleInterface
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
@@ -48,7 +53,30 @@ class Compiler(
     val storageStrategy: StorageStrategy = DeepCopyStrategy,
     /** Where an `import!` looks for an already-compiled module before reading its source. */
     val precompiledModules: PrecompiledModuleResolver = PrecompiledModuleResolver.NONE,
+    /**
+     * Whether every program gets `(import! &self stdlib)` prepended, as the reference interpreter
+     * loads its standard library for every program it runs.
+     *
+     * DEFAULT OFF, and the default is the only thing here still under discussion. Turning it on
+     * costs three of the 22 reference topic tests today — `d1_gadt`, `d5_auto_types` (a
+     * StackOverflowError) and `f1_imports` — because a program's reflective queries start seeing
+     * the library's own declarations: `(: Error (-> Atom Atom ErrorType))` gives an ill-typed
+     * expression a type where the reference answers the empty set, and `(: = (-> $t $t
+     * %Undefined%))` reaches a rule's result. The reference passes all three WITH its library
+     * loaded, so these are gaps of ours that the import exposes rather than a reason not to do it.
+     * Flipping this to `true` is the whole change, once they are fixed.
+     */
+    val autoImportStdlib: Boolean = false,
 ) {
+    /**
+     * The resolver an import actually consults: what the caller configured, with the modules
+     * SHIPPED in the compiler's jar always behind it. Appended rather than left to the caller
+     * because the automatic stdlib import has to find the library whatever else is configured —
+     * a caller passing its own resolver is narrowing where ITS modules come from, not asking for
+     * a compiler without a standard library.
+     */
+    private val moduleResolver: PrecompiledModuleResolver =
+        CompositeModuleResolver(listOf(precompiledModules, ShippedModuleResolver()))
 
     init {
         LogConfig.level = logLevel
@@ -79,7 +107,7 @@ class Compiler(
         addSystemFunctions(context)
         val parser = createParserFacade()
         val cache = ModuleCompilationCache()
-        val importPass = ImportResolutionPass(parser, cache, messageCollector, precompiledModules)
+        val importPass = ImportResolutionPass(parser, cache, messageCollector, moduleResolver)
 
         // Phase 1: parse user-supplied sources and resolve their imports. The pass leaves
         // each user source with the import! Runs removed and fills the cache with every
@@ -87,7 +115,7 @@ class Compiler(
         val userParsed = sources.map { source ->
             println("Compiling ${source.filename}")
             val raw = parser.parse(source, messageCollector)
-            importPass.resolve(raw, Paths.get(source.filename))
+            importPass.resolve(withAutomaticStdlibImport(raw), Paths.get(source.filename))
         }
 
         // Linked modules first: a module imported as ARTIFACTS contributes its interface to the
@@ -262,6 +290,36 @@ class Compiler(
         }
     }
 
+    /**
+     * Prepend `(import! &self stdlib)` to a program the user asked to compile, which is how the
+     * reference interpreter runs every program — its standard library is always loaded, and a
+     * corpus file calling `if-error` or `match-types` expects it there without saying so.
+     *
+     * Prepended rather than merged in some other way because it must behave exactly like an
+     * import the program wrote itself: the module is linked at compile time, and the surviving
+     * Run copies the library's atoms into `&self` at the point it executes — before anything else
+     * the program does, which is what makes a `match &self` over a library declaration work.
+     *
+     * Only ENTRY programs get it. A module reached through an `import!` does not, so a library's
+     * atoms are not copied once per module space in a program that imports three of them.
+     * A program that already imports the library keeps its own import, at its own position.
+     */
+    private fun withAutomaticStdlibImport(source: ParsedSource): ParsedSource {
+        if (!autoImportStdlib) return source
+        if (source.code.any { it.isImportOf(STDLIB_MODULE) }) return source
+        val directive = Run(
+            Expression(listOf(Symbol("import!"), Symbol("&self"), Symbol(STDLIB_MODULE))),
+            position = null,
+        )
+        return ParsedSource(source.filename, listOf(directive) + source.code)
+    }
+
+    private fun Atom.isImportOf(moduleName: String): Boolean {
+        val atoms = (this as? Run)?.expression?.atoms ?: return false
+        if (atoms.size < 3) return false
+        return (atoms[0] as? Symbol)?.name == "import!" && (atoms[2] as? Symbol)?.name == moduleName
+    }
+
     private fun canonicalPath(source: ParsedSource): Path =
         Paths.get(source.filename).toAbsolutePath().normalize()
 
@@ -293,6 +351,11 @@ class Compiler(
     }
 
     private fun createParserFacade(): ParserFacade = AntlrParserFacadeImpl()
+
+    private companion object {
+        /** The module name the vendored standard library is compiled and shipped under. */
+        const val STDLIB_MODULE = "stdlib"
+    }
 
     private fun writeLinkerTable(programName: String, text: String) {
         val file = File(outputDir + File.separator + "$programName.jctx")

@@ -85,8 +85,16 @@ val compileStdlib = tasks.register<JavaExec>("compileStdlib") {
     group = "build"
     // Runs the compiler from its CLASSPATH rather than from the shadow jar: the jar has to
     // INCLUDE this task's output, so depending on the jar would close a cycle.
-    dependsOn(tasks.named("classes"))
-    classpath = sourceSets["main"].runtimeClasspath
+    //
+    // The classpath is spelled out as classes + dependencies rather than `runtimeClasspath`,
+    // which also carries this project's RESOURCES — and those are what this task produces, so
+    // naming them would close a second cycle (classes -> processResources -> compileStdlib).
+    // Compiling the library needs no resources of ours: it runs with --no-stdlib.
+    dependsOn(tasks.named("compileKotlin"))
+    classpath = files(
+        sourceSets["main"].output.classesDirs,
+        configurations.named("runtimeClasspath"),
+    )
     mainClass.set("net.singularity.jetta.MainKt")
     inputs.file(stdlibSource).withPropertyName("stdlibSource")
     outputs.dir(stdlibArtifacts).withPropertyName("stdlibArtifacts")
@@ -100,17 +108,15 @@ val compileStdlib = tasks.register<JavaExec>("compileStdlib") {
     doFirst { stdlibArtifacts.get().asFile.mkdirs() }
 }
 
-tasks.shadowJar {
+// The artifacts travel as ordinary RESOURCES, not as something added to the shadow jar alone.
+// That way every consumer sees the same library: the test runtime classpath, the plain jar, the
+// shadow jar, and the test-runner's own shadow jar. Wiring them into `shadowJar` only would mean
+// `./gradlew test` compiled programs without a standard library while `bin/jettac` compiled them
+// with one — the two would measure different products.
+tasks.processResources {
     dependsOn(compileStdlib)
-    manifest {
-        attributes(
-            "Main-Class" to "net.singularity.jetta.MainKt",
-            "Implementation-Title" to "Jetta Compiler",
-            "Implementation-Version" to archiveVersion.get()
-        )
-    }
-    // The module's CLASS goes to the jar root: a compiled MeTTa program lands in the default
-    // package, and the runtime loads it by the bare name its interface records.
+    // The module's CLASS goes to the root: a compiled MeTTa program lands in the default package,
+    // and the runtime loads it by the bare name its interface records.
     from(stdlibArtifacts) {
         include("*.class")
         into("")
@@ -119,6 +125,16 @@ tasks.shadowJar {
     from(stdlibArtifacts) {
         exclude("*.class")
         into("jetta/lib")
+    }
+}
+
+tasks.shadowJar {
+    manifest {
+        attributes(
+            "Main-Class" to "net.singularity.jetta.MainKt",
+            "Implementation-Title" to "Jetta Compiler",
+            "Implementation-Version" to archiveVersion.get()
+        )
     }
 }
 
