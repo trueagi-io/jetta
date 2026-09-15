@@ -17,6 +17,7 @@ import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.functions.TypeEngine
 import net.singularity.jetta.runtime.space.ManifestExtension
+import net.singularity.jetta.runtime.space.ArtifactSource
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceId
 import net.singularity.jetta.runtime.space.SpaceImpl
@@ -199,7 +200,12 @@ open class JettaProgram {
             when (val ext = manifest.extension) {
                 is ManifestExtension.DeepCopy -> {
                     ext.loadModules.forEach { mod ->
-                        val moduleSpace = SpaceDirectorySerializer.load(dataDir, mod.spaceId)
+                        val moduleSpace = loadModuleSpace(mod.spaceId)
+                            ?: throw IllegalStateException(
+                                "module '${mod.spaceId}' is listed in $programName.manifest.json but its space " +
+                                    "was found neither under '${dataDir.toAbsolutePath()}' nor among the modules " +
+                                    "shipped with the compiler"
+                            )
                         SpaceRegistry.register(SpaceId.FromModule(mod.spaceId), moduleSpace)
                     }
                 }
@@ -207,6 +213,23 @@ open class JettaProgram {
                     TODO("Track 2F — alias-strategy runtime loading not yet implemented")
             }
         }
+
+        /**
+         * A module's space, from the program's own artifact directory or — failing that — from
+         * the modules SHIPPED inside the compiler's jar, which is where the standard library
+         * lives. Null when neither has it.
+         *
+         * Order matters: a module built alongside the program wins over a shipped one of the same
+         * name, so a project can override the library it links against without renaming it. The
+         * compiler resolves the interface the same way round.
+         */
+        private fun loadModuleSpace(moduleName: String): SpaceImpl? =
+            runCatching {
+                SpaceDirectorySerializer.loadOrNull(ArtifactSource.Directory(dataDir), moduleName)
+            }.getOrNull()
+                ?: runCatching {
+                    SpaceDirectorySerializer.loadOrNull(ArtifactSource.shipped(), moduleName)
+                }.getOrNull()
 
         private fun spaceMismatch(
             programName: String,
@@ -413,7 +436,7 @@ open class JettaProgram {
             if (!done.add(moduleName)) return UNIT_ATOM
 
             val source = SpaceRegistry.get(SpaceId.FromModule(moduleName))
-                ?: runCatching { SpaceDirectorySerializer.load(dataDir, moduleName) }.getOrNull()
+                ?: loadModuleSpace(moduleName)
                 ?: return UNIT_ATOM
             SpaceRegistry.register(SpaceId.FromModule(moduleName), source)
 

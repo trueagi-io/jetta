@@ -8,8 +8,9 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
 import net.singularity.jetta.compiler.Compiler
-import net.singularity.jetta.compiler.frontend.rewrite.PrecompiledModuleResolver
 import net.singularity.jetta.compiler.modules.ArtifactModuleResolver
+import net.singularity.jetta.compiler.modules.CompositeModuleResolver
+import net.singularity.jetta.compiler.modules.ShippedModuleResolver
 import net.singularity.jetta.compiler.VersionInfo
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.repl.InvalidInputException
@@ -113,11 +114,14 @@ class Compile : CliktCommand("jettac") {
             output,
             logLevel = logLevel,
             dumpIr = dumpIr,
-            precompiledModules = if (modules.isEmpty()) {
-                PrecompiledModuleResolver.NONE
-            } else {
-                ArtifactModuleResolver(modules)
-            },
+            // The shipped standard library is always available; `--module-path` entries are
+            // consulted first, and both lose to a module whose source sits next to the program.
+            precompiledModules = CompositeModuleResolver(
+                buildList {
+                    if (modules.isNotEmpty()) add(ArtifactModuleResolver(modules))
+                    add(ShippedModuleResolver())
+                }
+            ),
         )
         val code = compiler.compile()
         if (code != 0) exitProcess(code)

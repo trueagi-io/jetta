@@ -2,7 +2,9 @@ package net.singularity.jetta.compiler.modules
 
 import net.singularity.jetta.compiler.Compiler
 import net.singularity.jetta.compiler.frontend.resolve.ModuleInterface
+import net.singularity.jetta.compiler.frontend.rewrite.PrecompiledModuleResolver
 import net.singularity.jetta.compiler.logger.LogLevel
+import net.singularity.jetta.runtime.space.ArtifactSource
 import net.singularity.jetta.runtime.space.ManifestExtension
 import net.singularity.jetta.runtime.space.ManifestSerializer
 import org.junit.jupiter.api.io.TempDir
@@ -189,6 +191,102 @@ class LinkedModuleImportTest {
         val rc = proc.waitFor()
         assertEquals(0, rc, "java exited non-zero. output:\n$output")
         assertTrue(output.contains("42"), "expected the module's method to answer 42, got:\n$output")
+    }
+
+    /**
+     * A module SHIPPED with the compiler is a fallback, not an override: a program carrying the
+     * module's own source compiles that. This is the compile-time half of an agreement with the
+     * runtime, which looks in the program's artifact directory before the compiler's jar — if the
+     * two ends disagreed, a program would link one module's interface and load another's atoms.
+     */
+    @Test
+    fun `a shipped module loses to the module's own source`(
+        @TempDir moduleDir: Path,
+        @TempDir shipped: Path,
+        @TempDir out: Path,
+    ) {
+        // Build the "shipped" copy from a DIFFERENT module body, so which one was used is visible.
+        File(moduleDir.toFile(), "libmod.metta").writeText(
+            moduleSource.replace("(* 2 ${'$'}x)", "(* 3 ${'$'}x)")
+        )
+        compile(listOf(File(moduleDir.toFile(), "libmod.metta").absolutePath), shipped)
+
+        // Now the program, with the module's ORIGINAL source beside it.
+        File(moduleDir.toFile(), "libmod.metta").writeText(moduleSource)
+        File(moduleDir.toFile(), "client.metta").writeText(clientSource)
+        compileWith(
+            listOf(File(moduleDir.toFile(), "client.metta").absolutePath),
+            out,
+            ShippedModuleResolver(ArtifactSource.Directory(shipped)),
+        )
+
+        assertTrue(
+            Files.isRegularFile(out.resolve("libmod.class")),
+            "the module's own source must be compiled rather than the shipped build linked",
+        )
+    }
+
+    /** With no source to compile, the shipped module is linked. */
+    @Test
+    fun `a shipped module is linked when the program has no source for it`(
+        @TempDir moduleDir: Path,
+        @TempDir shipped: Path,
+        @TempDir clientOnly: Path,
+        @TempDir out: Path,
+    ) {
+        File(moduleDir.toFile(), "libmod.metta").writeText(moduleSource)
+        compile(listOf(File(moduleDir.toFile(), "libmod.metta").absolutePath), shipped)
+
+        File(clientOnly.toFile(), "client.metta").writeText(clientSource)
+        compileWith(
+            listOf(File(clientOnly.toFile(), "client.metta").absolutePath),
+            out,
+            ShippedModuleResolver(ArtifactSource.Directory(shipped)),
+        )
+
+        assertTrue(!Files.isRegularFile(out.resolve("libmod.class")), "linked, not recompiled")
+        val manifest = ManifestSerializer.load(out.resolve("client.manifest.json"))
+        assertEquals(
+            listOf("libmod"),
+            (manifest.extension as ManifestExtension.DeepCopy).loadModules.map { it.spaceId },
+        )
+    }
+
+    /** `--module-path` is explicit intent and DOES override a module's source. */
+    @Test
+    fun `module-path artifacts override the module's own source`(
+        @TempDir moduleDir: Path,
+        @TempDir artifacts: Path,
+        @TempDir out: Path,
+    ) {
+        File(moduleDir.toFile(), "libmod.metta").writeText(moduleSource)
+        compile(listOf(File(moduleDir.toFile(), "libmod.metta").absolutePath), artifacts)
+
+        File(moduleDir.toFile(), "client.metta").writeText(clientSource)
+        compileWith(
+            listOf(File(moduleDir.toFile(), "client.metta").absolutePath),
+            out,
+            ArtifactModuleResolver(listOf(artifacts)),
+        )
+
+        assertTrue(
+            !Files.isRegularFile(out.resolve("libmod.class")),
+            "the source is right there, but the artifacts were asked for explicitly",
+        )
+    }
+
+    private fun compileWith(
+        files: List<String>,
+        out: Path,
+        resolver: PrecompiledModuleResolver,
+    ) {
+        val compiler = Compiler(
+            files = files,
+            outputDir = out.toAbsolutePath().toString(),
+            logLevel = LogLevel.ERROR,
+            precompiledModules = resolver,
+        )
+        assertEquals(0, compiler.compile(), "compiler returned non-zero for $files")
     }
 
     private fun compile(

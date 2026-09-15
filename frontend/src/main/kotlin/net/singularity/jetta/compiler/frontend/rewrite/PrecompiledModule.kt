@@ -17,6 +17,16 @@ data class PrecompiledModule(
     val name: String,
     val entries: List<ModuleInterfaceEntry>,
     val atoms: List<Expression>,
+    /**
+     * Whether this build of the module beats the module's SOURCE sitting next to the importer.
+     *
+     * True for artifacts the user pointed at explicitly (`--module-path`) — that is what asking
+     * for them means. False for a module SHIPPED with the compiler, which is a fallback: a program
+     * that carries its own `stdlib.metta` gets its own, and the runtime agrees, because it looks in
+     * the program's artifact directory before the compiler's jar. Compile time and run time have
+     * to pick the same module, and this is the knob that keeps the two orders aligned.
+     */
+    val overridesSource: Boolean = true,
 )
 
 /**

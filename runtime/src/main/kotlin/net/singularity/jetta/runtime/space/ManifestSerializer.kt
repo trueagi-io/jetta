@@ -85,8 +85,14 @@ object ManifestSerializer {
         Files.writeString(path, json.encodeToString(dto))
     }
 
-    fun load(path: Path): ManifestV2 {
-        val jsonString = Files.readString(path)
+    fun load(path: Path): ManifestV2 = parse(Files.readString(path), path.toString())
+
+    /**
+     * Parse a manifest that has already been read — from a file, or from a resource inside the
+     * compiler's jar. [origin] only names the source in error messages.
+     */
+    fun parse(jsonString: String, origin: String = "<manifest>"): ManifestV2 {
+        val path = origin
         // Probe version first so a v1 file (where `version` is the string "1.0" and
         // `kind` is absent) errors with a clear message rather than a deserialization
         // crash from the Int-typed v2 schema.

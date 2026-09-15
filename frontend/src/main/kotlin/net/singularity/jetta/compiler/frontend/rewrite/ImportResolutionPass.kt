@@ -118,22 +118,22 @@ class ImportResolutionPass(
             return emptyList()
         }
 
-        // 2. Already compiled? Then LINK it: record the module and the edge, and stop. Its
-        //    interface tells the resolver what its functions are and its `.jtsf` carries the
-        //    atoms, so none of its source is read, rewritten or generated here — which is the
-        //    point. Checked before the source path so the shipped stdlib wins over a stray
-        //    `stdlib.metta` sitting next to the program.
+        // 2. Already compiled? Then LINK it: its interface tells the resolver what its functions
+        //    are and its `.jtsf` carries the atoms, so none of its source is read, rewritten or
+        //    generated here — which is the point.
         //
-        //    A precompiled module splices no `!`-runs: its load-time effects were compiled into
-        //    its own `__main`, which this program does not call. Nothing in the reference
-        //    `stdlib.metta` has one; a module that does needs its runs kept as source.
+        //    Precedence, and the runtime mirrors it exactly (`JettaProgram.loadModuleSpace` looks
+        //    in the program's artifact directory before the compiler's jar): artifacts the user
+        //    pointed at explicitly, then the module's own SOURCE next to the importer, then a
+        //    module shipped with the compiler. So a program that carries its own `stdlib.metta`
+        //    gets that one, at both compile time and run time.
+        //
+        //    A linked module splices no `!`-runs: its load-time effects were compiled into its own
+        //    `__main`, which this program does not call. Nothing in the reference `stdlib.metta`
+        //    has one; a module that does needs its runs kept as source.
         val alreadyCompiled = precompiled.find(moduleName)
-        if (alreadyCompiled != null) {
-            cache.precompiled[moduleName] = alreadyCompiled
-            cache.precompiledImports
-                .getOrPut(importerPath.toAbsolutePath().normalize()) { mutableSetOf() }
-                .add(moduleName)
-            return emptyList()
+        if (alreadyCompiled != null && alreadyCompiled.overridesSource) {
+            return linkModule(alreadyCompiled, importerPath)
         }
 
         // 3. Resolve to a canonical sibling path.
@@ -156,8 +156,9 @@ class ImportResolutionPass(
             return emptyList()
         }
 
-        // 6. Read + parse + recurse.
+        // 6. Read + parse + recurse — or, with no source to read, link a shipped module.
         if (!Files.isRegularFile(targetPath)) {
+            if (alreadyCompiled != null) return linkModule(alreadyCompiled, importerPath)
             messageCollector.add(MissingModuleMessage(moduleName, targetPath.toString(), req.position))
             return emptyList()
         }
@@ -188,6 +189,18 @@ class ImportResolutionPass(
         } finally {
             cache.resolving.remove(targetPath)
         }
+    }
+
+    /**
+     * Record [module] as linked and note the edge, so the compiler registers its interface and
+     * atoms and the importer's manifest lists it for the runtime to load. Returns no spliced runs.
+     */
+    private fun linkModule(module: PrecompiledModule, importerPath: Path): List<Run> {
+        cache.precompiled[module.name] = module
+        cache.precompiledImports
+            .getOrPut(importerPath.toAbsolutePath().normalize()) { mutableSetOf() }
+            .add(module.name)
+        return emptyList()
     }
 
     /** Replace every `&self` reference in [atom] with [moduleName], the module's own space. */

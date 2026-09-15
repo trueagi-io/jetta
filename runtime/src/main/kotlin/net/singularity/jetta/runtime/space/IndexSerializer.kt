@@ -68,8 +68,14 @@ object IndexSerializer {
     /**
      * Deserialize an indexer from a file.
      */
-    fun deserialize(inputPath: Path, expectedSpaceId: UUID): IndexerImpl {
-        val bytes = Files.readAllBytes(inputPath)
+    fun deserialize(inputPath: Path, expectedSpaceId: UUID): IndexerImpl =
+        deserialize(Files.readAllBytes(inputPath), expectedSpaceId)
+
+    /**
+     * Deserialize an indexer from bytes already read — from a file, or from a resource inside the
+     * compiler's jar (see [net.singularity.jetta.runtime.space.ArtifactSource]).
+     */
+    fun deserialize(bytes: ByteArray, expectedSpaceId: UUID): IndexerImpl {
         val reader = BinaryReader(bytes)
 
         // Verify magic number

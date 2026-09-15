@@ -71,13 +71,54 @@ sourceSets {
 
 tasks.withType<Jar> { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
 
+// ---- The standard library, compiled once and shipped inside the jar ----------------------
+//
+// `stdlib/stdlib.metta` is the reference interpreter's own standard library, vendored verbatim
+// (see stdlib/README.md). It is compiled HERE, once per build, into the artifact set a program
+// links against; `ImportResolutionPass` then links `(import! &self stdlib)` instead of compiling
+// those 1421 lines again for every program.
+val stdlibSource = layout.projectDirectory.file("../stdlib/stdlib.metta")
+val stdlibArtifacts = layout.buildDirectory.dir("stdlib-artifacts")
+
+val compileStdlib = tasks.register<JavaExec>("compileStdlib") {
+    description = "Compiles the vendored MeTTa standard library into the artifacts shipped in the jar"
+    group = "build"
+    // Runs the compiler from its CLASSPATH rather than from the shadow jar: the jar has to
+    // INCLUDE this task's output, so depending on the jar would close a cycle.
+    dependsOn(tasks.named("classes"))
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("net.singularity.jetta.MainKt")
+    inputs.file(stdlibSource).withPropertyName("stdlibSource")
+    outputs.dir(stdlibArtifacts).withPropertyName("stdlibArtifacts")
+    argumentProviders.add {
+        listOf(
+            stdlibSource.asFile.absolutePath,
+            "-d", stdlibArtifacts.get().asFile.absolutePath,
+            "--no-greetings",
+        )
+    }
+    doFirst { stdlibArtifacts.get().asFile.mkdirs() }
+}
+
 tasks.shadowJar {
+    dependsOn(compileStdlib)
     manifest {
         attributes(
             "Main-Class" to "net.singularity.jetta.MainKt",
             "Implementation-Title" to "Jetta Compiler",
             "Implementation-Version" to archiveVersion.get()
         )
+    }
+    // The module's CLASS goes to the jar root: a compiled MeTTa program lands in the default
+    // package, and the runtime loads it by the bare name its interface records.
+    from(stdlibArtifacts) {
+        include("*.class")
+        into("")
+    }
+    // Its space, manifest and any prebuilt indices go where ArtifactSource.shipped() looks.
+    from(stdlibArtifacts) {
+        exclude("*.class")
+        into("jetta/lib")
     }
 }
 
