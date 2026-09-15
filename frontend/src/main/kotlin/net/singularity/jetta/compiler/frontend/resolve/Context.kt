@@ -116,11 +116,20 @@ class Context private constructor(
      * Context-global (owner disambiguates), so every program's `.jctx` carries the full set.
      * Skips synthetic entries (`__eval*`, `__main*`) and `main`, and any function that never got
      * an arrow type (no JVM descriptor to link against).
+     *
+     * Also skips a definition SHADOWED BY A BUILTIN, for the reason its marker already gives:
+     * codegen emits no method for it, because no call site can link to it. Advertising it anyway
+     * described 16 of hyperon `stdlib.metta`'s 57 entries — `id`, `car-atom`, `collapse`,
+     * `assertEqual`, … — as methods of a class that does not have them. The runtime got away with
+     * it (`JettaLinkRegistry` catches the failed `findStatic` and drops the entry), but a compiler
+     * READING this table to link a call into an already-compiled module would emit an
+     * `INVOKESTATIC` to a method that is not there.
      */
     fun linkerTable(): List<ModuleInterfaceEntry> =
         resolvedFunctions.entries
             .filter { (name, def) ->
-                !name.startsWith("__") && name != "main" && def.func.arrowType != null
+                !name.startsWith("__") && name != "main" && def.func.arrowType != null &&
+                        !def.func.isShadowedByRuntime()
             }
             .map { (name, def) ->
                 val jvm = def.toJvm()
