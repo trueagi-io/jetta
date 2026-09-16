@@ -55,8 +55,11 @@ class DeepCopyStrategyTest {
         assertEquals("deep-copy", mainManifest.kind)
         assertEquals("main", mainManifest.spaceId)
         val mainExt = mainManifest.extension as ManifestExtension.DeepCopy
-        assertEquals(listOf("utils"), mainExt.loadModules.map { it.spaceId })
-        assertEquals(listOf("utils.jtsf"), mainExt.loadModules.map { it.jtsf })
+        // The standard library is listed too, since every program imports it now. `utils` does
+        // NOT list it: the automatic import reaches an ENTRY program only, so a library's atoms
+        // are not copied once per module space in a program that imports three of them.
+        assertEquals(listOf("utils", "stdlib"), mainExt.loadModules.map { it.spaceId })
+        assertEquals(listOf("utils.jtsf", "stdlib.jtsf"), mainExt.loadModules.map { it.jtsf })
 
         val utilsExt = utilsManifest.extension as ManifestExtension.DeepCopy
         assertEquals(emptyList(), utilsExt.loadModules)
@@ -142,7 +145,9 @@ class DeepCopyStrategyTest {
         // `c` is listed once even though both a and b reach it.
         val ext = ManifestSerializer.load(out.resolve("main.manifest.json")).extension as ManifestExtension.DeepCopy
         val ids = ext.loadModules.map { it.spaceId }
-        assertEquals(setOf("a", "b", "c"), ids.toSet())
+        // …plus the standard library, which every program imports — listed once for the three
+        // modules, which is the entry-only rule again.
+        assertEquals(setOf("a", "b", "c", "stdlib"), ids.toSet())
         assertEquals(ids.size, ids.toSet().size, "each module listed exactly once")
     }
 

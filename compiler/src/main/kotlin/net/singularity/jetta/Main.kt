@@ -27,9 +27,10 @@ class Compile : CliktCommand("jettac") {
     private val interactive by option("-i", "--interactive", help = "Interactive mode").flag()
     private val debug  by option("-D", "--debug", help = "Debug mode").flag()
     private val dumpIr by option("--ir", help = "Dump fully typed IR to .jir files").flag()
-    private val stdlib by option(
-        "--stdlib",
-        help = "Import the standard library automatically, as the reference interpreter does",
+    private val noStdlib by option(
+        "--no-stdlib",
+        help = "Do not import the standard library automatically (it is imported by default, " +
+                "as the reference interpreter does)",
     ).flag()
     private val modulePath by option(
         "--module-path",
@@ -125,7 +126,7 @@ class Compile : CliktCommand("jettac") {
             } else {
                 ArtifactModuleResolver(modules)
             },
-            autoImportStdlib = stdlib,
+            autoImportStdlib = !noStdlib,
         )
         val code = compiler.compile()
         if (code != 0) exitProcess(code)

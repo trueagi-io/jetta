@@ -133,7 +133,8 @@ class LinkedModuleImportTest {
 
         val manifest = ManifestSerializer.load(linkedBuild.resolve("client.manifest.json"))
         val ext = manifest.extension as ManifestExtension.DeepCopy
-        assertEquals(listOf("libmod"), ext.loadModules.map { it.spaceId })
+        // `stdlib` alongside it: every program imports the standard library now.
+        assertEquals(listOf("libmod", "stdlib"), ext.loadModules.map { it.spaceId })
     }
 
     /** No artifacts on the module path — the import falls back to the module's source. */
@@ -247,7 +248,7 @@ class LinkedModuleImportTest {
         assertTrue(!Files.isRegularFile(out.resolve("libmod.class")), "linked, not recompiled")
         val manifest = ManifestSerializer.load(out.resolve("client.manifest.json"))
         assertEquals(
-            listOf("libmod"),
+            listOf("libmod", "stdlib"),
             (manifest.extension as ManifestExtension.DeepCopy).loadModules.map { it.spaceId },
         )
     }

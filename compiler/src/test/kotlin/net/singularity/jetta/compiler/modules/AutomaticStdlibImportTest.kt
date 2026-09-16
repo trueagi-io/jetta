@@ -18,8 +18,8 @@ import kotlin.test.assertTrue
  * `autoImportStdlib` does the same by prepending `(import! &self stdlib)`, linking the library
  * shipped inside the compiler's jar.
  *
- * Opt-in for now: see `Compiler.autoImportStdlib` for the three reference topic tests that turning
- * it on by default still costs.
+ * On by default (`--no-stdlib` opts out), so these tests pass the flag explicitly either way
+ * rather than relying on it.
  */
 class AutomaticStdlibImportTest {
 

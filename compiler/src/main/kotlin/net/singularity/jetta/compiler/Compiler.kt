@@ -57,16 +57,20 @@ class Compiler(
      * Whether every program gets `(import! &self stdlib)` prepended, as the reference interpreter
      * loads its standard library for every program it runs.
      *
-     * DEFAULT OFF, and the default is the only thing here still under discussion. Turning it on
-     * costs three of the 22 reference topic tests today — `d1_gadt`, `d5_auto_types` (a
-     * StackOverflowError) and `f1_imports` — because a program's reflective queries start seeing
-     * the library's own declarations: `(: Error (-> Atom Atom ErrorType))` gives an ill-typed
-     * expression a type where the reference answers the empty set, and `(: = (-> $t $t
-     * %Undefined%))` reaches a rule's result. The reference passes all three WITH its library
-     * loaded, so these are gaps of ours that the import exposes rather than a reason not to do it.
-     * Flipping this to `true` is the whole change, once they are fixed.
+     * ON by default, which is what makes a program that calls `if-error` or `match-types` without
+     * saying where they come from behave as it does at the reference. `--no-stdlib` opts out; a
+     * caller passing its own module resolver is narrowing where ITS modules come from, not asking
+     * for a compiler without a standard library.
+     *
+     * Turning it on used to cost three of the 22 reference topic tests — `d1_gadt`,
+     * `d5_auto_types` (a StackOverflowError) and `f1_imports` — because a program's reflective
+     * queries start seeing the library's own declarations. The reference was measured to pass all
+     * three WITH its library loaded, so those were three gaps of ours that the import exposed:
+     * the missing `_assert-results-are-*` primitives, an inert argument slot handing its callee a
+     * BadArgType rewrite, and `get-atoms` answering what an `import!` copied in. All three are
+     * fixed, and the topic suite now passes with the library as well as without it.
      */
-    val autoImportStdlib: Boolean = false,
+    val autoImportStdlib: Boolean = true,
 ) {
     /**
      * The resolver an import actually consults: what the caller configured, with the modules
