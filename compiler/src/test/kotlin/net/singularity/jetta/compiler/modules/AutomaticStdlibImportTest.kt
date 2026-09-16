@@ -205,6 +205,36 @@ class AutomaticStdlibImportTest {
         )
     }
 
+    /**
+     * A call that uses a LIBRARY name at an arity the library does not declare is data, and the
+     * multivalued lift must not treat it as a call.
+     *
+     * The library's `map-atom` is `(-> Expression Variable Atom Expression)` and multivalued;
+     * `holfunctions.metta` writes the two-argument `(map-atom (1 2 3) mapfun)`, which
+     * `Context.resolveAtom`'s arity guard correctly leaves inert. The lift looked the head up by
+     * NAME, found the multivalued three-argument entry and wrapped the inert term in a `map?`,
+     * so `simpleMap` was handed an `Expression` where it wanted a `List` — and in the file's own
+     * shape, a method whose descriptor promised an `Expression` returning a `List`, which is a
+     * VerifyError at class load. The program must RUN; what it then answers is the inert term,
+     * since neither we nor the reference define `map-atom` at this arity.
+     */
+    @Test
+    fun `a library name used at another arity is data, not a multivalued call`(
+        @TempDir src: Path,
+        @TempDir out: Path,
+    ) {
+        File(src.toFile(), "arity.metta").writeText(
+            """
+            (= (mapfun ${'$'}x) (+ ${'$'}x 1))
+            (= (f2b) (map-atom (1 2 3) mapfun))
+            !(println! (f2b))
+            """.trimIndent()
+        )
+        compile(File(src.toFile(), "arity.metta").absolutePath, out, autoImport = true)
+        val output = run(out, "arity")
+        assertTrue(output.contains("map-atom"), "expected the inert term, got:\n" + output)
+    }
+
     private fun compile(file: String, out: Path, autoImport: Boolean) {
         val compiler = Compiler(
             files = listOf(file),

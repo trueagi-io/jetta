@@ -71,6 +71,17 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                     // valuedness is the builtin's, not this unreachable rule's. hyperon's
                     // stdlib.metta redefines `cdr-atom` over the multivalued `unify`, and reading
                     // that rule here made every caller believe the scalar builtin returned a bag.
+                    //
+                    // NOT guarded by ARITY, though a call `Context.resolveAtom` leaves inert for
+                    // want of it cannot reach this rule either — see `CanonicalFormRewriter`'s
+                    // `isMultivaluedHead`, where the same lookup IS narrowed. Adding the guard
+                    // here (`def.params.size == atom.atoms.size - 1`) fixes the local-definition
+                    // case and re-breaks `mettaset.metta` in the corpus with the very
+                    // `IncompatibleClassChangeError` the narrowing removes elsewhere: this pass
+                    // and the lift then disagree the other way round, the body being lifted while
+                    // the function is left scalar. Reconciling the two notions of valuedness is
+                    // its own increment; measured, the narrowing in one pass is a net gain and in
+                    // both is not.
                     functions[it.name]?.takeUnless { def -> def.isShadowedByRuntime() }?.let { def ->
                         if (def.isMultivalued()) {
                             return true

@@ -544,14 +544,16 @@ class CanonicalFormRewriter(
                         if (f.name == "match") {
                             return false
                         }
-                        // A rule shadowed by a builtin counts as ABSENT here — see [userDefinition].
-                        val def = userDefinition(f.name)
+                        // A rule shadowed by a builtin counts as ABSENT here — see [userDefinition]
+                        // — and so does one this call cannot reach for want of arity, see
+                        // [isMultivaluedHead].
+                        val def = calleeAt(f.name, atom.atoms.size - 1)
                         val userMultivalued = def != null && def.multivalued
                         // A system multivalued function (e.g. `superpose`, `generate`):
                         // present in systemFunctions with isMultiValued, absent from
                         // definedFunctions. `match` is already excluded above.
                         val systemMultivalued = def == null &&
-                                context.resolve(f.name)?.isMultiValued == true
+                                context.resolve(f.name, atom.atoms.size - 1)?.isMultiValued == true
                         if (userMultivalued || systemMultivalued) {
                             // Check if arguments contain multivalued sub-calls.
                             // If so, don't register this call at the parent scope —
@@ -559,7 +561,7 @@ class CanonicalFormRewriter(
                             val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
                                 arg is Expression && arg.atoms.isNotEmpty() &&
                                         arg.atoms[0] is Symbol &&
-                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name, arg.atoms.size - 1)
                             }
                             // A bare multivalued call that is a direct barrier argument is
                             // handed over whole (as its List result) — skip lifting it so
@@ -656,11 +658,12 @@ class CanonicalFormRewriter(
                     // compound stays self-contained (children scoped to it) and is NOT
                     // compound-lifted — bubbling here would desync with rewriteExpression,
                     // which leaves barrier args inlined.
-                    val isMvCompound = !barrierArg && headName != null && isMultivaluedHead(headName) &&
+                    val isMvCompound = !barrierArg && headName != null &&
+                            isMultivaluedHead(headName, atom.atoms.size - 1) &&
                             atom.atoms.drop(1).any { arg ->
                                 arg is Expression && arg.atoms.isNotEmpty() &&
                                         arg.atoms[0] is Symbol &&
-                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name, arg.atoms.size - 1)
                             }
                     val childScope = if (isMvCompound) {
                         reducedScopeId
@@ -726,7 +729,7 @@ class CanonicalFormRewriter(
         // constructor or a system builtin, absent from definedFunctions. Treat those as not
         // multivalued rather than asserting (`!!`) and NPE-ing (crashed if2/smartdispatch/…).
         val head = atoms[0]
-        if (head is Symbol && userDefinition(head.name)?.multivalued == true) return true
+        if (head is Symbol && calleeAt(head.name, atoms.size - 1)?.multivalued == true) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
         }
@@ -761,7 +764,7 @@ class CanonicalFormRewriter(
     private fun yieldsBag(atom: Atom): Boolean {
         if (atom !is Expression || atom.atoms.isEmpty()) return false
         return when (val h = atom.atoms[0]) {
-            is Symbol -> isMultivaluedHead(h.name)
+            is Symbol -> isMultivaluedHead(h.name, atom.atoms.size - 1)
             is Lambda ->
                 h.body.isNonDeterministic() || h.returnType is SeqType ||
                     h.body.type is SeqType || yieldsBag(h.body)
@@ -772,11 +775,26 @@ class CanonicalFormRewriter(
         }
     }
 
-    private fun isMultivaluedHead(name: String): Boolean {
+    /**
+     * Whether an application of [name] to [argumentCount] arguments answers a result BAG.
+     *
+     * The argument count is not a detail: a name is only this callee AT ITS OWN ARITY. Called
+     * with any other number of arguments the form is DATA — `Context.resolveAtom`'s arity guard
+     * leaves it inert for the runtime to reduce — and asking the wrong callee about valuedness
+     * produces exactly the lie [userDefinition] describes. The reference library's `map-atom` is
+     * `(-> Expression Variable Atom Expression)` and multivalued, while `holfunctions.metta`
+     * writes the two-argument `(map-atom (1 2 3) mapfun)`: the lift wrapped that inert term in a
+     * `map?`, and `simpleMap` was handed an `Expression` where it wanted a `List`.
+     */
+    private fun isMultivaluedHead(name: String, argumentCount: Int): Boolean {
         if (name == "match") return false
-        return userDefinition(name)?.multivalued
-            ?: (context.resolve(name)?.isMultiValued == true)
+        return calleeAt(name, argumentCount)?.multivalued
+            ?: (context.resolve(name, argumentCount)?.isMultiValued == true)
     }
+
+    /** [userDefinition], narrowed to a call that passes the number of arguments it declares. */
+    private fun calleeAt(name: String, argumentCount: Int): Context.SymbolDef? =
+        userDefinition(name)?.takeIf { it.arity == null || it.arity == argumentCount }
 
     /**
      * The user `=` definition a call to [name] actually reaches, or null when the call links to the
