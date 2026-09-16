@@ -69,6 +69,59 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // The `_assert-results-are-*` family — the grounded comparison every `assertEqual*` in
+    // hyperon's `stdlib.metta` is built on, and what lets the library's own `assertAlphaEqual*`
+    // definitions run at all. Registered as one group, as the reference registers them
+    // (`lib/src/metta/runner/stdlib/debug.rs`), rather than growing a Kotlin twin of each of the
+    // eight `assert*` entry points that call them.
+    //
+    // Both result bags are ANY: each reaches the call as a chain-bound variable holding what
+    // `(metta (collapse …) %Undefined% $space)` answered, which is a result `List` and not an
+    // Atom. The ASSERT TERM is inert ATOM — it is the caller's own self-application, since
+    // `assertAlphaEqualToResult`'s body passes `(assertAlphaEqualToResult $actual $expected-results)`
+    // for the error message, so reducing it re-enters the assert and recurses until the stack
+    // ends. That is precisely what `--stdlib d5_auto_types.metta` did before this.
+    listOf("_assert-results-are-equal", "_assert-results-are-alpha-equal").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = RuntimeNames.ASSERTIONS,
+                    name = op,
+                    descriptor = "(Ljava/lang/Object;Ljava/lang/Object;" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;)" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                    inertAtomParams = setOf(2),
+                ),
+                // Answers the unit atom `()`, not void: the library calls this in the tail of a
+                // `chain`, which is a value position (`println!` is typed this way for the same
+                // reason).
+                ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
+    // The `-msg` pair, whose fourth parameter REPLACES the generated report. Inert for the same
+    // reason as the assert term: it is the message the caller wrote, not something to evaluate.
+    listOf("_assert-results-are-equal-msg", "_assert-results-are-alpha-equal-msg").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = RuntimeNames.ASSERTIONS,
+                    name = op,
+                    descriptor = "(Ljava/lang/Object;Ljava/lang/Object;" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;)" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                    inertAtomParams = setOf(2, 3),
+                ),
+                ArrowType(
+                    GroundedType.ANY, GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM,
+                    GroundedType.ATOM,
+                ),
+                false
+            )
+        )
+    }
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(

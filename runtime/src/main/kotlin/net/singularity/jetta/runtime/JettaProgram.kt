@@ -351,7 +351,7 @@ open class JettaProgram {
         }
 
         /** The unit atom `()` — hyperon's return value for the side-effecting space ops. */
-        private val UNIT_ATOM: Atom = Expression(emptyList())
+        internal val UNIT_ATOM: Atom = Expression(emptyList())
 
         /**
          * `nop` — evaluate [value] for its effect and discard it, returning the unit atom `()`.
@@ -791,26 +791,7 @@ open class JettaProgram {
         fun `=alpha`(a: Atom, b: Atom): Atom {
             val left = Matcher.resolveDeep(if (a is BoundAtom) a.atom else a)
             val right = Matcher.resolveDeep(if (b is BoundAtom) b.atom else b)
-            return Symbol(if (alphaEquivalent(left, right, HashMap(), HashMap())) "True" else "False")
-        }
-
-        private fun alphaEquivalent(
-            a: Atom,
-            b: Atom,
-            forward: MutableMap<String, String>,
-            backward: MutableMap<String, String>,
-        ): Boolean = when {
-            a is Variable && b is Variable -> {
-                val f = forward.putIfAbsent(a.name, b.name) ?: b.name
-                val r = backward.putIfAbsent(b.name, a.name) ?: a.name
-                f == b.name && r == a.name
-            }
-            a is Variable || b is Variable -> false
-            a is Expression && b is Expression ->
-                a.atoms.size == b.atoms.size &&
-                    a.atoms.indices.all { alphaEquivalent(a.atoms[it], b.atoms[it], forward, backward) }
-            a is Expression || b is Expression -> false
-            else -> a == b
+            return Symbol(if (Assertions.alphaEquivalent(left, right)) "True" else "False")
         }
 
         /**

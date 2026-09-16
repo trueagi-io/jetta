@@ -128,6 +128,57 @@ class AutomaticStdlibImportTest {
         run(out, "reason") // the assert throws inside the program if the bag is not empty
     }
 
+    /**
+     * `assertAlphaEqual*` exists only in the library — we ground no twin of it — and its MeTTa
+     * definition passes its OWN self-application as the third argument of
+     * `_assert-results-are-alpha-equal`, for the error message. With that helper missing the call
+     * was an unresolved head, so the argument was reduced, the assert re-entered itself and
+     * `d5_auto_types` overflowed a 256MB stack. This is that file's assert.
+     */
+    @Test
+    fun `the library's alpha assert compares up to a renaming of variables`(
+        @TempDir src: Path,
+        @TempDir out: Path,
+    ) {
+        File(src.toFile(), "alpha.metta").writeText(
+            """
+            !(pragma! type-check auto)
+            (: Entity Type)
+            (: Socrates Entity)
+            (: Human (-> Entity Type))
+            (: Mortal (-> Entity Type))
+            (: HumansAreMortal (-> (Human ${'$'}t) (Mortal ${'$'}t)))
+            !(assertAlphaEqualToResult
+               (HumansAreMortal (Human Socrates))
+               ((Error (HumansAreMortal (Human Socrates)) (BadArgType 1 (Human ${'$'}t) Type))))
+            !(assertAlphaEqual (Father ${'$'}X) (Father ${'$'}Y))
+            """.trimIndent()
+        )
+        compile(File(src.toFile(), "alpha.metta").absolutePath, out, autoImport = true)
+        run(out, "alpha") // each assert throws inside the program if it does not hold
+    }
+
+    /**
+     * And the same assert FAILS when it should. Worth its own test: while the library was not
+     * linked, `assertAlphaEqualToResult` was an unresolved head, i.e. inert data, so a wrong
+     * assert succeeded silently — `d5_auto_types` passed with one of its seven asserts never
+     * running, which is how the defect above stayed hidden.
+     */
+    @Test
+    fun `a wrong alpha assert is not silent`(@TempDir src: Path, @TempDir out: Path) {
+        File(src.toFile(), "wrong.metta").writeText(
+            """
+            !(assertAlphaEqualToResult (+ 1 2) (WILDLY WRONG))
+            """.trimIndent()
+        )
+        compile(File(src.toFile(), "wrong.metta").absolutePath, out, autoImport = true)
+        val output = runExpectingFailure(out, "wrong")
+        assertTrue(
+            output.contains("_assert-results-are-alpha-equal failed"),
+            "expected the assert to fail loudly, got:\n" + output,
+        )
+    }
+
     private fun compile(file: String, out: Path, autoImport: Boolean) {
         val compiler = Compiler(
             files = listOf(file),
@@ -149,6 +200,17 @@ class AutomaticStdlibImportTest {
             .start()
         val output = proc.inputStream.bufferedReader().readText()
         assertEquals(0, proc.waitFor(), "java exited non-zero. output:\n$output")
+        return output
+    }
+
+    /** [run] for a program expected to fail — a failing assert exits non-zero. */
+    private fun runExpectingFailure(out: Path, programName: String): String {
+        val classpath = "${out.toAbsolutePath()}${File.pathSeparator}${System.getProperty("java.class.path")}"
+        val proc = ProcessBuilder("java", "-Djetta.dataDir=${out.toAbsolutePath()}", "-cp", classpath, programName)
+            .redirectErrorStream(true)
+            .start()
+        val output = proc.inputStream.bufferedReader().readText()
+        assertTrue(proc.waitFor() != 0, "expected a non-zero exit. output:\n$output")
         return output
     }
 }
