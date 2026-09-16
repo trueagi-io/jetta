@@ -658,10 +658,18 @@ open class FunctionGenerator(
      * `((Error (Cons S (Cons Z Nil)) (BadArgType …)))` — one level below its own top. Checking
      * sub-terms would rewrite that into a doubly-wrapped error and break every such assertion,
      * which is the structural-replacement hazard D2.2 was bitten by.
+     *
+     * [typeCheck] turns the check off for a term built into a FULLY-INERT parameter slot, where
+     * the point of the slot is that the callee reads the term as the program wrote it.
      */
-    private fun generateQuote(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
+    private fun generateQuote(
+        mv: LocalVariablesSorter,
+        atom: Atom,
+        evalCalls: Boolean = false,
+        typeCheck: Boolean = true,
+    ) {
         generateQuoteTerm(mv, atom, evalCalls)
-        maybeEmitInertTypeCheck(mv, atom)
+        if (typeCheck) maybeEmitInertTypeCheck(mv, atom)
     }
 
     /**
@@ -1563,7 +1571,19 @@ open class FunctionGenerator(
             // application; the plain-`generateAtom` path below would instead take the
             // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
             // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
-            generateQuote(mv, arg)
+            //
+            // And no inert TYPE CHECK on the way in: this slot exists so the callee sees the term
+            // as written, while [maybeEmitInertTypeCheck] would hand it
+            // `(Error <term> (BadArgType …))` instead whenever the term is mistyped — which is the
+            // very question `get-type` is being asked. With the library linked, that error term
+            // then had a type of its own, through stdlib's `(: Error (-> Atom Atom ErrorType))`
+            // whose all-`Atom` arrow accepts anything, so `(get-type (Cons 5 (Cons "6" Nil)))`
+            // answered `ErrorType` where the reference answers the empty set. Without the library
+            // the same rewrite happened and `get-type` merely failed to type the error, so the
+            // empty answer was luck. Our eval-time BadArgType is unconditional where the reference
+            // performs it only under `!(pragma! type-check auto)`; until that pragma is a flag we
+            // read, an inert slot is the one place the difference is visible and fixable.
+            generateQuote(mv, arg, typeCheck = false)
         } else if (index in jvmSymbol.templateAtomParams && arg is Expression && isTemplate(arg)) {
             // A parameter a USER function declares literally `Atom`, handed a TEMPLATE — a term
             // carrying a variable nothing in scope binds, so there is no value to compute. Quote it

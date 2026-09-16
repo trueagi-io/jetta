@@ -52,6 +52,32 @@ class GetTypeTest : GeneratorTestBase() {
         """.trimIndent()
     )
 
+    /**
+     * An ill-typed DATA application stays the empty set even when `Error` itself is declared —
+     * which the reference standard library does, as `(: Error (-> Atom Atom ErrorType))`.
+     *
+     * The argument slot is fully inert, but the inert eval-time BadArgType check used to fire
+     * where the term was BUILT, so `get-type` was handed
+     * `(Error (Cons 5 (Cons "6" Nil)) (BadArgType 2 (List Number) (List String)))` rather than
+     * the application the program wrote. With `Error` declared, that term HAS a type — its arrow
+     * takes `Atom`, which accepts anything — so the answer became `ErrorType`. Without the
+     * declaration the same rewrite happened and the engine merely failed to type the error, so
+     * the empty answer was luck rather than correctness. This is d1_gadt:88 under `--stdlib`.
+     */
+    @Test
+    fun `an ill-typed data application is the empty set even when Error is declared`() = runLenient(
+        "GetTypeErrorDeclared",
+        """
+            (: ErrorType Type)
+            (: Error (-> Atom Atom ErrorType))
+            (: List (-> ${'$'}a Type))
+            (: Nil (List ${'$'}a))
+            (: Cons (-> ${'$'}a (List ${'$'}a) (List ${'$'}a)))
+            !(assertEqual (get-type (Cons 5 (Cons 6 Nil))) (List Number))
+            !(assertEqualToResult (get-type (Cons 5 (Cons "6" Nil))) ())
+        """.trimIndent()
+    )
+
     /** A user `:`-declared type, and an arrow application with a `%Undefined%` wildcard param. */
     @Test
     fun `custom declared and arrow-applied types`() = runLenient(
