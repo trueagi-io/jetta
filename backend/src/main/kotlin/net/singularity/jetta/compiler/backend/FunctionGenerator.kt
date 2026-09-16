@@ -1580,9 +1580,15 @@ open class FunctionGenerator(
             // whose all-`Atom` arrow accepts anything, so `(get-type (Cons 5 (Cons "6" Nil)))`
             // answered `ErrorType` where the reference answers the empty set. Without the library
             // the same rewrite happened and `get-type` merely failed to type the error, so the
-            // empty answer was luck. Our eval-time BadArgType is unconditional where the reference
-            // performs it only under `!(pragma! type-check auto)`; until that pragma is a flag we
-            // read, an inert slot is the one place the difference is visible and fixable.
+            // empty answer was luck.
+            //
+            // The reference holds both answers at once, and that is the point of this slot —
+            // measured on `metta-repl` with NO `pragma!` anywhere: `!(Cons 5 (Cons "6" Nil))`
+            // answers `(Error … (BadArgType 2 (List Number) (List String)))`, which is our own
+            // output verbatim, while `!(get-type (Cons 5 (Cons "6" Nil)))` answers `[]`. The
+            // eval-time check is unconditional there as it is here; `!(pragma! type-check auto)`
+            // gates something else — an extra TOP-LEVEL pre-check that refuses to add an
+            // all-error fact to the space and answers a run's errors without interpreting it.
             generateQuote(mv, arg, typeCheck = false)
         } else if (index in jvmSymbol.templateAtomParams && arg is Expression && isTemplate(arg)) {
             // A parameter a USER function declares literally `Atom`, handed a TEMPLATE — a term
