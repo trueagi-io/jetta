@@ -401,10 +401,19 @@ open class JettaProgram {
             return UNIT_ATOM
         }
 
-        /** `get-atoms` — the full non-deterministic bag of atoms currently in [space]. */
+        /**
+         * `get-atoms` — the non-deterministic bag of atoms [space] OWNS.
+         *
+         * Not what an `import!` copied in: the reference keeps an imported module in its own
+         * space and delegates queries into it, so `(get-atoms &self)` on a one-fact program with
+         * the standard library loaded answers that one fact, not the library's three hundred.
+         * `f1_imports` asserts exactly this, at a point where the program has no facts yet.
+         * Every other query still reads the whole space, as the reference does — its library's
+         * declarations ARE visible to a reflective `match &self`.
+         */
         @JvmStatic
         fun `get-atoms`(space: Any?): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getAtoms()
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getOwnAtoms()
 
         /**
          * `import!` — runtime, order-sensitive module import (hyperon semantics).
@@ -442,7 +451,7 @@ open class JettaProgram {
 
             val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
             source.getAtoms().forEach { atom ->
-                target.add(atom as? Expression ?: Expression(listOf(atom)))
+                target.addImported(atom as? Expression ?: Expression(listOf(atom)))
             }
             return UNIT_ATOM
         }

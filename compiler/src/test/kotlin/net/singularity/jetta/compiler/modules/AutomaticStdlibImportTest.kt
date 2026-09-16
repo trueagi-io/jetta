@@ -179,6 +179,32 @@ class AutomaticStdlibImportTest {
         )
     }
 
+    /**
+     * `(get-atoms &self)` answers the program's OWN atoms with the library linked — measured
+     * against the reference, which keeps the library in a space of its own and delegates queries
+     * into it rather than copying. Ours copies, so the copies are marked as not the program's.
+     * `f1_imports` opens by asserting this, at a point where the program has no facts at all.
+     */
+    @Test
+    fun `get-atoms answers the program's own atoms, not the library's`(
+        @TempDir src: Path,
+        @TempDir out: Path,
+    ) {
+        File(src.toFile(), "own.metta").writeText(
+            """
+            !(assertEqualToResult ((let ${'$'}x (get-atoms &self) (get-type ${'$'}x))) ())
+            (MyFact apple)
+            !(println! (collapse (get-atoms &self)))
+            """.trimIndent()
+        )
+        compile(File(src.toFile(), "own.metta").absolutePath, out, autoImport = true)
+        val output = run(out, "own")
+        assertTrue(
+            output.contains("((MyFact apple))"),
+            "expected the program's own atom alone, got:\n" + output,
+        )
+    }
+
     private fun compile(file: String, out: Path, autoImport: Boolean) {
         val compiler = Compiler(
             files = listOf(file),

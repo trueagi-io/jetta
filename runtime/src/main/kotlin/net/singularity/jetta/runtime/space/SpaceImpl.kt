@@ -14,6 +14,10 @@ import net.singularity.jetta.runtime.space.atoms.toSAtom
 
 class SpaceImpl : Space {
     private val store = mutableListOf<Expression>()
+    // Provenance, one flag per store position: true = copied in by an `import!`. Parallel to
+    // [store] rather than a set of indices, because `remove` shifts every later position and two
+    // lists removed at the same index cannot drift apart. Only `get-atoms` reads it.
+    private val imported = mutableListOf<Boolean>()
     // Keyed by [PatternKey], NOT the pattern Expression: `Variable` has no structural equals
     // (identity only), so a `Map<Expression, _>` would MISS on every pattern containing a
     // variable — e.g. `(Implication $a (Evaluation (mortal p0)))` never matched a
@@ -34,9 +38,14 @@ class SpaceImpl : Space {
      */
     var enablePerCallBindings: Boolean = true
 
-    override fun add(expression: Expression) {
+    override fun add(expression: Expression) = add(expression, imported = false)
+
+    override fun addImported(expression: Expression) = add(expression, imported = true)
+
+    private fun add(expression: Expression, imported: Boolean) {
         val storeIndex = store.size
         store.add(expression)
+        this.imported.add(imported)
         disc.insert(expression, storeIndex)
         // Keep every already-built index live: fold the new atom into each cached indexer
         // incrementally (O(cached patterns), no store rescan) instead of invalidating. This
@@ -57,6 +66,7 @@ class SpaceImpl : Space {
         val idx = store.indexOfFirst { it == expression }
         if (idx < 0) return false
         store.removeAt(idx)
+        imported.removeAt(idx)
         // Removal shifts every later store index, so both the structural trie and the
         // packed indexers (whose PackedBindings reference store positions) must be rebuilt
         // against the compacted store. `remove-atom` is rare and off the hot path.
@@ -67,6 +77,9 @@ class SpaceImpl : Space {
     }
 
     override fun getAtoms(): List<Expression> = store.toList()
+
+    override fun getOwnAtoms(): List<Expression> =
+        if (imported.none { it }) store.toList() else store.filterIndexed { i, _ -> !imported[i] }
 
     override fun mkIndex(patterns: List<Expression>) {
         patterns.forEach { pattern ->

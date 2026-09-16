@@ -21,6 +21,56 @@ class SpaceImplTest {
         return (f.get(space) as Map<*, *>).size
     }
 
+    /**
+     * What an `import!` copies in is not the space's own, and `get-atoms` answers only the own
+     * atoms — the reference keeps an imported module in a space of its own and delegates queries
+     * into it, so a one-fact program with the standard library loaded answers that one fact.
+     * Every other query still sees the whole store.
+     */
+    @Test
+    fun `imported atoms are in the space but not among its own`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val own = Expression(Symbol("MyFact"), Symbol("apple"))
+        val fromLibrary = Expression(Symbol(":"), Symbol("id"), Symbol("Type"))
+        space.add(own)
+        space.addImported(fromLibrary)
+
+        assertEquals(listOf(own, fromLibrary), space.getAtoms())
+        assertEquals(listOf(own), space.getOwnAtoms())
+        // …and the imported atom is still matchable, as it is in the reference.
+        assertEquals(1, space.match(Expression(Symbol(":"), Symbol("id"), Variable("t")), Variable("t")).size)
+    }
+
+    /** An atom added AFTER an import is the space's own, wherever it lands in the store. */
+    @Test
+    fun `provenance follows the atom, not its store position`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val fromLibrary = Expression(Symbol("Lib"), Symbol("one"))
+        val addedLater = Expression(Symbol("Mine"), Symbol("two"))
+        space.addImported(fromLibrary)
+        space.add(addedLater)
+        assertEquals(listOf(addedLater), space.getOwnAtoms())
+    }
+
+    /**
+     * `remove` shifts every later store position, so the provenance flags have to shift with it
+     * — a set of imported INDICES would silently start describing the wrong atoms here.
+     */
+    @Test
+    fun `removing an atom keeps the remaining provenance aligned`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val first = Expression(Symbol("A"))
+        val libraryAtom = Expression(Symbol("B"))
+        val last = Expression(Symbol("C"))
+        space.add(first)
+        space.addImported(libraryAtom)
+        space.add(last)
+
+        assertTrue(space.remove(first))
+        assertEquals(listOf(libraryAtom, last), space.getAtoms())
+        assertEquals(listOf(last), space.getOwnAtoms())
+    }
+
     @Test
     fun `structurally-identical variable patterns reuse one cached indexer`() {
         // `Variable` has identity equality, so an Expression-keyed cache used to MISS on every
