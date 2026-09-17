@@ -335,6 +335,7 @@ open class FunctionGenerator(
                                     )
                                 }
                                 generateAtom(mv, it, null, false)
+                                if (isMain) emitRunResultErrorCheck(it)
                             }
                         }
 
@@ -690,6 +691,40 @@ open class FunctionGenerator(
             "typeCheckInert",
             "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;)" +
                 "Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            false,
+        )
+    }
+
+    /**
+     * `(Error …)`-termination for one top-level `!`-run: duplicate the step's result and hand it to
+     * [net.singularity.jetta.runtime.Errors.checkRunResult], which throws when the run answered an
+     * error. The reference stops reading the script at that point (`MettaRunnerMode::TERMINATE`),
+     * so the steps below it must not run, and a throw out of `__main` is what a compiled program
+     * has instead of a runner loop to switch off.
+     *
+     * `DUP` rather than consume-and-return, so the stack keeps the step's own verified type: the
+     * last step's value is what `__main` returns, and the earlier ones are left where they already
+     * were (run-seq never popped them). Emitted only for a step whose value is a JVM REFERENCE —
+     * a primitive or `void` result (`!(+ 1 2)`, a `Unit` step) can not be an error term, and
+     * `DUP`ing a category-2 primitive would be wrong.
+     */
+    private fun emitRunResultErrorCheck(step: Atom) {
+        val type = step.type
+        val leavesReference = when (type) {
+            null,
+            GroundedType.INT, GroundedType.LONG,
+            GroundedType.BOOLEAN, GroundedType.DOUBLE,
+            GroundedType.UNIT -> false
+
+            else -> true
+        }
+        if (!leavesReference) return
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.ERRORS,
+            "checkRunResult",
+            "(Ljava/lang/Object;)V",
             false,
         )
     }

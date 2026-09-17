@@ -105,17 +105,31 @@ object DeepStack {
      * Entry point the generated `main(String[])` calls: locate the program's own `__main` and run
      * it deep-stacked. Reflective because the call is emitted before the class exists, and
      * because `__main`'s descriptor varies with what the last `!`-run returns.
+     *
+     * A [MettaError] — a top-level `!`-run that answered `(Error …)` and so ended the program —
+     * is reported as the error TERM, not as a JVM stack trace: the error is a value the program
+     * computed, and the reference prints it as that run's result. We diverge from the reference on
+     * the exit code only: it leaves the process status at 0, and a failed program run that a shell
+     * or CI cannot notice is worse than a small divergence.
+     *
+     * This is the CLI path alone. A host that invokes `__main` itself (the test runner, the
+     * backend's unit tests) sees the [MettaError] and decides for itself.
      */
     @JvmStatic
     fun runMain(className: String) {
         val loader = Thread.currentThread().contextClassLoader ?: DeepStack::class.java.classLoader
         val entry = Class.forName(className, true, loader).getMethod("__main")
-        run {
-            try {
-                entry.invoke(null)
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw e.targetException ?: e
+        try {
+            run {
+                try {
+                    entry.invoke(null)
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw e.targetException ?: e
+                }
             }
+        } catch (e: MettaError) {
+            System.err.println(e.error)
+            kotlin.system.exitProcess(1)
         }
     }
 }

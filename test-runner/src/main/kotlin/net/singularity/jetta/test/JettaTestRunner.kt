@@ -4,6 +4,7 @@ import net.singularity.jetta.compiler.Compiler
 import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.runtime.DeepStack
 import net.singularity.jetta.runtime.JettaProgram
+import net.singularity.jetta.runtime.MettaError
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
@@ -201,6 +202,7 @@ class JettaTestRunner {
             // distinguishable from arbitrary RuntimeException.
             when (val cause = e.targetException ?: e) {
                 is AssertionError -> TestStatus.ASSERT_FAIL to (cause.message ?: cause.toString())
+                is MettaError -> TestStatus.ERROR_TERM to "${cause.error}"
                 else -> TestStatus.RUN_EXCEPTION to "${cause::class.qualifiedName}: ${cause.message ?: ""}"
             }
         } catch (t: Throwable) {
@@ -211,6 +213,10 @@ class JettaTestRunner {
             // rejecting the bytecode of a buggy compile that returned exit 0.
             when (t) {
                 is AssertionError -> TestStatus.ASSERT_FAIL to (t.message ?: t.toString())
+                // A top-level `(Error …)` ended the program, as it ends the reference script. The
+                // runs below it never happened, so this is a failure of the file — scoring it PASS
+                // is the inflation the whole classification exists to avoid.
+                is MettaError -> TestStatus.ERROR_TERM to "${t.error}"
                 is DeepStack.TimeoutException -> TestStatus.RUN_EXCEPTION to "timeout: ${t.message}"
                 else -> TestStatus.RUN_EXCEPTION to "${t::class.qualifiedName}: ${t.message ?: ""}"
             }
