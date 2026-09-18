@@ -51,6 +51,53 @@ class TopLevelErrorTest : GeneratorTestBase() {
         assertEquals("(Error (+ 5 S) (BadArgType 2 Number String))", thrown.message)
     }
 
+    /**
+     * `max-stack-depth` asked for → a runaway recursion answers the reference's
+     * `(Error <run> StackOverflow)` from the run's own handler, and that ends the program.
+     * Runs on the test thread's ordinary stack, so the bound is reached in milliseconds.
+     */
+    @Test
+    fun `a bounded runaway answers the reference's StackOverflow term`() {
+        val thrown = try {
+            compileAndRun(
+                "TopLevelBoundedRunaway",
+                """
+                (= (down ${'$'}n) (if (== ${'$'}n 0) 0 (down (- ${'$'}n 1))))
+                !(pragma! max-stack-depth 100)
+                !(println! (down 100000000))
+                !(println! never-reached)
+                """.trimIndent()
+            )
+            null
+        } catch (e: InvocationTargetException) {
+            e.targetException
+        }
+        assertTrue(thrown is MettaError, "expected MettaError, got $thrown")
+        assertEquals("(Error (println! (down 100000000)) StackOverflow)", thrown.message)
+    }
+
+    /**
+     * No bound asked for → the `StackOverflowError` is reported as itself, trace and all. The
+     * reference has no bound either unless a program sets one, and a crash we did not promise to
+     * catch is the more useful report.
+     */
+    @Test
+    fun `an unbounded runaway stays a StackOverflowError`() {
+        val thrown = try {
+            compileAndRun(
+                "TopLevelUnboundedRunaway",
+                """
+                (= (down ${'$'}n) (if (== ${'$'}n 0) 0 (down (- ${'$'}n 1))))
+                !(println! (down 100000000))
+                """.trimIndent()
+            )
+            null
+        } catch (e: InvocationTargetException) {
+            e.targetException
+        }
+        assertTrue(thrown is StackOverflowError, "expected StackOverflowError, got $thrown")
+    }
+
     /** Primitive-valued runs are left alone — nothing is checked, and the class still verifies. */
     @Test
     fun `a program of primitive-valued runs verifies and does not throw`() = compileAndRun(

@@ -28,6 +28,38 @@ object DeepStack {
     // hit the wall bounded. Reserved address space, not committed memory.
     private const val DEFAULT_STACK_BYTES = 256L * 1024 * 1024
 
+    /**
+     * Bytes of stack per MeTTa call level, for turning a `max-stack-depth` into a thread stack
+     * size. MEASURED at ~233 bytes/level on this compiler's output (a small recursive function
+     * over an `Int`: 8000 levels fit in 2 MB and 40000 in 8 MB, 10000 overflowed 2 MB) and then
+     * given a 4x margin, because a frame grows with the function's locals and the error must fall
+     * on the generous side: over-provisioning only lets a runaway recursion run a little longer,
+     * while under-provisioning would cut short a recursion the program asked to allow.
+     */
+    private const val BYTES_PER_CALL = 1024L
+
+    /**
+     * The floor a sized stack is clamped to. A bound of a few hundred calls would compute a stack
+     * too small to load a space or run the reducer at all, and the program would overflow inside
+     * the runtime rather than in its own recursion. A trivial program was measured to run in
+     * 128 KB; this leaves room for the reflective paths on top of that.
+     */
+    private const val MIN_SIZED_BYTES = 512L * 1024
+
+    /**
+     * The stack size for a program that asked for [maxCalls] levels of recursion, clamped to
+     * [MIN_SIZED_BYTES] below and to the default above — the pragma exists to BOUND a program's
+     * recursion, never to hand it more stack than a program that asked for nothing.
+     *
+     * An explicit `-Djetta.stackSize` still wins: it is the operator's override of exactly this
+     * number, and a program's own pragma should not defeat it.
+     */
+    fun stackBytesFor(maxCalls: Int): Long {
+        if (System.getProperty(STACK_SIZE_PROPERTY) != null) return stackBytes()
+        val wanted = maxCalls.toLong() * BYTES_PER_CALL
+        return wanted.coerceIn(MIN_SIZED_BYTES, DEFAULT_STACK_BYTES)
+    }
+
     fun stackBytes(): Long {
         val raw = System.getProperty(STACK_SIZE_PROPERTY)?.trim()?.lowercase() ?: return DEFAULT_STACK_BYTES
         val scale = when {
@@ -55,8 +87,14 @@ object DeepStack {
      * stopped safely, and the caller — a test runner sweeping a corpus — needs to move on.
      */
     @JvmStatic
-    fun run(body: Runnable, timeoutMillis: Long) {
-        val bytes = stackBytes()
+    fun run(body: Runnable, timeoutMillis: Long) = run(body, timeoutMillis, stackBytes())
+
+    /**
+     * As [run], but on a stack of exactly [bytes] — the size a program's own `max-stack-depth`
+     * computed, rather than the default this JVM would pick.
+     */
+    @JvmStatic
+    fun run(body: Runnable, timeoutMillis: Long, bytes: Long) {
         if (bytes <= 0L && timeoutMillis <= 0L) {
             body.run()
             return
@@ -116,17 +154,28 @@ object DeepStack {
      * backend's unit tests) sees the [MettaError] and decides for itself.
      */
     @JvmStatic
-    fun runMain(className: String) {
+    fun runMain(className: String) = runMain(className, stackBytes())
+
+    /**
+     * As [runMain], but for a program whose `(pragma! max-stack-depth N)` is a literal the
+     * compiler could read: the thread's stack is sized for N calls, so the JVM enforces the bound
+     * with no per-call counter, and `Errors.stackOverflow` turns the hit into the reference's
+     * `(Error <run> StackOverflow)`. See [stackBytesFor] for the unit conversion and its margins.
+     */
+    @JvmStatic
+    fun runMain(className: String, maxCalls: Int) = runMain(className, stackBytesFor(maxCalls))
+
+    private fun runMain(className: String, bytes: Long) {
         val loader = Thread.currentThread().contextClassLoader ?: DeepStack::class.java.classLoader
         val entry = Class.forName(className, true, loader).getMethod("__main")
         try {
-            run {
+            run({
                 try {
                     entry.invoke(null)
                 } catch (e: java.lang.reflect.InvocationTargetException) {
                     throw e.targetException ?: e
                 }
-            }
+            }, 0L, bytes)
         } catch (e: MettaError) {
             System.err.println(e.error)
             kotlin.system.exitProcess(1)

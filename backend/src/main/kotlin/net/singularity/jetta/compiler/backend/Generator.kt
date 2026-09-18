@@ -157,13 +157,28 @@ class Generator(
                         // [net.singularity.jetta.runtime.DeepStack]; `-Djetta.stackSize=0`
                         // restores the direct call.
                         mv.visitLdcInsn(className.replace('/', '.'))
-                        mv.visitMethodInsn(
-                            Opcodes.INVOKESTATIC,
-                            "net/singularity/jetta/runtime/DeepStack",
-                            "runMain",
-                            "(Ljava/lang/String;)V",
-                            false,
-                        )
+                        val callBound = staticMaxStackDepth(source)
+                        if (callBound == null) {
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/DeepStack",
+                                "runMain",
+                                "(Ljava/lang/String;)V",
+                                false,
+                            )
+                        } else {
+                            // The program asked to bound its own recursion, and the bound is a
+                            // literal — so the thread's stack can be sized for it at compile time
+                            // and the JVM does the counting for free. See [staticMaxStackDepth].
+                            mv.visitLdcInsn(callBound)
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/DeepStack",
+                                "runMain",
+                                "(Ljava/lang/String;I)V",
+                                false,
+                            )
+                        }
                         mv.visitInsn(Opcodes.RETURN)
                         mv.visitMaxs(1, 1)
                     }
@@ -173,6 +188,33 @@ class Generator(
             }
         }
         return listOf(CompilationResult(className, cw.toByteArray()))
+    }
+
+    /**
+     * The recursion bound this program asks for, when the compiler can know it: the value of a
+     * `(pragma! max-stack-depth <literal>)` run. `null` means "nothing to size for".
+     *
+     * Narrow ON PURPOSE. A thread's stack size is fixed when the thread starts, before any run
+     * executes, so only a bound that is knowable statically can be enforced this way — and a
+     * program that sets the pragma TWICE (the reference's own test sets 21 and then 0) has a bound
+     * that varies over its lifetime, which one stack size cannot express. So: exactly one
+     * `max-stack-depth` pragma, a positive integer literal, or nothing. Every other case keeps the
+     * default stack, and `Errors.stackOverflow` still answers the reference's error term whenever
+     * the runtime bound is non-zero — the semantics does not depend on this optimisation, only
+     * how SOON the bound bites.
+     */
+    private fun staticMaxStackDepth(source: ParsedSource): Int? {
+        val values = source.code
+            .filterIsInstance<FunctionDefinition>()
+            .mapNotNull { (it.body as? Expression)?.atoms }
+            .filter { atoms ->
+                atoms.size == 3 &&
+                    (atoms[0] as? Symbol)?.name == "pragma!" &&
+                    (atoms[1] as? Symbol)?.name == "max-stack-depth"
+            }
+            .map { (it[2] as? Grounded<*>)?.value as? Int }
+        val single = values.singleOrNull() ?: return null
+        return if (single > 0) single else null
     }
 
     // --- auto-tabling -------------------------------------------------------------------

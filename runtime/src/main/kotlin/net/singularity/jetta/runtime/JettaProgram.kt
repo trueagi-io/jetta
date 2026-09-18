@@ -143,6 +143,7 @@ open class JettaProgram {
             importedModules.clear()
             currentSpaceName = programName
             currentWatermark = -1
+            Pragmas.reset()
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
             // directory regardless of cwd. The intended way to run a compiled program from

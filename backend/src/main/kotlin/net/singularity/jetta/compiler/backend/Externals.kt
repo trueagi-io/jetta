@@ -549,6 +549,26 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `pragma!` — the reference's runtime mode flags. BOTH parameters are inert: `auto` /
+    // `bare-minimal` are bare symbols that mean nothing as applications, and a numeric value must
+    // arrive as the literal. Answers the unit atom, so a top-level `!(pragma! …)` is a unit-valued
+    // run like the reference's. Registered at all because it was previously an unresolved head:
+    // `!(pragma! type-check auto)` compiled to inert data and set nothing (d5 passed BECAUSE of
+    // that). Impure, so listed in Generator.impureGrounded. See Pragmas for what is acted on.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = RuntimeNames.PRAGMAS,
+                name = "pragma!",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;" +
+                    "Lnet/singularity/jetta/compiler/frontend/ir/Atom;)" +
+                    "Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0, 1),
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // `nop` — run the argument, discard its value, yield `()`. ANY param so the argument is
     // REDUCED (the effect happens); the unit result is what makes `!(nop (change-state! …))` a
     // unit-valued top-level run in the hyperon test scripts.

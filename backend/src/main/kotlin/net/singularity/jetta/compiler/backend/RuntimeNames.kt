@@ -8,5 +8,6 @@ internal object RuntimeNames {
     const val IO = "net/singularity/jetta/runtime/IO"
     const val ASSERTIONS = "net/singularity/jetta/runtime/Assertions"
     const val ERRORS = "net/singularity/jetta/runtime/Errors"
+    const val PRAGMAS = "net/singularity/jetta/runtime/Pragmas"
     const val MEMO = "net/singularity/jetta/runtime/JettaMemo"
 }

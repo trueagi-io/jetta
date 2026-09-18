@@ -2,6 +2,7 @@ package net.singularity.jetta.runtime
 
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 
 /**
@@ -25,6 +26,9 @@ object Errors {
 
     /** Head symbol of an error term — hyperon's `ERROR_SYMBOL`. */
     const val ERROR = "Error"
+
+    /** Detail symbol of a recursion-bound error — hyperon's `STACK_OVERFLOW_SYMBOL`. */
+    const val STACK_OVERFLOW = "StackOverflow"
 
     /**
      * Whether [value] is an error term: an expression whose head is the symbol `Error`.
@@ -51,6 +55,35 @@ object Errors {
         is BoundAtom -> firstError(value.atom)
         is List<*> -> value.firstNotNullOfOrNull { firstError(it) }
         else -> if (isError(value)) value else null
+    }
+
+    /**
+     * What a top-level `!`-run throws when it runs out of stack — the answer generated
+     * `__main_<k>` gives from its `StackOverflowError` handler.
+     *
+     * With no `max-stack-depth` asked for, the original error is handed back unchanged: the
+     * reference has no bound either unless a program sets one, and a `StackOverflowError` with its
+     * own stack trace is the more useful report of a runaway recursion we did not promise to
+     * bound. With a bound asked for, the run answers the reference's own term,
+     * `(Error <run> StackOverflow)`, which then ENDS the program the way any top-level error does.
+     *
+     * ►► The bound's UNIT diverges, deliberately. The reference counts MINIMAL-MeTTa
+     * instructions on its own heap-allocated stack (`interpreter.rs`, and its comment lists three
+     * further imprecisions: the check fires only at the next MeTTa call, and `case`/`collapse`
+     * restart the counter). Measured from its own test, `max-stack-depth 200` allows about SIX
+     * levels of `(fac $n)` — roughly 33 instructions per call. Compiled code has no such
+     * granularity: one MeTTa call is one JVM frame. So `max-stack-depth N` here bounds N MeTTa
+     * CALLS, enforced by the thread's stack (see `DeepStack`), and honouring N exactly would mean
+     * a counter in every function's prologue — the per-call cost this compiler learned not to pay.
+     *
+     * The term is the run as the compiler rendered it, carried as a `Grounded` string: the
+     * reference puts the inner `(metta …)` frame's atom there, which a compiled program does not
+     * have, and its own test binds that position to a variable and ignores it.
+     */
+    @JvmStatic
+    fun stackOverflow(error: StackOverflowError, run: String): Throwable {
+        if (Pragmas.maxStackDepth() == 0) return error
+        return MettaError(Expression(Symbol(ERROR), Grounded(run), Symbol(STACK_OVERFLOW)))
     }
 
     /**

@@ -57,16 +57,75 @@ open class FunctionGenerator(
     // self-recursion, no match/destructuring). See [usesMatcher] for the criterion.
     private val usesMatcher: Boolean = computeUsesMatcher()
 
+    /**
+     * The source term of a top-level `!`-run, or `null` for every other function: only
+     * `__main_<k>` — one generated per `!`-form, see `Context.normalizeMainForCodegen` — is a run,
+     * and its body IS the run's term.
+     */
+    private fun topLevelRunTerm(): String? {
+        val name = (function as? FunctionDefinition)?.name ?: return null
+        // "__main_" = FunctionRewriter.MAIN + "_", spelled out as the RUN_SEQ branch above does.
+        if (!name.startsWith("__main_")) return null
+        if (name.removePrefix("__main_").toIntOrNull() == null) return null
+        return renderRunTerm(function.body)
+    }
+
+    /**
+     * The term as a program would write it. Not `Atom.toString()`: an [Expression] appends its
+     * inferred type, so the run `(println! (down 5))` renders as
+     * `(println! (down 5):Int):Atom` — IR detail in a message meant to name the run that
+     * overflowed.
+     */
+    private fun renderRunTerm(atom: Atom): String = when (atom) {
+        is Expression -> atom.atoms.joinToString(" ", "(", ")") { renderRunTerm(it) }
+        else -> atom.toString()
+    }
+
     fun generate() {
         emitLineNumber(function)
 
+        val runTerm = topLevelRunTerm()
+        if (runTerm == null) {
+            generateBody()
+            mv.visitMaxs(maxStack, maxLocals)
+            return
+        }
+
+        // A top-level run that exhausts the stack answers the reference's `(Error <run>
+        // StackOverflow)` when the program asked for a `max-stack-depth`, instead of crashing;
+        // `Errors.stackOverflow` hands the original error back when it did not, so a program
+        // that never asked keeps today's report. Registered BEFORE the body's own catch-all
+        // `Matcher` finally (ASM writes the table in call order), so a StackOverflowError reaches
+        // this handler first. Zero instructions on the happy path — an exception-table entry —
+        // and by the time the handler runs the stack is unwound to this one frame, which is what
+        // makes it safe to allocate the term here at all.
+        val tryStart = Label()
+        val tryEnd = Label()
+        val handler = Label()
+        mv.visitTryCatchBlock(tryStart, tryEnd, handler, "java/lang/StackOverflowError")
+        mv.visitLabel(tryStart)
+        generateBody()
+        mv.visitLabel(tryEnd)
+        mv.visitLabel(handler)
+        mv.visitLdcInsn(runTerm)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.ERRORS,
+            "stackOverflow",
+            "(Ljava/lang/StackOverflowError;Ljava/lang/String;)Ljava/lang/Throwable;",
+            false,
+        )
+        mv.visitInsn(Opcodes.ATHROW)
+        mv.visitMaxs(maxStack, maxLocals)
+    }
+
+    private fun generateBody() {
         if (!usesMatcher) {
             // No binding-stack interaction: emit the body directly, no push/pop, no
             // exception-safe finally (there is no frame to unwind). generateReturn also
             // skips its pop when usesMatcher is false.
             maybeEmitTypeCheckPrologue(mv)
             generateAtom(mv, function.body, null, true)
-            mv.visitMaxs(maxStack, maxLocals)
             return
         }
 
@@ -93,8 +152,6 @@ open class FunctionGenerator(
         generatePop(mv)
         mv.visitVarInsn(Opcodes.ALOAD, exVar)
         mv.visitInsn(Opcodes.ATHROW)
-
-        mv.visitMaxs(maxStack, maxLocals)
     }
 
     /**
