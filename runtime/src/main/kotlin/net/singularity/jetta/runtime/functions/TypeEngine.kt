@@ -144,6 +144,24 @@ object TypeEngine {
         return go(t)
     }
 
+    private fun carriesVariable(a: Atom): Boolean = when (a) {
+        is Variable -> true
+        is Expression -> a.atoms.any { carriesVariable(it) }
+        else -> false
+    }
+
+    /**
+     * A declared type, with the answer to "does it need freshening at all?" decided once, when the
+     * index was built. A GROUND type — `(-> Atom Atom Atom)`, `Nat`, `(List Nat)` — has no variable
+     * to rename, yet [instantiate] rebuilt it node by node on every fetch, and inference fetches
+     * the head's type once per call and each leaf's once per inference. It is handed back as it
+     * sits in the space: `unify` only reads a type term and `applySubst` builds anew, so nobody
+     * mutates the shared one.
+     */
+    private class Decl(val type: Atom, val ground: Boolean)
+
+    private fun Decl.fetch(): Atom = if (ground) type else instantiate(type)
+
     // --- arrow helpers --------------------------------------------------------------------
 
     private fun arrow(vararg ts: Atom): Atom = Expression(atoms = listOf(Special(Predefined.ARROW)) + ts.toList())
@@ -186,11 +204,6 @@ object TypeEngine {
 
     private fun stateMonad(t: Atom): Atom = Expression(atoms = listOf(STATE_MONAD, t))
 
-    /** `(: subject T)` — a type fact declaring the type of [subject]. */
-    private fun isTypeFact(a: Atom, subject: Atom): Boolean =
-        a is Expression && a.atoms.size >= 3 &&
-            nameOf(a.atoms[0]) == Predefined.TYPE && a.atoms[1] == subject
-
     /**
      * The type of a leaf name: a built-in operator arrow, else its `:`-declared type
      * (fresh-instantiated), else `%Undefined%` (gradual typing — an undeclared symbol is not an
@@ -202,46 +215,72 @@ object TypeEngine {
     }
 
     /**
-     * The type a `:` fact declares for [subject] verbatim, fresh-instantiated, or null when none
-     * does.
+     * The type a `:` fact declares for [subject] verbatim — fresh-instantiated when it carries
+     * variables, as it sits in the space when it does not — or null when no fact declares one.
      */
-    private fun declaredType(subject: Atom, atoms: List<Atom>): Atom? {
-        val decl = atoms.firstOrNull { isTypeFact(it, subject) } as? Expression
-        return decl?.atoms?.getOrNull(2)?.let { instantiate(it) }
-    }
+    private fun declaredType(subject: Atom, atoms: List<Atom>): Atom? =
+        declarations(atoms).leaf[subject]?.fetch()
 
     /**
      * A subject need not be a leaf: `(: (A B) PairAB)` types a whole expression, which is what
      * gives `(new-state (A B))` the type `(StateMonad PairAB)` — read as an application, `(A B)`
      * has no arrow-typed head and is simply ill-typed.
-     *
-     * Looking that up must not cost a scan of the space per inference: type checking runs on
-     * every call of a `:`-declared function, and most of its arguments are data whose head has no
-     * arrow — precisely the path that reaches here. So the compound declarations are collected
-     * once into a map, cached against the visible atom COUNT: the set of `:` facts can only
-     * change when the space does, and the count moves with it (a remove paired with an add of a
-     * new compound declaration in one step is the one shape this would miss).
      */
-    private fun compoundDeclarations(atoms: List<Atom>): Map<Atom, Atom> {
-        if (compoundDeclKey != atoms.size) {
-            val m = HashMap<Atom, Atom>()
-            for (a in atoms) {
-                if (a !is Expression || a.atoms.size < 3) continue
-                if (nameOf(a.atoms[0]) != Predefined.TYPE) continue
-                val subject = a.atoms[1]
-                if (subject is Expression) m.putIfAbsent(subject, a.atoms[2])
-            }
-            compoundDecls = m
-            compoundDeclKey = atoms.size
+    private fun compoundType(subject: Atom, atoms: List<Atom>): Atom? =
+        declarations(atoms).compound[subject]?.fetch()
+
+    private class Declarations(
+        val size: Int,
+        val first: Atom?,
+        val last: Atom?,
+        val leaf: Map<Atom, Decl>,
+        val compound: Map<Atom, Decl>,
+    )
+
+    /**
+     * Every `:` fact, indexed by its subject — leaf subjects (`(: Z Nat)`) apart from compound ones
+     * (`(: (A B) PairAB)`), because inference consults them at different points.
+     *
+     * Neither lookup may cost a scan of the space. Type checking runs on every call of a
+     * `:`-declared function and on every leaf it infers, and most of those leaves are data whose
+     * head is declared NOWHERE — the shape that used to scan all the way to the end and find
+     * nothing, three times per `deriv` rewrite. That is what made a meaningful check grow with the
+     * space, and what let the auto-imported library's 301 atoms stretch it.
+     *
+     * The cache holds ONE index and is keyed by the list's length together with the IDENTITY of its
+     * first and last atom. Length alone is not enough — this object is global and a program's
+     * modules, a REPL's successive spaces and a JIT-eval'd fragment all reach it, and two different
+     * spaces of equal size would then read each other's declarations (measured: seven test failures
+     * the moment the leaf lookup started using the count-keyed cache the compound one had, where
+     * collisions were invisible only because compound declarations are rare). Identity makes the
+     * key exact for every way a space actually changes: `add-atom` appends a NEW object, `remove`
+     * shortens, `import!` appends, and a watermark prefix is a sublist over the same objects.
+     * `putIfAbsent` keeps the FIRST declaration of a subject — what the linear scan it replaces
+     * returned, and what the watermark ordering of the space means.
+     */
+    private fun declarations(atoms: List<Atom>): Declarations {
+        val cached = decls
+        if (cached.size == atoms.size &&
+            cached.first === atoms.firstOrNull() &&
+            cached.last === atoms.lastOrNull()
+        ) return cached
+
+        val leaf = HashMap<Atom, Decl>()
+        val compound = HashMap<Atom, Decl>()
+        for (a in atoms) {
+            if (a !is Expression || a.atoms.size < 3) continue
+            if (nameOf(a.atoms[0]) != Predefined.TYPE) continue
+            val subject = a.atoms[1]
+            val declared = a.atoms[2]
+            (if (subject is Expression) compound else leaf)
+                .putIfAbsent(subject, Decl(declared, !carriesVariable(declared)))
         }
-        return compoundDecls
+        return Declarations(atoms.size, atoms.firstOrNull(), atoms.lastOrNull(), leaf, compound)
+            .also { decls = it }
     }
 
     @Volatile
-    private var compoundDeclKey: Int = -1
-
-    @Volatile
-    private var compoundDecls: Map<Atom, Atom> = emptyMap()
+    private var decls: Declarations = Declarations(-1, null, null, emptyMap(), emptyMap())
 
     // --- inference ------------------------------------------------------------------------
 
@@ -267,9 +306,9 @@ object TypeEngine {
             is Symbol, is Special -> typeOfSymbol(a, atoms)
             // Reading the expression as an application first; only a form that is not a
             // well-typed application — `(A B)`, a bare data pair — asks whether some `:` fact
-            // types it verbatim (see [compoundDeclarations]).
+            // types it verbatim (see [compoundType]).
             is Expression -> inferApp(a, atoms)
-                ?: compoundDeclarations(atoms)[a]?.let { instantiate(it) }
+                ?: compoundType(a, atoms)
             else -> UNDEF
         }
     }
@@ -277,7 +316,9 @@ object TypeEngine {
     private fun inferApp(a: Expression, atoms: List<Atom>): Atom? {
         if (a.atoms.isEmpty()) return UNDEF
         val head = a.atoms[0]
-        val args = a.atoms.drop(1)
+        // A view, not a copy: `inferApp` runs on every argument of every checked call, and the
+        // list it used to allocate here was pure garbage — it is only read.
+        val args = a.atoms.subList(1, a.atoms.size)
 
         // `=`-equality typing (d4): `(= x y)` is well-typed (type `%Undefined%`) iff both sides
         // have a type and those types unify; otherwise ill-typed. Equalities are of Atom type in
@@ -332,7 +373,7 @@ object TypeEngine {
         val a = if (atom is BoundAtom) atom.atom else atom
         if (a !is Expression || a.atoms.isEmpty()) return null
         val head = a.atoms[0]
-        val args = a.atoms.drop(1)
+        val args = a.atoms.subList(1, a.atoms.size)
         val headType = inferType(head, atoms) ?: return null
         if (!isArrow(headType)) return null
         val params = arrowParams(headType)

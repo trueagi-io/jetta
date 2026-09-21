@@ -9,7 +9,9 @@ import net.singularity.jetta.compiler.frontend.ir.Variable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -264,5 +266,55 @@ class TypeEngineTest {
         // symbol match any term.
         assertFalse(TypeEngine.unify(sym("Atom"), sym("Z"), HashMap()))
         assertTrue(TypeEngine.unify(sym("Atom"), sym("Atom"), HashMap()))
+    }
+
+    // --- the `:`-fact index (it is a cache, so these are about staleness) ------------------
+
+    /**
+     * The index is global and keyed by the atom list, so two spaces must not read each other's
+     * declarations. Keying it by the list's LENGTH alone did exactly that — a program's modules, a
+     * REPL's successive spaces and a JIT-eval'd fragment all reach this one object.
+     */
+    @Test
+    fun `two atom lists of the same size keep their own declarations`() {
+        val nat = listOf(typeFact(sym("X"), sym("Nat")))
+        val bool = listOf(typeFact(sym("X"), sym("Bool")))
+        repeat(3) {
+            assertEquals(sym("Nat"), TypeEngine.inferType(sym("X"), nat))
+            assertEquals(sym("Bool"), TypeEngine.inferType(sym("X"), bool))
+        }
+    }
+
+    /** An atom appended to the space is visible to the next inference, not hidden by the cache. */
+    @Test
+    fun `a declaration added to the space is picked up`() {
+        val before = listOf(typeFact(sym("X"), sym("Nat")))
+        val after = before + typeFact(sym("Y"), sym("Bool"))
+        assertEquals(sym("%Undefined%"), TypeEngine.inferType(sym("Y"), before))
+        assertEquals(sym("Bool"), TypeEngine.inferType(sym("Y"), after))
+    }
+
+    /**
+     * A GROUND declared type is handed back as the space holds it — the renaming walk that used to
+     * rebuild it node by node on every fetch was the hottest frame of a type-checked program.
+     * Nobody may mutate a type term for this to be safe.
+     */
+    @Test
+    fun `a ground declared type is not rebuilt per fetch`() {
+        val declared = arrow(sym("Nat"), sym("Nat"))
+        val atoms = listOf(typeFact(sym("S"), declared))
+        assertSame(declared, TypeEngine.inferType(sym("S"), atoms))
+        assertSame(declared, TypeEngine.inferType(sym("S"), atoms))
+    }
+
+    /** …while one carrying variables is still freshened per fetch, so two uses cannot capture. */
+    @Test
+    fun `a declaration with variables is freshened per fetch`() {
+        val atoms = listOf(typeFact(sym("Nil"), expr(sym("List"), v("t"))))
+        val first = TypeEngine.inferType(sym("Nil"), atoms)!!
+        val second = TypeEngine.inferType(sym("Nil"), atoms)!!
+        assertNotEquals(first, second)
+        assertTrue(TypeEngine.unify(first, expr(sym("List"), sym("Nat")), HashMap()))
+        assertTrue(TypeEngine.unify(second, expr(sym("List"), sym("Bool")), HashMap()))
     }
 }
