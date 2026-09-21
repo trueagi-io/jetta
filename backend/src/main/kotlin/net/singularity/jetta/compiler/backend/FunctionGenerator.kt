@@ -1059,12 +1059,24 @@ open class FunctionGenerator(
      *    pays no per-call type-check cost;
      *  - a primitive/List return cannot hold an Error atom in its return slot, so those are skipped
      *    too (their eval-time errors are a later phase — multivalued needs a singleton-List wrap).
+     *
+     * …and skipped again when every parameter is declared LITERALLY as the meta-type `Atom`, because
+     * then the check is a TAUTOLOGY: `TypeEngine.checkApp` `continue`s past a meta-`Atom` parameter
+     * without even inferring the argument's type (an `Atom` parameter takes the TERM, so nothing
+     * about the argument can make the call ill-typed), and its other exits answer `null` too. Note
+     * the two conditions read alike but are not: `param.type == GroundedType.ATOM` is the JVM
+     * REPRESENTATION, which `asType()` erases every unknown type to — `(: deriv (-> Atom Atom Atom))`
+     * and `(: Add (-> Nat Nat Nat))` are both all-`ATOM`-represented, and only the first is the
+     * meta-type. [FunctionDefinition.declaredAtomParams] carries the surface spelling for exactly
+     * this reason. Measured on `bench/programs/diff.metta`, whose `deriv` is declared that way: the
+     * prologue was 35% of the program's run time, proving nothing ~7·10⁶ times.
      */
     private fun maybeEmitTypeCheckPrologue(mv: LocalVariablesSorter) {
         val fn = function as? FunctionDefinition ?: return
         if (fn.name !in declaredTypeNames) return
         if (fn.isMultivalued() || fn.returnType != GroundedType.ATOM) return
         if (!fn.params.all { it.type == GroundedType.ATOM }) return
+        if (fn.params.indices.all { it in fn.declaredAtomParams }) return
 
         mv.visitLdcInsn(fn.name)
         emitParamArgsArray(mv)
