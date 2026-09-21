@@ -7,17 +7,19 @@ interface Space {
     fun add(expression: Expression)
 
     /**
-     * Add [expression] as an atom an `import!` COPIED in, rather than one this space owns.
+     * Delegate this space's queries into [space] as well — what `import!` does, instead of
+     * copying the module in.
      *
-     * The distinction exists because the reference interpreter does not copy at all: it keeps an
-     * imported module in its own space and delegates queries into it, so a program's `get-atoms`
-     * answers the program's atoms and nothing else — on a one-fact program with the standard
-     * library loaded, `(get-atoms &self)` is that one fact. Our `import!` copies, which is why
-     * the two have to be told apart here. Every other query keeps reading the whole space, which
-     * is the reference's behaviour too: a reflective `match &self` over the library's `:`
-     * declarations does find them there.
+     * This is the reference interpreter's model: an imported module stays in a space of its own
+     * and the importing space reads through to it. So the library's atoms answer a reflective
+     * `match &self` and type `:` lookups, while [getOwnAtoms] — the `get-atoms` builtin — still
+     * answers only what the program itself declared, and `remove-atom` cannot delete a fact the
+     * program does not own.
+     *
+     * Delegation is transitive (a module that imports another is read through as well),
+     * deduplicated by identity (the diamond A→B,C→D reads D once) and cycle-safe.
      */
-    fun addImported(expression: Expression)
+    fun addDelegate(space: Space)
 
     /**
      * Remove the first stored atom structurally equal to [expression]. Returns whether one
@@ -25,12 +27,12 @@ interface Space {
      */
     fun remove(expression: Expression): Boolean
 
-    /** Snapshot of every atom currently in the space, imported ones included. */
+    /** Snapshot of every atom this space can see — its own, then those it delegates to. */
     fun getAtoms(): List<Expression>
 
     /**
-     * Snapshot of the atoms this space OWNS — [getAtoms] without what an `import!` copied in.
-     * Backs the `get-atoms` built-in; see [addImported].
+     * Snapshot of the atoms this space OWNS — [getAtoms] without what it reads through an
+     * `import!`. Backs the `get-atoms` built-in; see [addDelegate].
      */
     fun getOwnAtoms(): List<Expression>
 

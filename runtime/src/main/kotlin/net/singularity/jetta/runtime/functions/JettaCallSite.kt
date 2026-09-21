@@ -211,10 +211,28 @@ object JettaCallSite {
      * [BoundAtom] carrying its rule's bindings (already substituted into the body).
      */
     private fun allRuleBodies(spaceName: String, expr: Expression): List<Atom> {
+        if (isRuntimeOwnedHead(expr)) return emptyList()
         val r = Variable(REDUCE_VAR)
         val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
         return JettaProgram.match(spaceName, pattern, r)
     }
+
+    /**
+     * Is [expr] headed by a form the RUNTIME implements ([executeSpecialForm])? Then a space `=`
+     * rule for it is ignored, and the runtime's own implementation answers.
+     *
+     * This is the reflective half of the rule `Context.markDefinitionsShadowedByRuntime` already
+     * applies at compile time — a definition shadowed by a builtin of the same name is not
+     * compiled — and it started to matter when the standard library stopped being copied and
+     * became visible through delegation at every watermark. hyperon's library defines
+     * `(= (let $pattern $atom $template) (unify $atom $pattern $template Empty))`; taking that
+     * rule turned `((lambda $x (+ $x 1)) 2)` into an inert `(unify 2 $x (+ $x 1) Empty)` instead
+     * of 3, because the rewrite lands on a minimal-MeTTa operation our reflective reducer does
+     * not execute — while `let` itself is one it does. Before delegation this was luck: the
+     * library's copy sat past the run's watermark and was invisible.
+     */
+    private fun isRuntimeOwnedHead(expr: Expression): Boolean =
+        opHeadName(expr.atoms.firstOrNull()) in RUNTIME_OWNED_HEADS
 
     /**
      * D3 increment (a) — RELATIONAL reduction of a compiled function called with a FREE-variable
@@ -447,6 +465,7 @@ object JettaCallSite {
      * `JettaProgram.matchEval` uses), then the raw atom is unwrapped.
      */
     private fun reduceOnce(spaceName: String, expr: Expression): Atom? {
+        if (isRuntimeOwnedHead(expr)) return null
         val r = Variable(REDUCE_VAR)
         val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
         val results = JettaProgram.match(spaceName, pattern, r)
@@ -662,6 +681,9 @@ object JettaCallSite {
     private const val SPECIAL_IF = "if"
     private const val SPECIAL_EQ = "=="
     private const val SPECIAL_LET = "let"
+
+    /** The heads [executeSpecialForm] answers itself — see [isRuntimeOwnedHead]. */
+    private val RUNTIME_OWNED_HEADS = setOf(SPECIAL_MATCH, SPECIAL_EMPTY, SPECIAL_IF, SPECIAL_EQ, SPECIAL_LET)
 
     /** hyperon's boolean symbols, produced by the runtime `==` special form. */
     private val TRUE_SYMBOL = Symbol("True")

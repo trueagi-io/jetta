@@ -12,12 +12,15 @@ import net.singularity.jetta.runtime.space.atoms.SAtom
 import net.singularity.jetta.runtime.space.atoms.toAtom
 import net.singularity.jetta.runtime.space.atoms.toSAtom
 
+/** One delegated space and its index for a given pattern — see [SpaceImpl.delegateQueries]. */
+internal class DelegateQuery(val space: SpaceImpl, val indexer: IndexerImpl)
+
 class SpaceImpl : Space {
     private val store = mutableListOf<Expression>()
-    // Provenance, one flag per store position: true = copied in by an `import!`. Parallel to
-    // [store] rather than a set of indices, because `remove` shifts every later position and two
-    // lists removed at the same index cannot drift apart. Only `get-atoms` reads it.
-    private val imported = mutableListOf<Boolean>()
+    // Spaces this one reads THROUGH — what `import!` records instead of copying a module in.
+    // Each keeps its own store, trie and indexers, so a query fans out and every space answers
+    // from its own index; nothing is duplicated and nothing has to be kept in sync.
+    private val delegates = mutableListOf<SpaceImpl>()
     // Keyed by [PatternKey], NOT the pattern Expression: `Variable` has no structural equals
     // (identity only), so a `Map<Expression, _>` would MISS on every pattern containing a
     // variable — e.g. `(Implication $a (Evaluation (mortal p0)))` never matched a
@@ -38,14 +41,13 @@ class SpaceImpl : Space {
      */
     var enablePerCallBindings: Boolean = true
 
-    override fun add(expression: Expression) = add(expression, imported = false)
-
-    override fun addImported(expression: Expression) = add(expression, imported = true)
-
-    private fun add(expression: Expression, imported: Boolean) {
+    override fun add(expression: Expression) {
+        // A plan says which spaces can answer a pattern; adding an atom to a space that is read
+        // through can make it answer one it could not before. Only a delegated space invalidates,
+        // so a program adding to its OWN space (the common `add-atom` loop) costs nothing.
+        if (delegatedTo) delegationEpoch++
         val storeIndex = store.size
         store.add(expression)
-        this.imported.add(imported)
         disc.insert(expression, storeIndex)
         // Keep every already-built index live: fold the new atom into each cached indexer
         // incrementally (O(cached patterns), no store rescan) instead of invalidating. This
@@ -65,8 +67,8 @@ class SpaceImpl : Space {
     override fun remove(expression: Expression): Boolean {
         val idx = store.indexOfFirst { it == expression }
         if (idx < 0) return false
+        if (delegatedTo) delegationEpoch++
         store.removeAt(idx)
-        imported.removeAt(idx)
         // Removal shifts every later store index, so both the structural trie and the
         // packed indexers (whose PackedBindings reference store positions) must be rebuilt
         // against the compacted store. `remove-atom` is rare and off the hot path.
@@ -76,10 +78,61 @@ class SpaceImpl : Space {
         return true
     }
 
-    override fun getAtoms(): List<Expression> = store.toList()
+    override fun getAtoms(): List<Expression> {
+        val read = delegateClosure()
+        if (read.isEmpty()) return store.toList()
+        // Own atoms FIRST, then what is read through: `:`-declaration lookup takes the first fact
+        // for a subject, so a program's own declaration keeps overriding its library's — the order
+        // copying produced too, since a module's own facts load at init and an `import!` ran after.
+        val out = ArrayList<Expression>(store.size + read.sumOf { it.store.size })
+        out.addAll(store)
+        read.forEach { out.addAll(it.store) }
+        return out
+    }
 
-    override fun getOwnAtoms(): List<Expression> =
-        if (imported.none { it }) store.toList() else store.filterIndexed { i, _ -> !imported[i] }
+    override fun getOwnAtoms(): List<Expression> = store.toList()
+
+    override fun addDelegate(space: Space) {
+        require(space is SpaceImpl) { "Delegation is between SpaceImpl instances" }
+        if (space === this || delegates.any { it === space }) return
+        delegates.add(space)
+        space.delegatedTo = true
+        // Any space delegating (transitively) to this one now reads more, so every cached
+        // closure in the JVM is stale — one counter is simpler than tracking the back-edges,
+        // and delegation happens once per import, never in a loop.
+        delegationEpoch++
+    }
+
+    /**
+     * Every space reachable through [delegates], transitively, without this one.
+     *
+     * Identity-deduplicated, so the diamond A→B,C→D reads D once, and cycle-safe, so A→B→A
+     * terminates. Cached against [delegationEpoch]; the common case — a module, or a program
+     * before its first `import!` — has no delegates at all and never allocates.
+     */
+    private fun delegateClosure(): List<SpaceImpl> {
+        if (delegates.isEmpty()) return emptyList()
+        if (closureEpoch == delegationEpoch) return closure
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<SpaceImpl, Boolean>())
+        seen.add(this)
+        val out = ArrayList<SpaceImpl>()
+        val queue = ArrayDeque(delegates)
+        while (queue.isNotEmpty()) {
+            val next = queue.removeFirst()
+            if (!seen.add(next)) continue
+            out.add(next)
+            queue.addAll(next.delegates)
+        }
+        closure = out
+        closureEpoch = delegationEpoch
+        return out
+    }
+
+    private var closureEpoch: Long = -1
+    private var closure: List<SpaceImpl> = emptyList()
+
+    /** Is some space reading THROUGH this one? Then a change here invalidates query plans. */
+    private var delegatedTo: Boolean = false
 
     override fun mkIndex(patterns: List<Expression>) {
         patterns.forEach { pattern ->
@@ -94,9 +147,8 @@ class SpaceImpl : Space {
         indexers[PatternKey(indexer.pattern)] = indexer
     }
 
-    override fun contains(id: Int): Boolean {
-        return store.find { it.id == id } != null
-    }
+    override fun contains(id: Int): Boolean =
+        store.any { it.id == id } || delegateClosure().any { d -> d.store.any { it.id == id } }
 
     override fun match(
         src: Expression,
@@ -112,13 +164,49 @@ class SpaceImpl : Space {
             return matchConjunction(src, dst)
         }
 
-        // Get or create indexer for this pattern
-        val indexer = indexers.getOrPut(PatternKey(src)) {
-            IndexerImpl(src).also {
-                it.index(this, src)
-            }
-        }
+        val indexer = indexerFor(src)
+        val own = matchWith(indexer, src, dst, JettaProgram.currentWatermark())
+        if (delegates.isEmpty()) return own
 
+        // An imported module is NOT subject to this program's watermark. The watermark says which
+        // of THIS space's facts are declared above the running `!`-form; a module's facts became
+        // visible when its `import!` executed, which is already a point in that same run order.
+        var out: ArrayList<Atom>? = null
+        for (q in delegateQueries(indexer, src)) {
+            if (q.indexer.isEmptyIndex()) continue
+            val more = q.space.matchWith(q.indexer, src, dst, -1)
+            if (more.isEmpty()) continue
+            if (out == null) out = ArrayList(own)
+            out.addAll(more)
+        }
+        return out ?: own
+    }
+
+    private fun indexerFor(src: Expression): IndexerImpl =
+        indexers.getOrPut(PatternKey(src)) { IndexerImpl(src).also { it.index(this, src) } }
+
+    /**
+     * The delegated spaces' indexes for this pattern, resolved once and cached ON the pattern's
+     * own index ([IndexerImpl.delegateQueries]) — a query that reads through an `import!` must not
+     * pay a second map lookup for the privilege. Rebuilt when [delegationEpoch] moves.
+     */
+    private fun delegateQueries(indexer: IndexerImpl, src: Expression): List<DelegateQuery> {
+        if (indexer.delegateEpoch != delegationEpoch) {
+            // A delegate with no structurally compatible atom is dropped from the plan instead of
+            // being given an index: a search that asks a new pattern every iteration would
+            // otherwise build — and leave behind — an empty index in the library for each one.
+            // The trie walk that decides this is paid once per pattern, not per query, and it
+            // cannot answer "no" wrongly: a space's index is built from exactly these candidates.
+            indexer.delegateQueries = delegateClosure().mapNotNull { d ->
+                if (d.candidateIndices(src).isEmpty()) null else DelegateQuery(d, d.indexerFor(src))
+            }
+            indexer.delegateEpoch = delegationEpoch
+        }
+        return indexer.delegateQueries
+    }
+
+    /** [match] against one space's own index, at the given watermark (-1 = see everything). */
+    private fun matchWith(indexer: IndexerImpl, src: Expression, dst: Atom, wm: Int): List<Atom> {
         // Get packed index
         val packedIndex = indexer.getPackedIndex()
 
@@ -132,7 +220,7 @@ class SpaceImpl : Space {
         // (which looks up `(= (f args) $r)` in the space) observe only rules/facts declared above
         // the run. wm < 0 (the common case, including the hot backchain query, which runs after all
         // facts -> -1) falls through to the UNCHANGED fast paths below — zero cost on the hot path.
-        val wm = JettaProgram.currentWatermark()
+        // Passed in by [match]: a space read through an `import!` is queried with -1.
         if (wm >= 0) {
             val out = ArrayList<Atom>(size)
             for (matchIndex in 0 until size) {
@@ -461,10 +549,25 @@ class SpaceImpl : Space {
         if (isConjunction(pattern)) {
             return joinConjunctionBranches(pattern.atoms.drop(1))
         }
-
-        val indexer = indexers.getOrPut(PatternKey(pattern)) {
-            IndexerImpl(pattern).also { it.index(this, pattern) }
+        val indexer = indexerFor(pattern)
+        val own = matchOneWith(indexer, pattern)
+        if (delegates.isEmpty()) return own
+        // Fan out per SUB-pattern, not per conjunction: the join has to be able to take one
+        // conjunct from the program and the next from its library, which matching each space
+        // whole and concatenating could not do.
+        var out: ArrayList<Map<String, Atom>>? = null
+        for (q in delegateQueries(indexer, pattern)) {
+            if (q.indexer.isEmptyIndex()) continue
+            val more = q.space.matchOneWith(q.indexer, pattern)
+            if (more.isEmpty()) continue
+            if (out == null) out = ArrayList(own)
+            out.addAll(more)
         }
+        return out ?: own
+    }
+
+    /** [matchOneAsBindings] against one space's own index. */
+    private fun matchOneWith(indexer: IndexerImpl, pattern: Expression): List<Map<String, Atom>> {
         val packedIndex = indexer.getPackedIndex()
         val varNames = VariableSchema.fromPattern(pattern).variableNames
 
@@ -553,6 +656,14 @@ class SpaceImpl : Space {
     }
 
     companion object {
+        /**
+         * Bumped by every [addDelegate]; each space's closure cache is keyed on it. Global rather
+         * than per-space because a delegate gained deep in the graph widens what its ancestors
+         * read, and an import is a once-per-module event, never a hot path.
+         */
+        @Volatile
+        private var delegationEpoch: Long = 0
+
         private val instance = SpaceImpl()
 
         @JvmStatic

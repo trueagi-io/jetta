@@ -419,10 +419,16 @@ open class JettaProgram {
         /**
          * `import!` — runtime, order-sensitive module import (hyperon semantics).
          *
-         * `(import! &space M)` copies every atom of module `M`'s space into the space named
-         * `&space`, AT THE POINT OF EXECUTION. Unlike a compile-time merge this respects
-         * program order: `(match &self …)` before an `(import! &self M)` does not see M's
-         * atoms, and after it does — which is exactly what c2_spaces asserts.
+         * `(import! &space M)` makes the space named `&space` read THROUGH module `M`'s space,
+         * AT THE POINT OF EXECUTION — the module keeps its own space and nothing is copied, as in
+         * the reference interpreter. Unlike a compile-time merge this respects program order: a
+         * `(match &self …)` before an `(import! &self M)` does not see M's atoms, and after it
+         * does — which is exactly what c2_spaces asserts — because the delegation is what the
+         * import installs.
+         *
+         * Not copying is what makes `(get-atoms &self)` answer the program's own atoms (f1's
+         * opening assertion), keeps a program's space from growing by the library's three hundred,
+         * and stops `remove-atom` deleting a fact the program does not own.
          *
          * The module's space is loaded at [init] (from the manifest's `loadModules`) under
          * `SpaceId.FromModule(M)`; if it is missing there (e.g. it was reached only through a
@@ -450,10 +456,7 @@ open class JettaProgram {
                 ?: return UNIT_ATOM
             SpaceRegistry.register(SpaceId.FromModule(moduleName), source)
 
-            val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
-            source.getAtoms().forEach { atom ->
-                target.addImported(atom as? Expression ?: Expression(listOf(atom)))
-            }
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).addDelegate(source)
             return UNIT_ATOM
         }
 
