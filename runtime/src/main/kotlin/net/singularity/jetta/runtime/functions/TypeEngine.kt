@@ -246,6 +246,9 @@ object TypeEngine {
         val last: Atom?,
         val leaf: Map<Atom, Decl>,
         val compound: Map<Atom, Decl>,
+        /** EVERY declaration per subject, in space order — only [inferTypes] reads these. */
+        val leafAll: Map<Atom, List<Decl>> = emptyMap(),
+        val compoundAll: Map<Atom, List<Decl>> = emptyMap(),
     )
 
     /**
@@ -278,15 +281,19 @@ object TypeEngine {
 
         val leaf = HashMap<Atom, Decl>()
         val compound = HashMap<Atom, Decl>()
+        val leafAll = HashMap<Atom, MutableList<Decl>>()
+        val compoundAll = HashMap<Atom, MutableList<Decl>>()
         for (a in atoms) {
             if (a !is Expression || a.atoms.size < 3) continue
             if (nameOf(a.atoms[0]) != Predefined.TYPE) continue
             val subject = a.atoms[1]
             val declared = a.atoms[2]
-            (if (subject is Expression) compound else leaf)
-                .putIfAbsent(subject, Decl(declared, !carriesVariable(declared)))
+            val decl = Decl(declared, !carriesVariable(declared))
+            (if (subject is Expression) compound else leaf).putIfAbsent(subject, decl)
+            (if (subject is Expression) compoundAll else leafAll)
+                .getOrPut(subject) { mutableListOf() }.add(decl)
         }
-        return Declarations(atoms.size, atoms.firstOrNull(), atoms.lastOrNull(), leaf, compound)
+        return Declarations(atoms.size, atoms.firstOrNull(), atoms.lastOrNull(), leaf, compound, leafAll, compoundAll)
             .also { decls = it }
     }
 
@@ -356,6 +363,67 @@ object TypeEngine {
             if (!unify(params[i], at, s)) return null
         }
         return applySubst(ret, s)
+    }
+
+    /**
+     * EVERY type of [atom], as `get-type` answers it — a bag, in the reference's order.
+     *
+     * [inferType] commits to a subject's FIRST `:` declaration, which is what the type check
+     * wants and what keeps it cheap; the reference's `get-type` is non-deterministic instead. A
+     * symbol declared twice, `(: blacksmith (-> Metal Sword))` and `(: blacksmith (-> Metal
+     * Paperclip))`, has both types; an application gets one type per way its head's and
+     * arguments' types unify; and an expression whose head is not a function is a TUPLE, typed by
+     * the tuple of its elements' types — `(iron blacksmith)` is `(Metal (-> Metal Sword))` and
+     * `(Metal (-> Metal Paperclip))` (corpus `recursive_types`). An empty bag is ill-typed.
+     */
+    fun inferTypes(atom: Atom, atoms: List<Atom>): List<Atom> {
+        val a = if (atom is BoundAtom) atom.atom else atom
+        return when (a) {
+            is Grounded<*>, is Variable -> listOfNotNull(inferType(a, atoms))
+            is Symbol, is Special -> {
+                nameOf(a)?.let { builtinType(it) }?.let { return listOf(it) }
+                declarations(atoms).leafAll[a]?.map { it.fetch() } ?: listOf(UNDEF)
+            }
+            is Expression -> (inferAppTypes(a, atoms) +
+                declarations(atoms).compoundAll[a].orEmpty().map { it.fetch() }).distinct()
+            else -> listOf(UNDEF)
+        }
+    }
+
+    private fun inferAppTypes(a: Expression, atoms: List<Atom>): List<Atom> {
+        if (a.atoms.isEmpty()) return listOf(UNDEF)
+        val head = a.atoms[0]
+        val args = a.atoms.subList(1, a.atoms.size)
+        if (nameOf(head) == Predefined.PATTERN && args.size == 2) return listOfNotNull(inferApp(a, atoms))
+        val headTypes = inferTypes(head, atoms)
+        val functionTypes = headTypes.filter { isArrow(it) }
+        if (functionTypes.isEmpty()) {
+            if (args.isEmpty()) return headTypes
+            // Not an application: a tuple, typed element by element — but only when EVERY element
+            // has a known type. One `%Undefined%` element makes the whole tuple `%Undefined%`, as
+            // the reference answers it: `(iron gold)` is `(Metal Metal)`, `(iron foo)` and
+            // `(Cons 1 Nil)` are `%Undefined%` (measured against hyperon's metta-repl).
+            return a.atoms.fold(listOf(emptyList<Atom>())) { acc, element ->
+                val options = inferTypes(element, atoms)
+                acc.flatMap { prefix -> options.map { prefix + it } }
+            }.map { types -> if (types.any { isUndef(it) }) UNDEF else Expression(atoms = types) }
+                .distinct()
+        }
+        val out = mutableListOf<Atom>()
+        for (ft in functionTypes) {
+            val params = arrowParams(ft)
+            if (params.size != args.size) continue
+            fun go(i: Int, s: Map<String, Atom>) {
+                if (i == args.size) { out.add(applySubst(arrowReturn(ft), s)); return }
+                if (isMetaAtom(params[i])) { go(i + 1, s); return }
+                for (at in inferTypes(args[i], atoms)) {
+                    val next = HashMap(s)
+                    if (unify(params[i], at, next)) go(i + 1, next)
+                }
+            }
+            go(0, HashMap())
+        }
+        return out
     }
 
     // --- eval-time type checking (D2) ------------------------------------------------------

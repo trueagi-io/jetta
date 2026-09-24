@@ -41,6 +41,29 @@ class SpaceImpl : Space {
      */
     var enablePerCallBindings: Boolean = true
 
+    /**
+     * How many of [store]'s atoms are the program's STATIC facts — the ones the ordered-top-level
+     * watermark ranks — or -1 until the first watermark is set. Everything past it was added at
+     * run time (`add-atom`), and is visible from the moment it is added, whatever the watermark:
+     * the watermark hides facts written BELOW the running `!`-form, not facts a run has created.
+     * Before this, an atom added by a run that precedes some static fact sat at a store index at
+     * or past the watermark and was hidden from the very next `match`.
+     */
+    private var staticCount = -1
+
+    /** Record the static prefix; idempotent. Called by `set-watermark!`, before any run it guards. */
+    fun sealStaticPrefix() {
+        if (staticCount < 0) staticCount = store.size
+    }
+
+    /** Whether the atom at [storeIndex] is visible to a run at watermark [wm] (-1 = everything). */
+    fun isVisible(storeIndex: Int, wm: Int): Boolean =
+        wm < 0 || storeIndex < wm || (staticCount in 0..storeIndex)
+
+    /** This space's own atoms that a run at watermark [wm] may see, in store order. */
+    fun getOwnVisibleAtoms(wm: Int): List<Expression> =
+        if (wm < 0) store.toList() else store.filterIndexed { i, _ -> isVisible(i, wm) }
+
     override fun add(expression: Expression) {
         // A plan says which spaces can answer a pattern; adding an atom to a space that is read
         // through can make it answer one it could not before. Only a delegated space invalidates,
@@ -69,6 +92,7 @@ class SpaceImpl : Space {
         if (idx < 0) return false
         if (delegatedTo) delegationEpoch++
         store.removeAt(idx)
+        if (idx < staticCount) staticCount--
         // Removal shifts every later store index, so both the structural trie and the
         // packed indexers (whose PackedBindings reference store positions) must be rebuilt
         // against the compacted store. `remove-atom` is rare and off the hot path.
@@ -230,7 +254,7 @@ class SpaceImpl : Space {
                 // a store variable) carries no storeIndex and cannot be filtered here — a known
                 // gap, but never a reduction `(= …)` lookup (which always binds a result var).
                 val storeIndex = m.storeIndexOrNull()
-                if (storeIndex >= 0 && storeIndex >= wm) continue
+                if (storeIndex >= 0 && !isVisible(storeIndex, wm)) continue
                 val bindings = packedIndex.resolveToAtoms(matchIndex, this)
                 val result = substituteVariablesA(dst, bindings)
                 val spaceVarSubs = packedIndex.getSpaceVarSubstitutions(matchIndex)

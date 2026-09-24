@@ -624,6 +624,23 @@ class CanonicalFormRewriter(
                         if (collectNonDeterministicAtomsRecursively(f.body, f, f.body.id)) {
                             isMultivalued = true
                         }
+                        // A `match` as the VALUE of such an application — `(let $v (match …) B)` —
+                        // binds `$v` once per result, as in the reference; everywhere else the
+                        // lift leaves `match` to its own lowerings. Registered at this
+                        // application's scope, so the application runs inside the lift.
+                        if (!barrierArg) atom.atoms.drop(1).forEach { arg ->
+                            if (arg is Expression && (arg.atoms.firstOrNull() as? Symbol)?.name == "match") {
+                                val scopeId = reducedScopeId ?: getScopeId(arg)
+                                if (scopeId != arg.id) {
+                                    multivaluedCalls[arg.id] = variableCount
+                                    multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
+                                        .add(variableCount to arg)
+                                    variableCount++
+                                    multivaluedAtoms.add(arg.id)
+                                    isMultivalued = true
+                                }
+                            }
+                        }
                     }
 
                     else -> {}

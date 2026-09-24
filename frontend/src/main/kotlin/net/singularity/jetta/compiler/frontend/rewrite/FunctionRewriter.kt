@@ -619,6 +619,7 @@ class FunctionRewriter(
     private val UNIFY_KEYWORD = "unify"
     private val CASE_KEYWORD = "case"
     private val MATCH_KEYWORD = "match"
+    private val LET_VALUE_VARIABLE = "__letValue"
     private val CASE_VARIABLE = "__case"
     private val CASE_BAG_VARIABLE = "__caseBag"
     private val UNIFY_MATCH_KEYWORD = "unifyMatch"
@@ -1254,6 +1255,18 @@ class FunctionRewriter(
         return atom.atoms.any { containsBranchingForm(it) }
     }
 
+    /**
+     * A `let` left-hand side that is a STRUCTURE to unify, not a variable to bind: any expression
+     * but the `(quote $v)` form, which `LetRewriter` lowers onto its quote peeler.
+     */
+    private fun isStructuralPattern(lhs: Atom): Boolean {
+        if (lhs !is Expression) return false
+        val head = lhs.atoms.firstOrNull()
+        val isQuote = head == PredefinedAtoms.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE ||
+            (head as? Special)?.value == Predefined.QUOTE
+        return !(isQuote && lhs.atoms.size == 2 && lhs.atoms[1] is Variable)
+    }
+
     /** Variable names in [atom], in document order. */
     private fun varNamesIn(atom: Atom): List<String> {
         val out = mutableListOf<String>()
@@ -1283,6 +1296,35 @@ class FunctionRewriter(
             desugarCase(atom)?.let { return lowerUnifyForms(it, scope) }
         }
         if (name == IF_EQUAL_KEYWORD && atom.atoms.size == 5) return lowerIfEqual(atom, scope)
+        if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4 && isStructuralPattern(atom.atoms[1])) {
+            // A pattern-`let` IS a `unify`, as the reference defines it:
+            // `(= (let $p $a $t) (unify $a $p $t Empty))`. Lowered through `unify` it binds the
+            // variables of BOTH sides — `(let ($a $b 3) (1 2 $c) …)` gives `$c` = 3 (corpus
+            // `letlet`) — which the `letMatch` route could not, because only this pass knows which
+            // names are in scope. A failed match yields nothing.
+            //
+            // The VALUE is evaluated first, through an ordinary variable `let`: the reference's
+            // `let` takes it as `%Undefined%` (reduced) and only then hands it to `unify`, whose
+            // `Atom` parameters are not reduced at all.
+            val position = atom.position
+            val value = Variable(LET_VALUE_VARIABLE, position = position)
+            return lowerUnifyForms(
+                Expression(
+                    listOf(
+                        Symbol(LetRewriter.LET_KEYWORD, position = position), value, atom.atoms[2],
+                        Expression(
+                            listOf(
+                                Symbol(UNIFY_KEYWORD, position = position), value, atom.atoms[1], atom.atoms[3],
+                                Expression(listOf(Symbol("empty", position = position)), position = position),
+                            ),
+                            position = position,
+                        ),
+                    ),
+                    position = position,
+                ),
+                scope,
+            )
+        }
         if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {
             return atom.copy(
                 atoms = listOf(
@@ -1323,20 +1365,18 @@ class FunctionRewriter(
         }
         if (name == LetRewriter.LETSTAR_KEYWORD && atom.atoms.size == 3) {
             val bindings = atom.atoms[1] as? Expression ?: return atom
-            var acc = scope
-            val rewrittenBindings = bindings.atoms.map { pair ->
-                if (pair !is Expression || pair.atoms.size != 2) return@map pair
-                val value = lowerUnifyForms(pair.atoms[1], acc)
-                acc = acc + varNamesIn(pair.atoms[0])
-                pair.copy(atoms = listOf(pair.atoms[0], value))
-            }
-            return atom.copy(
-                atoms = listOf(
-                    head,
-                    bindings.copy(atoms = rewrittenBindings),
-                    lowerUnifyForms(atom.atoms[2], acc),
+            // `let*` is nested `let`s — desugared HERE, so each pair takes the `let` branch above
+            // with the scope its predecessors built, and a STRUCTURAL pair lowers through
+            // `unify` like any pattern-`let` (corpus `letlet`: `(let* ((($f1 $c1 3) (1 2 $d1))) …)`).
+            if (bindings.atoms.any { it !is Expression || it.atoms.size != 2 }) return atom
+            val nested = bindings.atoms.foldRight(atom.atoms[2]) { pair, body ->
+                pair as Expression
+                Expression(
+                    listOf(Symbol(LetRewriter.LET_KEYWORD, position = atom.position), pair.atoms[0], pair.atoms[1], body),
+                    position = atom.position,
                 )
-            )
+            }
+            return lowerUnifyForms(nested, scope)
         }
         if (head is Special && head.value == Predefined.LAMBDA && atom.atoms.size == 3) {
             return atom.copy(

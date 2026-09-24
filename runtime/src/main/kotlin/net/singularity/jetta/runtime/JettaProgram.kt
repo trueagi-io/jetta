@@ -70,6 +70,10 @@ open class JettaProgram {
         @JvmStatic
         fun `set-watermark!`(w: Atom): Atom {
             currentWatermark = ((w as? Grounded<*>)?.value as? Number)?.toInt() ?: -1
+            // The first watermark is set before the first run it guards, so the store holds
+            // exactly the static facts here — see SpaceImpl.sealStaticPrefix.
+            (SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")) as? SpaceImpl)
+                ?.sealStaticPrefix()
             return UNIT_ATOM
         }
 
@@ -413,8 +417,14 @@ open class JettaProgram {
          * declarations ARE visible to a reflective `match &self`.
          */
         @JvmStatic
-        fun `get-atoms`(space: Any?): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getOwnAtoms()
+        fun `get-atoms`(space: Any?): List<Atom> {
+            val name = resolveSpaceName(space)
+            val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(name))
+            // `&self` is ordered like `match &self`: a fact written below the running `!`-form is
+            // not there yet (f1's opening assertion, hyperon's `(get-atoms &self)` before a fact).
+            if (name == currentSpaceName && target is SpaceImpl) return target.getOwnVisibleAtoms(currentWatermark)
+            return target.getOwnAtoms()
+        }
 
         /**
          * `import!` — runtime, order-sensitive module import (hyperon semantics).
@@ -618,9 +628,16 @@ open class JettaProgram {
          * facts-then-runs shape, where no filtering is emitted at all (perf-neutral).
          */
         private fun selfAtoms(): List<Atom> {
-            val all = SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+            val space = SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: ""))
+            val all = space.getAtoms()
             val wm = currentWatermark
-            return if (wm < 0 || wm >= all.size) all else all.subList(0, wm)
+            if (wm < 0) return all
+            // Own atoms come first in `getAtoms()`; only they are ordered by the watermark, and a
+            // run-time `add-atom` stays visible (SpaceImpl.isVisible). What is read through an
+            // import follows them, visible as the import made it.
+            if (space !is SpaceImpl) return if (wm >= all.size) all else all.subList(0, wm)
+            val own = space.getOwnAtoms().size
+            return all.filterIndexed { i, _ -> i >= own || space.isVisible(i, wm) }
         }
 
         /** `(@ tag …)` — an annotation Expression whose tag Symbol is [tag]. */
@@ -747,16 +764,14 @@ open class JettaProgram {
          * singleton holding the type when well-typed, EMPTY when ill-typed (the `()` empty-set
          * the reference suite asserts via `assertEqualToResult … ()`). The argument is unreduced
          * (ATOM meta-type) so `(+ 5 "4")` is type-checked as an inert expression rather than
-         * evaluated. Single-valued for now — a symbol carrying several `:` types (non-deterministic
-         * get-type) is a later phase; this takes the first declaration. See [TypeEngine].
+         * evaluated. Non-deterministic, as the reference's is: a symbol carrying several `:`
+         * types answers all of them. See [TypeEngine.inferTypes].
          */
         @JvmStatic
-        fun `get-type`(atom: Atom): List<Atom> {
+        fun `get-type`(atom: Atom): List<Atom> =
             // A `bind!` token denotes the atom it names, so `(get-type &state-token)` asks about
             // the state, not about an undeclared symbol.
-            val t = TypeEngine.inferType(derefDeep(atom), selfAtoms())
-            return if (t == null) emptyList() else listOf(t)
-        }
+            TypeEngine.inferTypes(derefDeep(atom), selfAtoms())
 
         /**
          * `for-each-in-atom <expression> <function>` — apply [func] to every element of
@@ -780,15 +795,6 @@ open class JettaProgram {
             }
             return UNIT_ATOM
         }
-
-        /**
-         * `id <x>` — the identity function. `stdlib.metta` defines it as `(= (id $x) $x)`, and
-         * that definition works when a program imports the compiled stdlib; grounded here so
-         * it also works for a program that does not. A user (or the stdlib) redefining `id`
-         * shadows this, by the same route any builtin-shadowing rule takes.
-         */
-        @JvmStatic
-        fun id(x: Atom): Atom = x
 
         /**
          * `=alpha <a> <b>` — alpha-equivalence: the two terms are structurally equal up to a
@@ -937,7 +943,13 @@ open class JettaProgram {
                 (n as? Expression)?.atoms?.mapNotNull { (it as? Symbol)?.name } ?: emptyList()
             }
             val args = Array<Any?>(params.size) { i -> TypeEngine.resolve(Variable(params[i]), s) }
-            return branchResult(thenBranch.apply(args))
+            val results = branchResult(thenBranch.apply(args))
+            // A binding of a variable that is NOT a branch parameter — one carried in by a VALUE,
+            // `(let (a b) $x $x)` over `$x = ($a b)` — is applied to the branch's result, as the
+            // reference substitutes it: that answers `(a b)`, not `($a b)`. Nothing to do (and
+            // nothing paid) when the unification bound only the parameters or nothing at all.
+            if (s.keys.all { it in params }) return results
+            return results.map { if (it is Grounded<*>) it else TypeEngine.resolve(if (it is BoundAtom) it.atom else it, s) }
         }
 
         /** Counter for the fresh names [sealed] mints; global, so two seals never collide. */

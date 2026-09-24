@@ -133,7 +133,12 @@ class LetRewriter : Rewriter {
             // there depends on it.
             if (lhs is Expression) {
                 val vars = collectPatternVars(lhs)
-                if (vars.isNotEmpty()) {
+                // A GROUND pattern lowers too: `(let (a b) $x $x)` is a test that VAL unifies with
+                // `(a b)`, the body running once per result that does, over a lambda of no
+                // parameters. Left as a call of `let` it reached the reflective reducer, which
+                // looped on it with the library loaded (corpus `types.metta`) and threw an
+                // ArrayStoreException without it.
+                run {
                     val value = rewriteAtom(rawValue)
                     val body = rewriteAtom(rawBody)
                     val paramList = Expression(vars.map { Variable(it) }, position = lhs.position)

@@ -232,7 +232,13 @@ object JettaCallSite {
      * library's copy sat past the run's watermark and was invisible.
      */
     private fun isRuntimeOwnedHead(expr: Expression): Boolean =
-        opHeadName(expr.atoms.firstOrNull()) in RUNTIME_OWNED_HEADS
+        opHeadName(expr.atoms.firstOrNull()) in RUNTIME_OWNED_HEADS ||
+            // An UNBOUND variable in head position is not an operator to look up: queried as
+            // `(= ($a b) $r)` it unifies with EVERY rule of that arity, the library's included,
+            // and each result is reduced in turn — exponential, and never what the reference does
+            // (`(mid ($a b))` over `(= (mid $x) (let (a b) $x $x))` answers the one `(a b)`; here
+            // it ran out of memory). A head BOUND by the time it is reduced has been resolved.
+            Matcher.resolveBinding(expr.atoms.firstOrNull() ?: return false) is Variable
 
     /**
      * D3 increment (a) — RELATIONAL reduction of a compiled function called with a FREE-variable
