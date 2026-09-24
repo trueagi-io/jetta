@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 
@@ -80,7 +81,12 @@ object Convert {
             else -> listOf(value)
         }
         val distinct = LinkedHashSet<Atom>()
-        bag.forEach { distinct.add((if (it is BoundAtom) it.atom else it) as Atom) }
+        bag.forEach {
+            when (val x = if (it is BoundAtom) it.atom else it) {
+                is Atom -> distinct.add(x)
+                else -> distinct.add(Grounded(x))
+            }
+        }
         return distinct.toList()
     }
 
@@ -94,9 +100,11 @@ object Convert {
      */
     @JvmStatic
     fun collapse(value: Any?): Atom {
-        fun unwrap(a: Any?): Atom {
-            val x = if (a is BoundAtom) a.atom else a
-            return x as Atom
+        // A scalar call hands its value over as it was computed: a grounded result of a function
+        // typed `Int` arrives as a boxed `Integer`, not as an atom (multicall, caseempty).
+        fun unwrap(a: Any?): Atom = when (val x = if (a is BoundAtom) a.atom else a) {
+            is Atom -> x
+            else -> Grounded(x)
         }
         return when (value) {
             null -> Expression(emptyList())

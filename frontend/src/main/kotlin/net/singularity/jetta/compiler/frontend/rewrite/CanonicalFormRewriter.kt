@@ -311,6 +311,12 @@ class CanonicalFormRewriter(
                 // `let` whose result is a bag (`((let $x (get-atoms &self) (get-type $x)))`
                 // — the enclosing tuple must run per element, not hold the application).
                 && (atom.atoms[0] is Symbol || atom.atoms[0] is Lambda)
+                // A BARRIER argument is recorded because its own arguments carry lifts, not
+                // because it answers a bag: `(collapse (let $c (superpose …) …))` is one tuple,
+                // and lifting it made `println!` map over that tuple as if it were a `List`
+                // (ICCE in `simpleMap`). A barrier that does answer a bag (`unique`) is still
+                // lifted — its head says so.
+                && !isScalarBarrierCall(atom)
             ) {
                 val v = variableCount++
                 compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
@@ -721,6 +727,11 @@ class CanonicalFormRewriter(
         }
         if (isMultivalued) multivaluedAtoms.add(atom.id)
         return isMultivalued
+    }
+
+    private fun isScalarBarrierCall(atom: Expression): Boolean {
+        val name = (atom.atoms[0] as? Symbol)?.name ?: return false
+        return name in BARRIER_FUNCTIONS && !isMultivaluedHead(name, atom.atoms.size - 1)
     }
 
     private fun Expression.checkIsNonDeterministicRecursively(): Boolean {

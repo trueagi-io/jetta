@@ -77,6 +77,12 @@ object TypeEngine {
      * The occurs-check is omitted: the declared types in the suite are non-recursive in their
      * variables, and fresh instantiation ([instantiate]) already prevents cross-use capture.
      */
+    private fun boolOf(a: Atom): Boolean? = when (a) {
+        is Grounded<*> -> a.value as? Boolean
+        is Symbol -> when (a.name) { "True" -> true; "False" -> false; else -> null }
+        else -> null
+    }
+
     fun unify(a0: Atom, b0: Atom, s: MutableMap<String, Atom>): Boolean {
         val a = walk(a0, s)
         val b = walk(b0, s)
@@ -93,6 +99,11 @@ object TypeEngine {
             a is Expression && b is Expression ->
                 a.atoms.size == b.atoms.size && a.atoms.indices.all { unify(a.atoms[it], b.atoms[it], s) }
             a is Expression || b is Expression -> false
+            // A MeTTa boolean has two representations, a `Grounded<Boolean>` (computed, or a
+            // literal in code) and the bare symbol read back from DATA — `(superpose (True False))`
+            // yields the symbols. They are one value, as `Assertions.normalize` already has it;
+            // without this, `(case (superpose $y) ((True a) (False b)))` matched nothing.
+            boolOf(a) != null && boolOf(b) != null -> boolOf(a) == boolOf(b)
             a is Grounded<*> && b is Grounded<*> -> a.value == b.value
             a is Grounded<*> || b is Grounded<*> -> false
             else -> nameOf(a) != null && nameOf(a) == nameOf(b) // Symbol/Special by text

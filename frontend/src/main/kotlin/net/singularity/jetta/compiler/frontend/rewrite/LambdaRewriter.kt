@@ -35,6 +35,14 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
                 returnType = atom.returnType,
                 position = atom.position,
             )
+            // An already-built `Lambda` — FunctionRewriter lowers a `match` template straight into
+            // one — can still hold surface `(\ …)` forms in its body: a `unify` (or a `case`, which
+            // lowers onto `unify`) inside the template. Left alone they reached the resolver as
+            // `TODO atom=\`. Rebuilt only when the body changed, so the node keeps its identity.
+            is Lambda -> {
+                val body = rewriteAtom(atom.body)
+                if (body === atom.body) atom else Lambda(atom.params, atom.arrowType, body, atom.position)
+            }
             else -> atom
         }
 

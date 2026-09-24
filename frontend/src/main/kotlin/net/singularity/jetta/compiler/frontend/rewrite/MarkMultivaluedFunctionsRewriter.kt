@@ -5,6 +5,7 @@ import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.Lambda
+import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
@@ -95,6 +96,11 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                 }
                 return false
             }
+            // A multi-clause function's body is a `Match`: the function answers whatever the
+            // branch it takes answers, so a branch BODY that yields a bag makes it multivalued.
+            // The conditions are guards, not results. Without this, `insert`'s `case` over a
+            // comparison left it scalar while its body returned the `case`'s bag (d2).
+            is Match -> return atom.branches.any { checkAtom(it.body) }
             else -> return false
         }
     }

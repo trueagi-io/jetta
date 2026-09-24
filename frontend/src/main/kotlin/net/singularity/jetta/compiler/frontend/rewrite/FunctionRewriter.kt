@@ -617,6 +617,10 @@ class FunctionRewriter(
      * has to reach an else-branch.
      */
     private val UNIFY_KEYWORD = "unify"
+    private val CASE_KEYWORD = "case"
+    private val MATCH_KEYWORD = "match"
+    private val CASE_VARIABLE = "__case"
+    private val CASE_BAG_VARIABLE = "__caseBag"
     private val UNIFY_MATCH_KEYWORD = "unifyMatch"
 
     /**
@@ -1159,6 +1163,97 @@ class FunctionRewriter(
         )
     }
 
+    /**
+     * `(case VAL ((PAT BODY) …))` as the reference defines it: every result of VAL is matched
+     * against the patterns by UNIFICATION, the first clause that unifies wins, and a result no
+     * clause unifies with yields nothing. An `Empty` clause fires when VAL has no result at all.
+     *
+     *     (let $__case VAL (unify $__case PAT1 BODY1 (unify $__case PAT2 BODY2 (empty))))
+     *
+     * and, with an `(Empty E)` clause, VAL's results are collected first so that their absence
+     * can be seen:
+     *
+     *     (let $__bag (collapse VAL) (unify $__bag () E (let $__case (superpose $__bag) …)))
+     *
+     * The old lowering compared with `==` (so a pattern with variables, or a Bool read back as
+     * data, never matched), dropped the `Empty` clause, and answered `()` when nothing matched —
+     * a value where the reference has none (caseempty, ifcasenondet).
+     */
+    private fun desugarCase(expression: Expression): Atom? {
+        val clausesExpr = expression.atoms[2] as? Expression ?: return null
+        val clauses = clausesExpr.atoms.map { it as? Expression ?: return null }
+        if (clauses.any { it.atoms.size != 2 }) return null
+        val position = expression.position
+        fun sym(name: String) = Symbol(name, position = position)
+        fun expr(vararg atoms: Atom) = Expression(atoms.toList(), position = position)
+        val caseVar = Variable(CASE_VARIABLE, position = position)
+        val isEmptyClause = { c: Expression -> (c.atoms[0] as? Symbol)?.name == "Empty" }
+        var chain: Atom = expr(sym("empty"))
+        for (clause in clauses.filterNot(isEmptyClause).asReversed()) {
+            chain = expr(sym(UNIFY_KEYWORD), caseVar, clause.atoms[0], clause.atoms[1], chain)
+        }
+        val emptyClause = clauses.firstOrNull(isEmptyClause)
+            ?: return expr(sym(LetRewriter.LET_KEYWORD), caseVar, expression.atoms[1], chain)
+        val bag = Variable(CASE_BAG_VARIABLE, position = position)
+        // The emptiness test is a `unify` against `()` rather than an `if`: its branches are
+        // lambdas, so the `superpose` over the bag is lifted INSIDE the else-branch. Under an `if`
+        // the lift hoists it above the test, and an empty bag then maps over nothing at all.
+        return expr(
+            sym(LetRewriter.LET_KEYWORD), bag, expr(sym("collapse"), expression.atoms[1]),
+            expr(
+                sym(UNIFY_KEYWORD), bag, Expression(emptyList(), position = position),
+                emptyClause.atoms[1],
+                expr(sym(LetRewriter.LET_KEYWORD), caseVar, expr(sym("superpose"), bag), chain),
+            ),
+        )
+    }
+
+    /**
+     * A `match` whose template BRANCHES — holds an `if`, a `unify` or a `case` — evaluated the way
+     * the reference evaluates it: once per match, with the pattern's variables bound to that
+     * match's values.
+     *
+     *     (match S P T)  →  (let ($v1 … $vn) (match S P ($v1 … $vn)) T)
+     *
+     * The match answers plain data (the tuple of its variables' values, the fast path), and the
+     * pattern-`let` — `letMatch`, applied per result — makes those variables PARAMETERS of the
+     * lambda that holds T. The template paths of [rewriteMatch] cannot do this for a branching form: a template
+     * compiled as a lambda captures the pattern variables before the match has run, so
+     * `(match &self (p $x $y) (unify $y 1 one other))` unified a free `$y` and said `one` for every
+     * fact, and an `if` template came back as unevaluated data.
+     *
+     * Only variables not already in [scope] become parameters: one bound around the `match` is a
+     * value the pattern is matched against, and stays a capture of the enclosing slot.
+     */
+    private fun evaluateTemplateOverBindings(expression: Expression, scope: Set<String>): Atom {
+        val position = expression.position
+        val names = varNamesIn(expression.atoms[2]).filter { it !in scope }
+        fun tuple() = Expression(names.map { Variable(it, position = position) }, position = position)
+        return Expression(
+            listOf(
+                Symbol(LetRewriter.LET_KEYWORD, position = position),
+                tuple(),
+                expression.copy(atoms = listOf(expression.atoms[0], expression.atoms[1], expression.atoms[2], tuple())),
+                expression.atoms[3],
+            ),
+            position = position,
+        )
+    }
+
+    /** Whether [atom] holds a form whose branch depends on a VALUE: `if`, `unify`, `case`. */
+    private fun containsBranchingForm(atom: Atom): Boolean {
+        if (atom !is Expression || atom.atoms.isEmpty()) return false
+        val head = atom.atoms[0]
+        if (head == PredefinedAtoms.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE) return false
+        // The parser already makes `if` a `Special`; `unify`/`case` are still Symbols here.
+        val name = (head as? Symbol)?.name ?: (head as? Special)?.value
+        if ((name == Predefined.IF && atom.atoms.size == 4) ||
+            (name == UNIFY_KEYWORD && atom.atoms.size == 5) ||
+            (name == CASE_KEYWORD && atom.atoms.size == 3)
+        ) return true
+        return atom.atoms.any { containsBranchingForm(it) }
+    }
+
     /** Variable names in [atom], in document order. */
     private fun varNamesIn(atom: Atom): List<String> {
         val out = mutableListOf<String>()
@@ -1184,6 +1279,9 @@ class FunctionRewriter(
         val name = (head as? Symbol)?.name
         if (head == PredefinedAtoms.QUOTE || name == Predefined.QUOTE) return atom
         if (name == UNIFY_KEYWORD && atom.atoms.size == 5) return lowerUnify(atom, scope)
+        if (name == CASE_KEYWORD && atom.atoms.size == 3) {
+            desugarCase(atom)?.let { return lowerUnifyForms(it, scope) }
+        }
         if (name == IF_EQUAL_KEYWORD && atom.atoms.size == 5) return lowerIfEqual(atom, scope)
         if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {
             return atom.copy(
@@ -1192,6 +1290,22 @@ class FunctionRewriter(
                     atom.atoms[1],
                     lowerUnifyForms(atom.atoms[2], scope),
                     lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[1])),
+                )
+            )
+        }
+        // `(match SPACE PATTERN TEMPLATE)` binds PATTERN's variables in TEMPLATE: a `unify` (or a
+        // `case`) in the template must see them as values, not as fresh binders of its own — else
+        // `(match &self (p $x $y) (unify $y 1 one other))` unified a free `$y` and always said `one`.
+        if (name == MATCH_KEYWORD && atom.atoms.size == 4) {
+            if (containsBranchingForm(atom.atoms[3])) {
+                return lowerUnifyForms(evaluateTemplateOverBindings(atom, scope), scope)
+            }
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    lowerUnifyForms(atom.atoms[1], scope),
+                    atom.atoms[2],
+                    lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[2])),
                 )
             )
         }
