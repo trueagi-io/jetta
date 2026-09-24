@@ -223,6 +223,12 @@ fun registerExternals(context: Context) {
     // `unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
     // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`).
     // Param is ANY so the argument (e.g. `(render $e)`) IS reduced before the quote is stripped.
+    //
+    // NOT a duplicate to delete, though the library defines `(= (unquote (quote $atom)) $atom)`:
+    // a literal `(quote foo)` argument reaches the call as plain `foo` — the quote is consumed at
+    // compile time, not kept as a wrapper — so the library's pattern never matches and
+    // `(unquote (quote foo))` goes inert. The cost of keeping this: `(unquote 42)` answers `42`
+    // where hyperon leaves it inert (he_quoting).
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
@@ -465,19 +471,6 @@ fun registerExternals(context: Context) {
             false
         )
     )
-    // `id` — identity. Ordinary (reduced) ATOM argument: `(id (+ 1 2))` is `3` in the
-    // reference, since `id` is declared `(-> $t $t)` and not over the `Atom` meta-type.
-    context.addSystemFunction(
-        ResolvedSymbol(
-            JvmMethod(
-                owner = "net/singularity/jetta/runtime/JettaProgram",
-                name = "id",
-                descriptor = "($ATOM_D)$ATOM_D",
-            ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
-            false
-        )
-    )
     // `=alpha` — alpha-equivalence. Both operands are INERT: they are terms to compare, and
     // their variables are part of the comparison rather than something to bind or reduce.
     context.addSystemFunction(
@@ -572,6 +565,12 @@ fun registerExternals(context: Context) {
     // `nop` — run the argument, discard its value, yield `()`. ANY param so the argument is
     // REDUCED (the effect happens); the unit result is what makes `!(nop (change-state! …))` a
     // unit-valued top-level run in the hyperon test scripts.
+    //
+    // NOT a duplicate to delete, though the library defines `nop` too: it defines it at TWO
+    // arities, `(= (nop) ())` and `(= (nop $x) ())`, and one name compiles to one function whose
+    // parameters come from its first clause — so the library's `nop` is the nullary one and its
+    // unary clause is a dead branch. This builtin is what serves `(nop x)`; it can go once a name
+    // may carry clauses of several arities.
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(

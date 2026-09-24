@@ -235,6 +235,34 @@ class AutomaticStdlibImportTest {
         assertTrue(output.contains("map-atom"), "expected the inert term, got:\n" + output)
     }
 
+    /**
+     * `id` is the LIBRARY's `(= (id $x) $x)`: the Kotlin builtin that duplicated it is gone, so
+     * nothing shadows the definition any more. It still reduces its argument (it is `(-> $t $t)`,
+     * not over the `Atom` meta-type). Both arities of `nop` answer the unit atom — the nullary one
+     * from the library, the unary one still from the builtin (see `Externals`).
+     */
+    @Test
+    fun `id comes from the library, and nop answers at both arities`(
+        @TempDir src: Path,
+        @TempDir out: Path,
+    ) {
+        File(src.toFile(), "idnop.metta").writeText(
+            """
+            !(assertEqual (id 5) 5)
+            !(assertEqual (id (a b)) (a b))
+            !(assertEqual (id (+ 1 2)) 3)
+            !(bind! &c (new-state 1))
+            !(assertEqual (nop (change-state! &c 2)) ())
+            !(assertEqual (get-state &c) 2)
+            !(println! (nop))
+            !(println! done)
+            """.trimIndent()
+        )
+        compile(File(src.toFile(), "idnop.metta").absolutePath, out, autoImport = true)
+        val output = run(out, "idnop")
+        assertTrue(output.contains("done"), "expected every assertion to pass, got:\n" + output)
+    }
+
     private fun compile(file: String, out: Path, autoImport: Boolean) {
         val compiler = Compiler(
             files = listOf(file),

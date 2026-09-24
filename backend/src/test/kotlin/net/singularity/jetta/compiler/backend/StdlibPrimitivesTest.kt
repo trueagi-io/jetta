@@ -7,7 +7,8 @@ import kotlin.test.assertTrue
 
 /**
  * Grounded stdlib primitives that are not MeTTa-level definitions in `stdlib.metta`:
- * `id`, `=alpha`, `get-type-space`. Expectations read off hyperon 0.2.10.
+ * `=alpha`, `get-type-space`. Expectations read off hyperon 0.2.10. (`id` was one of them until the
+ * library's own `(= (id $x) $x)` replaced the builtin — see `AutomaticStdlibImportTest`.)
  */
 class StdlibPrimitivesTest : GeneratorTestBase() {
 
@@ -21,16 +22,6 @@ class StdlibPrimitivesTest : GeneratorTestBase() {
                 classes[name]!!.getMethod("__main").invoke(null)
             }
     }
-
-    @Test
-    fun `id returns its argument`() = run(
-        "PrimId",
-        """
-            !(assertEqual (id 5) 5)
-            !(assertEqual (id (a b)) (a b))
-            !(assertEqual (id (+ 1 2)) 3)
-        """.trimIndent()
-    )
 
     /**
      * `=alpha` is one token. It used to lex as the rule-head `=` followed by `alpha`, so
