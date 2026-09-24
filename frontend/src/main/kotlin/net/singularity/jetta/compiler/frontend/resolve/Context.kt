@@ -373,6 +373,15 @@ class Context private constructor(
         }
     }
 
+    /** Grounded operators the runtime links by symbol — `GroundedOps.OPS` / `UNARY_OPS`. */
+    private val BUILTIN_OPERATOR_NAMES = setOf(
+        "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "and", "or", "not",
+    )
+
+    /** A name the runtime serves: a registered builtin, or a grounded operator spelled as a Special. */
+    private fun isBuiltinName(name: String): Boolean =
+        systemFunctions.containsKey(name) || name in BUILTIN_OPERATOR_NAMES
+
     fun addSystemFunction(resolvedSymbol: ResolvedSymbol) {
         systemFunctions[resolvedSymbol.jvmMethod.name] = resolvedSymbol
     }
@@ -387,11 +396,15 @@ class Context private constructor(
                 }
             }
 
+            // The literal's own type, recorded on the atom. A `Boolean` literal reached the TODO
+            // here (`(apply not False)` in an operator-typed argument slot), and the result was
+            // computed and dropped anyway.
             is Grounded<*> -> {
-                when (atom.value) {
+                if (atom.type == null) atom.type = when (atom.value) {
                     is Int -> GroundedType.INT
                     is Double -> GroundedType.DOUBLE
-                    else -> TODO("${atom.value}")
+                    is Boolean -> GroundedType.BOOLEAN
+                    else -> GroundedType.ATOM
                 }
             }
 
@@ -1539,6 +1552,14 @@ class Context private constructor(
                 if (def == null) {
                     // If no suggested type, this is just a plain symbol constant (e.g., T, F)
                     // — not a function reference, so no error needed.
+                    //
+                    // A BUILTIN's name where a function is expected — `(apply not False)` — is the
+                    // operator passed as a value: data here, applied through the variable-head
+                    // dispatch that links grounded operators at run time.
+                    if (suggestedType is ArrowType && isBuiltinName(atom.name)) {
+                        atom.type = GroundedType.ATOM
+                        return
+                    }
                     if (suggestedType != null) {
                         messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
                     }

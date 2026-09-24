@@ -66,4 +66,16 @@ class ReferenceLetAndTypesTest {
             !(assertEqual (collapse (get-type (iron foo))) (%Undefined%))
         """.trimIndent())
     }
+
+    @Test
+    fun `a builtin operator passed as a function value is applied`() {
+        // corpus parametric_types
+        repl().ok("""
+            (: apply (-> (-> _tx _ty) _tx _ty))
+            (= (apply _f _x) (_f _x))
+            !(assertEqual (apply not False) True)
+            !(assertEqual (get-type (apply not False)) Bool)
+            !(assertEqual (let (-> (-> Bool Bool) Bool _result) (get-type apply) _result) Bool)
+        """.trimIndent())
+    }
 }

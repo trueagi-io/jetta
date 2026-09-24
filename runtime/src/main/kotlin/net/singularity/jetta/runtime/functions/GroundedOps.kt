@@ -43,6 +43,22 @@ object GroundedOps {
     @JvmStatic fun ge(a: Any?, b: Any?): Atom? = compare(a, b) { c -> c >= 0 }
     @JvmStatic fun eq(a: Any?, b: Any?): Atom? = compare(a, b) { c -> c == 0 }
 
+    // Boolean operators, for the same route: `(apply not False)` over `(= (apply $f $x) ($f $x))`
+    // reached `(not False)` through a variable head and stayed inert (corpus `parametric_types`).
+    // A MeTTa boolean is a `Grounded<Boolean>` or the symbol read back from data; either counts.
+    @JvmStatic fun not(a: Any?): Atom? = bool(a)?.let { truth(!it) }
+    @JvmStatic fun and(a: Any?, b: Any?): Atom? { val x = bool(a) ?: return null; val y = bool(b) ?: return null; return truth(x && y) }
+    @JvmStatic fun or(a: Any?, b: Any?): Atom? { val x = bool(a) ?: return null; val y = bool(b) ?: return null; return truth(x || y) }
+
+    private fun truth(b: Boolean): Atom = Symbol(if (b) "True" else "False")
+
+    private fun bool(value: Any?): Boolean? = when (val v = if (value is BoundAtom) value.atom else value) {
+        is Boolean -> v
+        is Grounded<*> -> v.value as? Boolean
+        is Symbol -> when (v.name) { "True" -> true; "False" -> false; else -> null }
+        else -> null
+    }
+
     private inline fun arith(
         a: Any?, b: Any?,
         ints: (Int, Int) -> Int,
@@ -72,7 +88,11 @@ object GroundedOps {
     val OPS: Map<String, String> = mapOf(
         "+" to "plus", "-" to "minus", "*" to "times", "/" to "div", "%" to "mod",
         "<" to "lt", ">" to "gt", "<=" to "le", ">=" to "ge", "==" to "eq",
+        "and" to "and", "or" to "or",
     )
+
+    /** Unary operator symbol -> static method name, seeded like [OPS]. */
+    val UNARY_OPS: Map<String, String> = mapOf("not" to "not")
 
     /**
      * Dispatch a binary grounded operator by its surface symbol. Returns the computed

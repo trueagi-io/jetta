@@ -201,6 +201,8 @@ object TypeEngine {
         "+", "-", "*", "/", "div", "%", "mod" -> arrow(NUMBER, NUMBER, NUMBER)
         "<", ">", "<=", ">=" -> arrow(NUMBER, NUMBER, BOOL)
         "==", "!=" -> Variable("_eqT#${freshCounter.incrementAndGet()}").let { arrow(it, it, BOOL) }
+        "and", "or", "xor" -> arrow(BOOL, BOOL, BOOL)
+        "not" -> arrow(BOOL, BOOL)
         // The state signatures, verbatim from hyperon's stdlib. They are what makes a state's
         // type `(StateMonad <type of its content>)` and what makes `change-state!` reject a value
         // of a different type than the one the state was created with (`(BadArgType 2 …)`) —

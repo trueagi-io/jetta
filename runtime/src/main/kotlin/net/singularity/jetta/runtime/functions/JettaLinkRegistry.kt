@@ -94,6 +94,11 @@ object JettaLinkRegistry {
             val handle = lookup.findStatic(GroundedOps::class.java, method, mt)
             table[op] = Entry(handle, params, Atom::class.java, multivalued = false, groundedOp = true)
         }
+        val unary = MethodType.methodType(Atom::class.java, Any::class.java)
+        GroundedOps.UNARY_OPS.forEach { (op, method) ->
+            val handle = lookup.findStatic(GroundedOps::class.java, method, unary)
+            table[op] = Entry(handle, arrayOf(Any::class.java), Atom::class.java, multivalued = false, groundedOp = true)
+        }
     }
 
     /**
