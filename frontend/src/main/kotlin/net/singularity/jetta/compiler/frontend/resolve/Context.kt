@@ -1571,8 +1571,17 @@ class Context private constructor(
                     }
                     return
                 }
-                // A function's NAME in a value position — passed to a higher-order function, or
-                // sitting in a data slot. It eta-expands into `(\ params (f params))` below.
+                // Where no FUNCTION is expected — a data slot, a tuple, a rule's result, an untyped
+                // parameter — the name is the symbol, as in the reference: `(justdata f 2)` is data
+                // holding `f`, and `((notjustdata 42) 21)` applies the returned `f` through the
+                // variable-head dispatch. Eta-expanded there, a `JettaLambda` object landed in an
+                // `Atom[]` (ArrayStoreException) or printed as `(lol (JettaLambda$0@… 42))`.
+                if (suggestedType !is ArrowType) {
+                    atom.type = GroundedType.ATOM
+                    return
+                }
+                // A function's NAME where a function is expected — passed to a higher-order
+                // parameter declared as an arrow. It eta-expands into `(\ params (f params))` below.
                 //
                 // An incompatibility can only be reported when there is something to compare:
                 // both a type expected here and a declared arrow type. Neither is guaranteed —

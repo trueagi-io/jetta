@@ -383,7 +383,7 @@ class Generator(
             // methods that can fail verification on their own.
             if (def.isShadowedByRuntime()) return@forEach
             when (val body = def.body) {
-                is Expression -> findLambdas(body, result)
+                is Expression, is Lambda -> findLambdas(body, result)
                 is Match -> {
                     body.branches.forEach { branch ->
                         findLambdas(branch.body, result)
@@ -409,19 +409,18 @@ class Generator(
                 }
                 body.atoms.forEach {
                     when (it) {
-                        is Lambda -> {
-                            val lambdaName = "lambda\$${lambdaCount++}"
-                            acc[lambdaName] = it
-                            findLambdas(it.body, acc)
-                        }
-
-                        is Expression -> {
-                            findLambdas(it, acc)
-                        }
-
+                        is Lambda, is Expression -> findLambdas(it, acc)
                         else -> {}
                     }
                 }
+            }
+
+            // A lambda that IS the body, not only one inside it: a function whose result is
+            // another function's name, `(= (notjustdata $x) f)`, returns `f` eta-expanded.
+            is Lambda -> {
+                val lambdaName = "lambda\$${lambdaCount++}"
+                acc[lambdaName] = body
+                findLambdas(body.body, acc)
             }
 
             else -> {}

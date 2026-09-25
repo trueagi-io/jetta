@@ -124,4 +124,39 @@ class RuntimeRuleTest : GeneratorTestBase() {
             !(assertEqualToResult (superpose ((a b) (c d))) ((a b) (c d)))
         """.trimIndent()
     )
+
+    /**
+     * A function's NAME where no function is expected is the symbol (smartdispatch): data holds
+     * it, a returned one is applied by the variable-head dispatch. It was eta-expanded into a
+     * `JettaLambda` object — ArrayStoreException in a data slot, and an NPE at compile when it
+     * was the whole body.
+     */
+    @Test
+    fun `a function name outside a function-typed slot is the symbol`() = run(
+        "FunctionNameAsSymbol",
+        $$"""
+            (= (f $x) (* $x 2))
+            (= (g $f $x) (justdata $f $x))
+            (= (h $f $x) ($f $x))
+            (= (notjustdata $x) f)
+            !(assertEqual (g f 2) (justdata f 2))
+            !(assertEqual (h f 2) 4)
+            !(assertEqual ((notjustdata 42) 21) 42)
+        """.trimIndent()
+    )
+
+    /** A tuple headed by a tuple is still evaluated inside: `((lol (f 42)))` is `((lol 84))`. */
+    @Test
+    fun `a call nested in an expression-headed tuple is evaluated`() = run(
+        "ExpressionHeadedTupleCall",
+        $$"""
+            (= (f $x) (* $x 2))
+            (= (d) ((lol (f 42))))
+            (= (e) ((lol x) y))
+            (= (one) (superpose ((superpose (a b)))))
+            !(assertEqual (d) ((lol 84)))
+            !(assertEqual (e) ((lol x) y))
+            !(assertEqualToResult (one) (a b))
+        """.trimIndent()
+    )
 }

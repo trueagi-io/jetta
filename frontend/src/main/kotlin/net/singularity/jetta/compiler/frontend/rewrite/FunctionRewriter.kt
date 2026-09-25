@@ -1738,7 +1738,7 @@ class FunctionRewriter(
         if (head.name != SUPERPOSE || expression.atoms.size != 2) return null
         val tuple = expression.atoms[1] as? Expression ?: return null
         // `(superpose (f …))` superposes what the CALL answers — a tuple only once it has run.
-        if (tuple.atoms.size < 2 || isCall(tuple) || !tuple.atoms.any { isCall(it) }) return null
+        if (tuple.atoms.isEmpty() || isCall(tuple) || !tuple.atoms.any { isCall(it) }) return null
         val pos = expression.position
         val parts = tuple.atoms.map { Expression(Symbol(COLLAPSE, position = pos), it, position = pos) }
         val union = parts.dropLast(1).foldRight(parts.last() as Atom) { part, acc ->
