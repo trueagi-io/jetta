@@ -546,6 +546,16 @@ open class JettaProgram {
         }
 
         /**
+         * `__reduce` — the bag of a call whose head has no compiled definition, only rules that
+         * reach the space at run time: `!(add-atom &self (= (g $x $y) (+ $x $y)))` then `(g 3 4)`
+         * answers 7. `FunctionRewriter` emits it around such a call; the arguments arrive
+         * evaluated, and the space answers whatever rules for the head it holds NOW — none left
+         * after a `remove-atom`, and the term is its own normal form.
+         */
+        @JvmStatic
+        fun __reduce(atom: Atom): List<Atom> = JettaCallSite.reduceRuntimeRuleCall(currentSpaceName ?: "", atom)
+
+        /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
          * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
          * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —

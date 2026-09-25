@@ -77,7 +77,22 @@ class FunctionRewriter(
     // [mkFunctions] / MatchBranch.sourceOrdinal / `docs/specs/ordered_top_level_semantics_plan.md`.
     private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1)
 
+    /**
+     * Heads whose only `=` rules are stored by an `add-atom` — at top level or inside a function —
+     * so they reach the space at run time and nothing here compiles them.
+     * A call to one is wrapped in `(__reduce …)` (see `JettaProgram.__reduce`), which asks the
+     * space when the call runs: before this, `!(add-atom &self (= (g $x $y) (+ $x $y)))` followed
+     * by `(g 3 4)` compiled the call as the data `(g 3 4)`. A head defined at top level, or by a
+     * builtin or a linked module, is excluded; empty in a file that writes no such rule, so
+     * nothing else changes.
+     */
+    private var dynamicHeads = emptySet<String>()
+
+    /** Depth of positions whose content is DATA — a rule's text, an inert argument, a pattern. */
+    private var dataDepth = 0
+
     override fun rewrite(source: ParsedSource): ParsedSource {
+        dynamicHeads = if (isReducibleName(Predefined.REDUCE)) collectDynamicHeads(source.code) else emptySet()
         source.code.forEach {
             when (it) {
                 is Expression -> rewriteTopLevelExpression(it)
@@ -87,6 +102,47 @@ class FunctionRewriter(
         }
         val mainPart = if (runs.isNotEmpty()) mkMain() else listOf()
         return ParsedSource(source.filename, mkFunctions() + mainPart)
+    }
+
+    private fun collectDynamicHeads(code: List<Atom>): Set<String> {
+        val declared = mutableSetOf<String>()
+        val nested = mutableSetOf<String>()
+        fun ruleHead(e: Expression): String? =
+            if ((e.atoms.firstOrNull() as? Special)?.value == Predefined.PATTERN && e.atoms.size == 3)
+                ((e.atoms[1] as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name
+            else null
+        // Only a rule an `add-atom` stores: a `(= (h …) $x)` elsewhere is a QUERY — the pattern of
+        // a `match` — and `h` may well have no rule at all.
+        fun walk(a: Atom) {
+            if (a !is Expression) return
+            if ((a.atoms.firstOrNull() as? Symbol)?.name == ADD_ATOM && a.atoms.size == 3) {
+                (a.atoms[2] as? Expression)?.let { e -> ruleHead(e)?.let { nested += it } }
+            }
+            a.atoms.forEach { walk(it) }
+        }
+        code.forEach { form ->
+            when (form) {
+                is Expression -> {
+                    val head = ruleHead(form)
+                    if (head != null) { declared += head; walk(form.atoms[2]) } else walk(form)
+                }
+                is Run -> walk(form.expression)
+                else -> {}
+            }
+        }
+        return nested.filterTo(mutableSetOf()) { it !in declared && !isReducibleName(it) }
+    }
+
+    /** Argument positions of [expression] whose content is data, not a call — see [dynamicHeads]. */
+    private fun dataSlotsOf(expression: Expression): Set<Int> {
+        val head = expression.atoms[0]
+        if ((head as? Special)?.value == Predefined.PATTERN) return expression.atoms.indices.toSet()
+        val name = (head as? Symbol)?.name ?: return emptySet()
+        return when (name) {
+            "let" -> setOf(1)
+            "unify" -> setOf(2)
+            else -> inertParamsOf(name).mapTo(mutableSetOf()) { it + 1 }
+        }
     }
 
     private fun hasConstantsInPattern(pattern: Expression): Boolean =
@@ -1654,15 +1710,22 @@ class FunctionRewriter(
                     it.copy(atoms = it.atoms + Expression(emptyList()))
                 func is Symbol && specials.contains(func.name) && !isOutOfShapeAsSpecial(it) ->
                     mkSpecialFromSymbol(it)
+                func is Symbol && dataDepth == 0 && func.name in dynamicHeads ->
+                    Expression(Symbol(Predefined.REDUCE, position = func.position), it, position = it.position)
                 else -> it
             }
         }
     }
 
-    private fun rewriteExpressionArguments(expression: Expression): Expression =
-        expression.copy(atoms = expression.atoms.map {
-            rewriteAtom(it)
+    private fun rewriteExpressionArguments(expression: Expression): Expression {
+        val data = if (dynamicHeads.isEmpty()) emptySet() else dataSlotsOf(expression)
+        return expression.copy(atoms = expression.atoms.mapIndexed { i, arg ->
+            if (i in data) {
+                dataDepth++
+                try { rewriteAtom(arg) } finally { dataDepth-- }
+            } else rewriteAtom(arg)
         })
+    }
 
     /**
      * Whether turning this head into a `Special` would produce a form the grounded operator
@@ -1815,6 +1878,8 @@ class FunctionRewriter(
         )
 
         const val MAIN = "__main"
+
+        private const val ADD_ATOM = "add-atom"
 
         /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)
          *  that sets the ordered-top-level per-run visibility cutoff. */

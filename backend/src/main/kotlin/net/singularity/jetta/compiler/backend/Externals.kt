@@ -258,7 +258,10 @@ fun registerExternals(context: Context) {
                 // resolves either shape through `resolveSpaceName`. The reference stdlib passes it
                 // that way throughout — `(= (add-reduct $dst $atom) (add-atom $dst $atom))` — and a
                 // `String` parameter rejected the `Atom` at CLASS LOAD, taking the class with it.
-                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                // The atom is stored AS WRITTEN — the reference declares it `Atom`. Evaluated, a
+                // rule's body ran at the add: `(= (fib $N) (if (< $N 2) …))` compared a free `$N`.
+                inertAtomParams = setOf(1)
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
@@ -269,8 +272,9 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "remove-atom",
-                // Object space — see `add-atom` above.
-                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                // Object space and an inert atom — see `add-atom` above.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(1)
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
@@ -764,6 +768,19 @@ fun registerExternals(context: Context) {
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ATOM),
             false
+        )
+    )
+    // `__reduce` — a call to a head whose only rules are added to the space at run time; emitted
+    // only by `FunctionRewriter`. The argument is the call as data, its arguments evaluated.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = Predefined.REDUCE,
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
         )
     )
     // `sealed` — rename every variable in the second argument except those listed in the first,

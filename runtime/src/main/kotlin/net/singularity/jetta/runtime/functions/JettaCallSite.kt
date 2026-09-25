@@ -439,7 +439,17 @@ object JettaCallSite {
             val bag = invokeMultivaluedRegistry(expr)
             if (bag != null) { out.addAll(bag); continue }
             val value = invokeScalarRegistry(expr)
-            if (value != null) out.add(value) else out.addAll(reduceBag(spaceName, expr))
+            if (value != null) { out.add(value); continue }
+            // A space rule answers its BODY, which is a new term to evaluate, not a value: over
+            // `(= (fib $N) (if (< $N 2) $N (+ (fib (- $N 1)) (fib (- $N 2)))))` one step leaves
+            // `(+ (fib 14) (fib 13))`. Reduced again from depth 0 — the nesting budget is about
+            // the shape of ONE term, and a recursion through rules is the program's own, bounded
+            // like any other by its stack.
+            for (r in reduceBag(spaceName, expr)) {
+                val body = unwrapBound(r)
+                if (body is Expression && body != expr) out.addAll(reduceTemplate(spaceName, body, 0))
+                else out.add(r)
+            }
         }
         return out
     }
@@ -684,6 +694,27 @@ object JettaCallSite {
         val pattern = Expression(listOf(Special(PATTERN_EQ), callExpr, r))
         val results = JettaProgram.match(spaceName, pattern, r)
         return results.ifEmpty { listOf(callExpr) }
+    }
+
+    /**
+     * The bag of a call whose head has no compiled definition, only rules that reach the space at
+     * run time (see `JettaProgram.__reduce`). The rules are asked by unification, as
+     * [reduceOrInert] asks them, so a free variable in the call is bound per rule and each answer
+     * keeps its branch's bindings — `(get-state (status (Goal $goal)))` over two `status` rules
+     * binds `$goal` once per goal. Each rule body is then EVALUATED, which is what a rule answers.
+     * No rule: the call is its own normal form.
+     */
+    @JvmStatic
+    fun reduceRuntimeRuleCall(spaceName: String, atom: Atom): List<Atom> {
+        val call = resolveDeep(unwrapBound(atom))
+        if (call !is Expression || call.atoms.isEmpty()) return listOf(call)
+        val r = Variable(REDUCE_VAR)
+        val rules = JettaProgram.match(spaceName, Expression(listOf(Special(PATTERN_EQ), call, r)), r)
+        if (rules.isEmpty()) return listOf(call)
+        return rules.flatMap { rule ->
+            val values = reduceTemplate(spaceName, unwrapBound(rule), 0)
+            if (rule is BoundAtom) values.map { BoundAtom(unwrapBound(it), rule.bindings) } else values
+        }
     }
 
     /**

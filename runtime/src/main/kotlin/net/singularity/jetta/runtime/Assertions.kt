@@ -117,10 +117,11 @@ object Assertions {
             throw AssertionError(
                 buildString {
                     append("assertEqual failed")
+                    // The raw values, not their comparison keys: a key prints as `ExprKey(…)`.
                     append("\nExpected: ")
-                    append(normalize(expected))
+                    append(unwrap(expected))
                     append("\nActual:   ")
-                    append(normalize(actual))
+                    append(unwrap(actual))
                 }
             )
         }

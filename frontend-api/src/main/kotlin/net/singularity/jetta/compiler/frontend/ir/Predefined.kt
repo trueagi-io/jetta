@@ -35,6 +35,8 @@ object Predefined {
     const val SELF = "&self"
     /** The value of a term a meta-typed parameter holds unevaluated — `FunctionRewriter.holdMetaParams`. */
     const val FORCE = "__force"
+    /** A call to a head whose only rule is added to the space at run time — `FunctionRewriter.dynamicHeads`. */
+    const val REDUCE = "__reduce"
 }
 
 object PredefinedAtoms {

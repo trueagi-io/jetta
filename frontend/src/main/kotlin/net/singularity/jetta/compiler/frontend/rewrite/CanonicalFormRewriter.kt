@@ -318,8 +318,15 @@ class CanonicalFormRewriter(
                 // lifted — its head says so.
                 && !isScalarBarrierCall(atom)
             ) {
+                // Flagged non-deterministic is not the same as answering a bag. A SCALAR builtin
+                // head (`car-atom`, `change-state!`) scopes its multivalued leaves to the enclosing
+                // call, so rewritten it is `(car-atom $v0)` — one value, bound by THIS call's lift.
+                // Lifting it again made `(println! (car-atom (mv)))` map over that value as if it
+                // were a `List` (ICCE in `simpleMap`). A `Special` head (`+`) never came here.
+                val rewritten = rewriteAtom(atom)
+                if (!yieldsBag(rewritten)) return rewritten
                 val v = variableCount++
-                compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
+                compoundLifts.add(Triple(v, rewritten, atom.type))
                 return mkVariable(v, expression.position)
             }
             return rewriteAtom(atom)
