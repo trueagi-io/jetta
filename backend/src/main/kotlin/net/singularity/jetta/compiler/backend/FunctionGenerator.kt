@@ -1754,7 +1754,26 @@ open class FunctionGenerator(
         } else {
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
             narrowArgumentToExpression(mv, jvmSymbol, index, argType)
+            unwrapArgumentToPrimitive(mv, jvmSymbol, index, argType)
         }
+    }
+
+    /**
+     * An `Atom`-typed argument reaching a PRIMITIVE parameter: a value that travelled as data —
+     * `$it1` bound by the pattern of `(let ($x1 $it1) (iter-next $it) …)` — handed to
+     * `(: iter-next (-> Int Atom))`. The descriptor wants an `int`; the stack holds the `Grounded`
+     * wrapping it, and the class failed verification. Unwrapped the way an `Any` slot is read.
+     */
+    private fun unwrapArgumentToPrimitive(mv: LocalVariablesSorter, jvmSymbol: JvmMethod, index: Int, argType: Atom?) {
+        if (argType != GroundedType.ATOM) return
+        val primitive = when (jvmSymbol.descriptor.parseDescriptor()[index]) {
+            "I" -> GroundedType.INT
+            "J" -> GroundedType.LONG
+            "D" -> GroundedType.DOUBLE
+            "Z" -> GroundedType.BOOLEAN
+            else -> return
+        }
+        unwrapReferenceToPrimitive(mv, primitive)
     }
 
     /** A `(__force $x)` that `FunctionRewriter.holdMetaParams` wrapped around a held parameter. */
@@ -1878,8 +1897,18 @@ open class FunctionGenerator(
         arguments.forEachIndexed { i, arg ->
             mv.visitInsn(Opcodes.DUP)
             generateLoadInt(i)
-            generateAtom(mv, arg, null, false)
-            boxIfNeeded(mv, arg.type as? GroundedType)
+            val argType = arg.type as? GroundedType
+            val paramType = lambda.params.getOrNull(i)?.type
+            if ((paramType == GroundedType.ATOM || paramType == GroundedType.EXPRESSION) &&
+                argType != null && argType.isGroundedValue()
+            ) {
+                // A value bound to an `Atom` lambda parameter — `(let* (($X $N)) …)` over an `Int`
+                // `$N` — must arrive as an Atom; a bare Integer failed the body's cast (iter).
+                generateGroundedValueArg(mv, arg, argType)
+            } else {
+                generateAtom(mv, arg, null, false)
+                boxIfNeeded(mv, argType)
+            }
             mv.visitInsn(Opcodes.AASTORE)
         }
         mv.visitMethodInsn(

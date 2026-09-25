@@ -159,4 +159,22 @@ class RuntimeRuleTest : GeneratorTestBase() {
             !(assertEqualToResult (one) (a b))
         """.trimIndent()
     )
+
+    /**
+     * A primitive bound to an `Atom` let-variable is an Atom, and an Atom bound by a pattern reaches
+     * an `Int` parameter as its value (iter): a CCE in the let and a VerifyError at the call.
+     */
+    @Test
+    fun `values cross between primitive and Atom bindings`() = run(
+        "PrimitiveAtomBindings",
+        $$"""
+            (= (make-nat-iter) 0)
+            (= (iter-next $N) (let* (($X $N) ($Next (+ $N 1))) ($X $Next)))
+            !(assertEqual (iter-next 0) (0 1))
+            !(assertEqual (let* (($it (make-nat-iter))
+                                 (($x1 $it1) (iter-next $it))
+                                 (($x2 $it2) (iter-next $it1)))
+                                ($x1 $x2)) (0 1))
+        """.trimIndent()
+    )
 }
