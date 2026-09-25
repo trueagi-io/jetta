@@ -522,6 +522,30 @@ open class JettaProgram {
         }
 
         /**
+         * `__force` — evaluate a term a META-typed parameter received unevaluated, at the point the
+         * body needs its VALUE. `FunctionRewriter.holdMetaParams` emits it: a parameter declared
+         * `Expression` (or an `Atom` the body also uses as a term) is handed over as written, the
+         * way hyperon hands it, and each occurrence in a value position is wrapped in this call.
+         * `(: wu1 (-> Number Expression Expression)) (= (wu1 $a $b) (42 $a $b))` over `(+ 4 2)`
+         * answers `(42 6 6)` because the tuple element is forced here, not at the call site.
+         *
+         * Scalar: the first answer of the term's bag, or the term itself when it has none — a
+         * non-deterministic held argument is the case this does not cover.
+         */
+        @JvmStatic
+        fun __force(atom: Atom): Atom {
+            val term = if (atom is BoundAtom) atom.atom else atom
+            if (term !is Expression) return term
+            val bag = JettaCallSite.reduceTemplateBag(currentSpaceName ?: "", term)
+            val first = bag.firstOrNull() ?: return term
+            val value = if (first is BoundAtom) first.atom else first
+            // The eval-time check a compiled data constructor makes on its way out — the reference
+            // answers `(Error <term> (BadArgType …))` for a mistyped application whether it was
+            // evaluated at the call site or, as here, where the body needed it.
+            return if (value is Expression) typeCheckInert(value) else value
+        }
+
+        /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
          * evaluates nested grounded-op sub-expressions (`(- 8 (/ 4 6.4))`) then applies the head
          * operator via [GroundedOps], which unwraps `Grounded` operands to numbers at runtime —

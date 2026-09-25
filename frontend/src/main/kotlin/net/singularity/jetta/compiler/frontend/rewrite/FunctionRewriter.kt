@@ -34,6 +34,12 @@ class FunctionRewriter(
      * it keep the pre-existing quote-the-template behaviour).
      */
     private val isReducibleName: (String) -> Boolean = { false },
+    /**
+     * The parameter indices at which a builtin or an already-linked function takes its argument
+     * INERT (`JvmMethod.inertAtomParams`). A held meta parameter passed there is a TERM, not a
+     * value, so [holdMetaParams] does not force it. Defaults to none.
+     */
+    private val inertParamsOf: (String) -> Set<Int> = { emptySet() },
 ) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
 
@@ -47,6 +53,12 @@ class FunctionRewriter(
      * argument only when it is a template — see that field for why.
      */
     private val literalAtomParams = mutableMapOf<String, Set<Int>>()
+
+    /** As [literalAtomParams], for the meta-type `Expression`. Read only by [holdMetaParams]. */
+    private val literalExpressionParams = mutableMapOf<String, Set<Int>>()
+
+    /** Functions whose declaration writes the RESULT type literally as `Atom` — see [holdMetaParams]. */
+    private val literalAtomResults = mutableSetOf<String>()
     private val annotations = mutableMapOf<String, List<Atom>>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val runs = mutableListOf<Atom>()
@@ -283,18 +295,181 @@ class FunctionRewriter(
      * unreduced. `%Undefined%` is deliberately NOT included — it is the gradual wildcard, and its
      * argument is an ordinary value.
      */
-    private fun literalAtomIndices(declaration: Atom): Set<Int> {
-        val types = (declaration as? Expression)?.atoms ?: return emptySet()
-        if ((types.firstOrNull() as? Symbol)?.name != Predefined.ARROW &&
-            (types.firstOrNull() as? Special)?.value != Predefined.ARROW
-        ) return emptySet()
+    private fun literalAtomIndices(declaration: Atom, metaType: String = "Atom"): Set<Int> {
+        val types = arrowTypes(declaration) ?: return emptySet()
         // drop the arrow itself and the result type
         val params = types.drop(1).dropLast(1)
         // The surface spelling, as `asType()` matches it below — `GroundedType`'s own name is private.
-        return params.indices.filter { (params[it] as? Symbol)?.name == "Atom" }.toSet()
+        return params.indices.filter { (params[it] as? Symbol)?.name == metaType }.toSet()
+    }
+
+    /** Whether a `(-> …)` declaration writes its result type literally as `Atom`. */
+    private fun declaresAtomResult(declaration: Atom): Boolean =
+        (arrowTypes(declaration)?.takeIf { it.size >= 2 }?.last() as? Symbol)?.name == "Atom"
+
+    private fun arrowTypes(declaration: Atom): List<Atom>? {
+        val types = (declaration as? Expression)?.atoms ?: return null
+        if ((types.firstOrNull() as? Symbol)?.name != Predefined.ARROW &&
+            (types.firstOrNull() as? Special)?.value != Predefined.ARROW
+        ) return null
+        return types
+    }
+
+    /**
+     * Hand a META-typed argument over as the TERM, and evaluate it where the body needs its value —
+     * hyperon's semantics, at no cost to a function that does not ask for it.
+     *
+     * The reference passes an argument whose parameter is declared `Expression` or `Atom` without
+     * evaluating it, substitutes it into the rule's body, and evaluates that body — so the term is
+     * reduced exactly where it lands in a value position, and left alone where it lands in a
+     * position that takes a term: an inert parameter of the callee, a `quote`, or the result of a
+     * function whose own result type is `Atom` (measured on `metta-repl`: `(: q (-> Atom Atom))
+     * (= (q $x) $x) !(q (+ 1 2))` answers `(+ 1 2)`, `(wu1 (+ 2 4) (+ 4 2))` over
+     * `(= (wu1 $a $b) (42 $a $b))` answers `(42 6 6)`, and `(-> Expression Number)` over
+     * `(+ $x 1)` answers 4). A compiled body is the same program with the substitution done by
+     * the JVM, so the rewrite is local: each VALUE occurrence of a held parameter becomes
+     * `(__force $x)` (see `JettaProgram.__force`), every other occurrence is left as it is, and
+     * `Context` makes the parameter inert so the call site passes the term.
+     *
+     * Which parameters are held, per function:
+     *  * `Expression` — always, when no clause destructures it. Evaluating it at the call site is
+     *    not merely early, it is a type error: `(+ 4 2)` becomes a number where the descriptor
+     *    wants an `Expression`, and the class does not verify.
+     *  * `Atom` — only when some occurrence really is a TERM position. One used only as a value has
+     *    nothing to gain but laziness, and keeps the compiled eager path at the call site and the
+     *    `templateAtomParams` rule that goes with it.
+     *
+     * A parameter some clause destructures or repeats is matched structurally, which is the
+     * existing path. One that reaches a form binding variables in a pattern (`match`, `unify`, …)
+     * is left alone too: a `(__force …)` inside a pattern would be a different pattern.
+     */
+    private fun holdMetaParams(): Map<String, Set<Int>> {
+        // Without the runtime's `__force` registered (a bare resolver in a test) nothing can
+        // evaluate a held term, so nothing is held.
+        if (!isReducibleName(Predefined.FORCE)) return emptyMap()
+        // A held parameter of a function in THIS file is a term position for its callers, and
+        // that can make one of THEIR `Atom` parameters held in turn — so decide to a fixpoint. The
+        // sets only grow, and each is bounded by its declaration.
+        var held = mapOf<String, Set<Int>>()
+        repeat(MAX_HOLD_ROUNDS) {
+            val next = patterns.keys.associateWith { heldParamsOf(it, held) }.filterValues { it.isNotEmpty() }
+            if (next == held) return@repeat
+            held = next
+        }
+        for ((name, chosen) in held) {
+            val atomResult = name in literalAtomResults
+            patterns[name] = patterns.getValue(name).mapTo(mutableListOf()) { clause ->
+                val forced = chosen.mapTo(mutableSetOf()) { (clause.pattern.atoms[it + 1] as Variable).name }
+                clause.copy(value = walkMetaUses(clause.value, true, atomResult, held) { v, isTerm ->
+                    if (!isTerm && v.name in forced) Expression(Symbol(Predefined.FORCE), v) else v
+                })
+            }
+        }
+        return held
+    }
+
+    /** One round of [holdMetaParams] for [name], given what is [held] so far. */
+    private fun heldParamsOf(name: String, held: Map<String, Set<Int>>): Set<Int> {
+        val clauses = patterns.getValue(name)
+        val expressionParams = literalExpressionParams[name].orEmpty()
+        val candidates = literalAtomParams[name].orEmpty() + expressionParams
+        if (candidates.isEmpty()) return emptySet()
+        val atomResult = name in literalAtomResults
+        val usable = candidates.filter { i ->
+            clauses.all { clause ->
+                val v = clause.pattern.atoms.getOrNull(i + 1) as? Variable
+                v != null && clause.pattern.atoms.count { it == v } == 1
+            }
+        }
+        if (usable.isEmpty()) return emptySet()
+        val uses = MetaUses()
+        clauses.forEach { clause ->
+            val names = usable.associateBy { (clause.pattern.atoms[it + 1] as Variable).name }
+            walkMetaUses(clause.value, true, atomResult, held, { uses.opaqueNames += it }) { v, isTerm ->
+                if (isTerm) names[v.name]?.let { uses.term += it }
+                v
+            }
+            names.forEach { (n, i) -> if (n in uses.opaqueNames) uses.opaque += i }
+            uses.opaqueNames.clear()
+        }
+        return usable.filterTo(mutableSetOf()) { i ->
+            i !in uses.opaque && (i in expressionParams || i in uses.term)
+        }
+    }
+
+    private class MetaUses {
+        val term = mutableSetOf<Int>()
+        val opaque = mutableSetOf<Int>()
+        val opaqueNames = mutableSetOf<String>()
+    }
+
+    /**
+     * Visit every variable occurrence of [atom], telling [onUse] whether it sits in a TERM position
+     * (`true`) or a VALUE position, and rebuild the atom from what [onUse] returns — a parameter
+     * [held] by a function of this file is a term position, like a builtin's inert one. [resultPos]:
+     * the occurrence is (part of) what the function returns; with [atomResult] such an occurrence
+     * is a term. A form that binds pattern variables is not descended — its variables are reported
+     * through [onOpaque], so the parameter can be left on the existing path.
+     */
+    private fun walkMetaUses(
+        atom: Atom,
+        resultPos: Boolean,
+        atomResult: Boolean,
+        held: Map<String, Set<Int>>,
+        onOpaque: (String) -> Unit = {},
+        onUse: (Variable, Boolean) -> Atom,
+    ): Atom {
+        fun walk(a: Atom, res: Boolean): Atom = walkMetaUses(a, res, atomResult, held, onOpaque, onUse)
+        fun asTerm(a: Atom): Atom { varNamesIn(a).forEach { onOpaque(it) }; return a }
+        return when (atom) {
+            is Variable -> onUse(atom, resultPos && atomResult)
+            is Expression -> {
+                val atoms = atom.atoms
+                val head = atoms.firstOrNull() ?: return atom
+                val headName = (head as? Symbol)?.name ?: (head as? Special)?.value
+                when {
+                    headName == Predefined.QUOTE -> {
+                        atoms.drop(1).forEach { sub -> termUses(sub, onUse) }
+                        atom
+                    }
+                    headName == Predefined.IF && atoms.size == 4 ->
+                        atom.copy(listOf(head, walk(atoms[1], false), walk(atoms[2], resultPos), walk(atoms[3], resultPos)))
+                    headName == "let" && atoms.size == 4 && atoms[1] is Variable ->
+                        atom.copy(listOf(head, atoms[1], walk(atoms[2], false), walk(atoms[3], resultPos)))
+                    head is Variable -> atom.copy(listOf(head) + atoms.drop(1).map { walk(it, false) })
+                    headName != null && (headName in PATTERN_BINDING_HEADS || headName.startsWith("match")) ->
+                        asTerm(atom)
+                    headName != null && head is Symbol && !(headName in patterns || isReducibleName(headName)) ->
+                        // a data constructor: evaluated where it stands, element by element
+                        atom.copy(atoms.map { walk(it, resultPos) })
+                    head is Symbol || head is Special -> {
+                        val inert = when {
+                            head !is Symbol -> emptySet()
+                            headName in patterns -> held[headName].orEmpty()
+                            else -> inertParamsOf(headName!!)
+                        }
+                        atom.copy(listOf(head) + atoms.drop(1).mapIndexed { i, arg ->
+                            if (i in inert) { termUses(arg, onUse); arg } else walk(arg, false)
+                        })
+                    }
+                    // a tuple headed by a number, a string, a nested expression: data
+                    else -> atom.copy(atoms.map { walk(it, resultPos) })
+                }
+            }
+            else -> atom
+        }
+    }
+
+    private fun termUses(atom: Atom, onUse: (Variable, Boolean) -> Atom) {
+        when (atom) {
+            is Variable -> onUse(atom, true)
+            is Expression -> atom.atoms.forEach { termUses(it, onUse) }
+            else -> {}
+        }
     }
 
     private fun mkFunctions(): List<Atom> {
+        val held = holdMetaParams()
         val relationalCallees = computeRelationalCallees()
         return patterns.map { (name, list) ->
             if (list.size == 1 && !hasConstantsInPattern(list[0].pattern) &&
@@ -309,6 +484,7 @@ class FunctionRewriter(
                     annotations[name]?.toMutableList() ?: mutableListOf(),
                     position = pattern.pattern.position,
                     declaredAtomParams = literalAtomParams[name].orEmpty(),
+                    heldAtomParams = held[name].orEmpty(),
                 )
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
@@ -359,6 +535,7 @@ class FunctionRewriter(
                     annotations[name]?.toMutableList() ?: mutableListOf(),
                     position = list[0].pattern.position,
                     declaredAtomParams = literalAtomParams[name].orEmpty(),
+                    heldAtomParams = held[name].orEmpty(),
                 )
             }
         }
@@ -1547,6 +1724,8 @@ class FunctionRewriter(
                     // Record which parameters were written LITERALLY as `Atom` before `asType()`
                     // erases every unknown type to the same thing — see [literalAtomParams].
                     literalAtomParams[symbol.name] = literalAtomIndices(expression.atoms[2])
+                    literalExpressionParams[symbol.name] = literalAtomIndices(expression.atoms[2], "Expression")
+                    if (declaresAtomResult(expression.atoms[2])) literalAtomResults += symbol.name
                     typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
                     // ALSO keep the type as a space fact so it is visible at runtime
                     // (`get-doc` / future `get-type` query `&self`). This is additive: the
@@ -1624,6 +1803,17 @@ class FunctionRewriter(
         }
 
     companion object {
+        private const val MAX_HOLD_ROUNDS = 8
+
+        /**
+         * Forms (as [rewriteAtom] leaves them) that bind variables in a pattern of their own; a held
+         * parameter inside one is not rewritten — see [holdMetaParams]. `match…` is matched by prefix.
+         */
+        private val PATTERN_BINDING_HEADS = setOf(
+            "let", "let*", "unify", "unifyMatch", "letMatch", "case", "chain", "sealed", "atom-subst",
+            Predefined.LAMBDA,
+        )
+
         const val MAIN = "__main"
 
         /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)

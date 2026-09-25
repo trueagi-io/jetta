@@ -50,13 +50,12 @@ class DeclaredAtomParamTest : GeneratorTestBase() {
     }
 
     /**
-     * A COMPUTABLE term reaching the same parameter is computed. This is the case that decides the
-     * rule: `e1_kb_write` writes to the space through `(: ift (-> Bool Atom %Undefined%))`, and if the
-     * argument were held, the write would never happen — hyperon performs it while reducing `ift`'s
-     * result, which JeTTa does not do.
+     * A COMPUTABLE term reaching the same parameter is held too when the function's own result is
+     * `Atom`: nothing evaluates the result, so the term comes back as written. Measured on
+     * `metta-repl`: `(hold (twice 21))` answers `(kept (twice 21))`.
      */
     @Test
-    fun `a computable term reaching a declared Atom parameter is reduced`() {
+    fun `a computable term reaching a declared Atom parameter of an Atom function is held`() {
         run(
             "DeclaredAtomComputable",
             """
@@ -64,18 +63,22 @@ class DeclaredAtomParamTest : GeneratorTestBase() {
             (= (hold _t) (kept _t))
             (: twice (-> Int Int))
             (= (twice _n) (* _n 2))
-            !(assertEqual (hold (twice 21)) (kept 42))
+            !(assertEqual (hold (twice 21)) (kept (twice 21)))
             """.trimIndent().d()
         )
     }
 
-    /** The effect version of the same rule, which is what e1_kb_write depends on. */
+    /**
+     * An effect reaching a declared-`Atom` parameter happens once the result is EVALUATED — the
+     * result type is not `Atom` — which is what e1_kb_write's `(: ift (-> Bool Atom %Undefined%))`
+     * depends on. Measured on `metta-repl`.
+     */
     @Test
     fun `an effect reaching a declared Atom parameter still happens`() {
         run(
             "DeclaredAtomEffect",
             """
-            (: hold (-> Atom Atom))
+            (: hold (-> Atom %Undefined%))
             (= (hold _t) (kept _t))
             !(hold (add-atom &self (Written Here)))
             !(assertEqual (match &self (Written _w) _w) Here)

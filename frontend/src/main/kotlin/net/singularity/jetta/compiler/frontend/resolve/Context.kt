@@ -249,6 +249,9 @@ class Context private constructor(
         val held = declared.filterTo(mutableSetOf()) {
             func.params.getOrNull(it)?.name !in escaping && it !in destructured
         }
+        // …and a parameter whose value uses the rewriter has already wrapped in `(__force …)` is
+        // held whatever it reaches: the body evaluates it where it needs it, hyperon's way.
+        held += func.heldAtomParams
         return JvmMethod(
             owner = owner,
             name = func.name,
@@ -381,6 +384,9 @@ class Context private constructor(
     /** A name the runtime serves: a registered builtin, or a grounded operator spelled as a Special. */
     private fun isBuiltinName(name: String): Boolean =
         systemFunctions.containsKey(name) || name in BUILTIN_OPERATOR_NAMES
+
+    /** Whether [name] is a registered builtin — not a user function this context resolves. */
+    fun isSystemFunction(name: String): Boolean = systemFunctions.containsKey(name)
 
     fun addSystemFunction(resolvedSymbol: ResolvedSymbol) {
         systemFunctions[resolvedSymbol.jvmMethod.name] = resolvedSymbol

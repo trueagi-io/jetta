@@ -19,13 +19,12 @@ data class JvmMethod(
      * argument is held unreduced only when it is a TEMPLATE — a term carrying a variable that
      * nothing in scope binds, so there is no value to compute in the first place.
      *
-     * Weaker than [inertAtomParams] on purpose, and the difference is not pedantry: hyperon keeps
-     * reducing a function's RESULT, so passing a reducible term unreduced there merely defers the
-     * work, while JeTTa returns its result as it stands. Held unconditionally, `(: ift (-> Bool Atom
-     * %Undefined%))` over `(add-atom &kb (Green $x))` would never perform the write (e1_kb_write),
-     * and `(: myPair (-> Atom Atom Atom))` over `(f X)` would answer `(Pair (f X) (f Y))`. Both terms
-     * are closed and computable, so they are computed; the reference stdlib's `filter-atom` template
-     * `(> $v 1)` is not, and it is passed on.
+     * Weaker than [inertAtomParams] on purpose: this is the parameter the body uses only as a VALUE,
+     * so evaluating a closed argument at the call site is the same answer, compiled. Held, `(: ift
+     * (-> Bool Atom %Undefined%))` over `(add-atom &kb (Green $x))` would need the body to force it;
+     * computed here, the write happens (e1_kb_write). The reference stdlib's `filter-atom` template
+     * `(> $v 1)` has no value to compute, and it is passed on. A parameter the body ALSO uses as a
+     * term is held outright instead — see `FunctionDefinition.heldAtomParams`.
      */
     val templateAtomParams: Set<Int> = emptySet(),
 )

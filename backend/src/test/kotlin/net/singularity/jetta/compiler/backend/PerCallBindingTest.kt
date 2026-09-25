@@ -252,10 +252,10 @@ class PerCallBindingTest : GeneratorTestBase() {
             (Name Bob)
 
             (= (resolve $x) (match &self (Name $x) $x))
-            (: greet (-> Atom Atom))
+            (: greet (-> %Undefined% %Undefined%))
             (= (greet $name) (Hello $name))
             (= (greetAll) (greet (resolve $x)))
-        """.trimIndent(), // TODO: (: greet (-> Atom Atom)) is required (we need to improve type inference here)
+        """.trimIndent(), // TODO: (: greet (-> %Undefined% %Undefined%)) is required (we need to improve type inference here)
             mapImpl, flatMapImpl
         ) { context ->
             registerExternals(context)

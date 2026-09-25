@@ -787,6 +787,14 @@ open class FunctionGenerator(
     }
 
     private fun generateQuoteTerm(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
+        // A `(__force $x)` is never data, whatever the quoting context: it is the VALUE of a held
+        // parameter, put there by the rewriter precisely because the position needs one — an `==`
+        // operand quotes its Atom-typed sides, and quoting this call compared against the literal
+        // `(__force …)`.
+        if (atom is Expression && isForcedHeldParam(atom)) {
+            generateAtom(mv, atom, null, false)
+            return
+        }
         when (atom) {
             is Expression -> {
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
@@ -1667,6 +1675,11 @@ open class FunctionGenerator(
             // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
             // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
             generateLoadBoolean(arg.name == "True")
+        } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression && isForcedHeldParam(arg)) {
+            // `(__force $x)` over a parameter this function holds unevaluated, landing in a slot the
+            // callee holds too: the callee wants the term, which is what `$x` already is. Quoting
+            // the call instead would hand over the literal `(__force …)`.
+            generateAtom(mv, arg.atoms[1], null, false)
         } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression) {
             // A FULLY-INERT Atom parameter (e.g. `get-type`): the argument must reach the
             // method un-reduced, so quote the whole term structurally (evalCalls=false ⇒ no
@@ -1743,6 +1756,11 @@ open class FunctionGenerator(
             narrowArgumentToExpression(mv, jvmSymbol, index, argType)
         }
     }
+
+    /** A `(__force $x)` that `FunctionRewriter.holdMetaParams` wrapped around a held parameter. */
+    private fun isForcedHeldParam(arg: Expression): Boolean =
+        arg.atoms.size == 2 && (arg.atoms[0] as? Symbol)?.name == Predefined.FORCE && arg.atoms[1] is Variable &&
+            arg.resolved != null
 
     /**
      * An argument that is statically WIDER than an `Expression` parameter needs the cast the

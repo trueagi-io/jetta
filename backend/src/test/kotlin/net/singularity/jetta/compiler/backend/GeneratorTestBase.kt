@@ -46,7 +46,8 @@ abstract class GeneratorTestBase {
         rewriter.add {
             FunctionRewriter(
                 messageCollector, context.getSpace(),
-                isReducibleName = { context.resolve(it) != null }
+                isReducibleName = { context.resolve(it) != null },
+                inertParamsOf = { context.resolve(it)?.jvmMethod?.inertAtomParams.orEmpty() },
             )
         }
         rewriter.add { LetRewriter() }

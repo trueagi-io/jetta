@@ -409,6 +409,15 @@ object JettaCallSite {
         }
         val head = inner.atoms[0]
         if (opHeadName(head) == QUOTE_HEAD) return listOf(inner)
+        // `if` is lazy here as everywhere: only the chosen branch is reduced. Reducing both first
+        // is wrong for an effect and never terminates for a recursive definition written as a term
+        // (`(if (== $n 0) 1 (* $n (fac (- $n 1))))` handed to a held `Expression` parameter).
+        if (opHeadName(head) == SPECIAL_IF && inner.atoms.size == 4) {
+            return reduceTemplate(spaceName, inner.atoms[1], depth + 1).flatMap { cond ->
+                val branch = if (JettaProgram.isTruthy(unwrapBound(cond))) inner.atoms[2] else inner.atoms[3]
+                reduceTemplate(spaceName, branch, depth + 1)
+            }
+        }
         // Argument bags, crossed: `(f (a) (b))` where both reduce to two values runs `f` four
         // times, the same product the compiled `flat-map?` lifts build. Bounded, because a
         // template that forks unboundedly is a runaway, not an answer.
@@ -428,9 +437,38 @@ object JettaCallSite {
         for (args in combos) {
             val expr = Expression(listOf(head) + args)
             val bag = invokeMultivaluedRegistry(expr)
-            if (bag != null) out.addAll(bag) else out.addAll(reduceBag(spaceName, expr))
+            if (bag != null) { out.addAll(bag); continue }
+            val value = invokeScalarRegistry(expr)
+            if (value != null) out.add(value) else out.addAll(reduceBag(spaceName, expr))
         }
         return out
+    }
+
+    /**
+     * Invoke [expr]'s head as a SINGLE-VALUED compiled function over the already-reduced arguments,
+     * or null when it is not one. Preferred over [reduceBag] for the same reason the multivalued
+     * twin is: the space holds the same function's clauses, and rewriting by them is one step, not
+     * an evaluation — `(fac 2)` came back as `(* 2 (fac (- 2 1)))`. Unlike [reduceViaRegistry] a
+     * primitive result (`int`) is a value here, boxed to an atom, not a reason to decline.
+     */
+    private fun invokeScalarRegistry(expr: Expression): Atom? {
+        val name = opHeadName(Matcher.resolveBinding(expr.atoms[0])) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: BuiltinLinks.lookup(name) ?: return null
+        if (entry.multivalued) return null
+        if (entry.paramTypes.size != expr.atoms.size - 1) return null
+        val args = arrayOfNulls<Any?>(expr.atoms.size - 1)
+        for (i in 1 until expr.atoms.size) args[i - 1] = expr.atoms[i]
+        val result = try {
+            JettaLinkRegistry.invoke(entry, args)
+        } catch (_: ClassCastException) {
+            return null
+        } catch (_: NullPointerException) {
+            return null
+        }
+        // A grounded operator answers null for "not computable over these operands" — leave it to
+        // the step reducer, as [reduceViaRegistry] does.
+        if (result == null || result is List<*>) return null
+        return unwrapBound(toAtom(result))
     }
 
     /**
@@ -446,7 +484,7 @@ object JettaCallSite {
      */
     private fun invokeMultivaluedRegistry(expr: Expression): List<Atom>? {
         val name = opHeadName(Matcher.resolveBinding(expr.atoms[0])) ?: return null
-        val entry = JettaLinkRegistry.lookup(name) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: BuiltinLinks.lookup(name) ?: return null
         if (!entry.multivalued) return null
         if (entry.paramTypes.size != expr.atoms.size - 1) return null
         val args = arrayOfNulls<Any?>(expr.atoms.size - 1)

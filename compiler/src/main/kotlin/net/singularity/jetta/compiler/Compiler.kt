@@ -158,7 +158,8 @@ class Compiler(
             rewriter.add {
                 FunctionRewriter(
                     messageCollector, context.getSpace(), collector,
-                    isReducibleName = { context.resolve(it) != null }
+                    isReducibleName = { context.resolve(it) != null },
+                    inertParamsOf = { context.resolve(it)?.jvmMethod?.inertAtomParams.orEmpty() },
                 )
             }
             rewriter.add { LetRewriter() }

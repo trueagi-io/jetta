@@ -33,6 +33,8 @@ object Predefined {
     const val PACKAGE = "package"
     const val QUOTE = "quote"
     const val SELF = "&self"
+    /** The value of a term a meta-typed parameter holds unevaluated — `FunctionRewriter.holdMetaParams`. */
+    const val FORCE = "__force"
 }
 
 object PredefinedAtoms {

@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
+import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
@@ -748,6 +749,21 @@ fun registerExternals(context: Context) {
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ANY, ArrowType(GroundedType.ATOM, GroundedType.ATOM), SeqType(GroundedType.ATOM)),
             true
+        )
+    )
+    // `__force` — the value of a term a meta-typed parameter was handed unevaluated; emitted only
+    // by `FunctionRewriter.holdMetaParams`, never written by a user. The argument is the held
+    // parameter itself, so inert: the term must arrive as it is, and this call evaluates it.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = Predefined.FORCE,
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
         )
     )
     // `sealed` — rename every variable in the second argument except those listed in the first,
