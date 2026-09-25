@@ -421,9 +421,12 @@ class FunctionRewriter(
             val atomResult = name in literalAtomResults
             patterns[name] = patterns.getValue(name).mapTo(mutableListOf()) { clause ->
                 val forced = chosen.mapTo(mutableSetOf()) { (clause.pattern.atoms[it + 1] as Variable).name }
-                clause.copy(value = walkMetaUses(clause.value, true, atomResult, held) { v, isTerm ->
+                val value = walkMetaUses(clause.value, true, atomResult, held) { v, isTerm ->
                     if (!isTerm && v.name in forced) Expression(Symbol(Predefined.FORCE), v) else v
-                })
+                }
+                // A forced value is a bag, so a `superpose` tuple holding one is a union now — the
+                // rewrite `rewriteExpression` gives a tuple of calls, applied after the fact.
+                clause.copy(value = unionSuperposeDeep(value))
             }
         }
         return held
@@ -1759,6 +1762,13 @@ class FunctionRewriter(
         // tuple (the reference does not evaluate it), so `(superpose (union-atom …))` would
         // superpose `union-atom` and its operands.
         return Expression(Symbol(Predefined.SUPERPOSE_VALUE, position = head.position), union, position = pos)
+    }
+
+    private fun unionSuperposeDeep(atom: Atom): Atom {
+        if (atom !is Expression || atom.atoms.isEmpty()) return atom
+        if (atom.atoms[0] == PredefinedAtoms.QUOTE || (atom.atoms[0] as? Symbol)?.name == Predefined.QUOTE) return atom
+        val inner = atom.copy(atoms = atom.atoms.map { unionSuperposeDeep(it) })
+        return if (isReducibleName(Predefined.SUPERPOSE_VALUE)) unionSuperpose(inner) ?: inner else inner
     }
 
     /** A call to a function of this file, a builtin or a linked one — not a data tuple. */

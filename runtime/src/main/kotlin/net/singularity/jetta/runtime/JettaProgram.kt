@@ -529,20 +529,20 @@ open class JettaProgram {
          * `(: wu1 (-> Number Expression Expression)) (= (wu1 $a $b) (42 $a $b))` over `(+ 4 2)`
          * answers `(42 6 6)` because the tuple element is forced here, not at the call site.
          *
-         * Scalar: the first answer of the term's bag, or the term itself when it has none — a
-         * non-deterministic held argument is the case this does not cover.
+         * Multivalued: every answer of the term's bag, as the reference evaluates the substituted
+         * term — `(inc (superpose (1 2)))` over `(+ $x 1)` is 2 and 3.
          */
         @JvmStatic
-        fun __force(atom: Atom): Atom {
+        fun __force(atom: Atom): List<Atom> {
             val term = if (atom is BoundAtom) atom.atom else atom
-            if (term !is Expression) return term
-            val bag = JettaCallSite.reduceTemplateBag(currentSpaceName ?: "", term)
-            val first = bag.firstOrNull() ?: return term
-            val value = if (first is BoundAtom) first.atom else first
-            // The eval-time check a compiled data constructor makes on its way out — the reference
-            // answers `(Error <term> (BadArgType …))` for a mistyped application whether it was
-            // evaluated at the call site or, as here, where the body needed it.
-            return if (value is Expression) typeCheckInert(value) else value
+            if (term !is Expression) return listOf(term)
+            return JettaCallSite.reduceTemplateBag(currentSpaceName ?: "", term).map { answer ->
+                val value = if (answer is BoundAtom) answer.atom else answer
+                // The eval-time check a compiled data constructor makes on its way out — the
+                // reference answers `(Error <term> (BadArgType …))` for a mistyped application
+                // whether it was evaluated at the call site or, as here, where the body needed it.
+                if (value is Expression) typeCheckInert(value) else value
+            }
         }
 
         /**

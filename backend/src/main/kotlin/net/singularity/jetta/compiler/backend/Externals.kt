@@ -776,11 +776,13 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = Predefined.FORCE,
-                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;",
                 inertAtomParams = setOf(0)
             ),
-            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
-            false
+            // Multivalued: a held term answers ALL its results, each use independently —
+            // `(+ $x $x)` over `(superpose (1 2))` is 2 3 3 4 in the reference.
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
         )
     )
     // `__reduce` — a call to a head whose only rules are added to the space at run time; emitted

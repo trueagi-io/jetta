@@ -56,4 +56,21 @@ class ReferenceSemanticsTest : GeneratorTestBase() {
             !(assertEqual (walk (1 2 3)) done)
         """.trimIndent()
     )
+
+    /** h05: a held non-deterministic term answers ALL its results, each use independently. */
+    @Test
+    fun `a held non-deterministic term answers all its results`() = run(
+        "HeldNondet",
+        $$"""
+            (: inc (-> Expression Number))
+            (= (inc $x) (+ $x 1))
+            !(assertEqualToResult (inc (superpose (1 2))) (2 3))
+            (: tw (-> Expression Number))
+            (= (tw $x) (+ $x $x))
+            !(assertEqualToResult (tw (superpose (1 2))) (2 3 3 4))
+            (: pick2 (-> Expression Expression))
+            (= (pick2 $cases) (superpose ($cases $cases)))
+            !(assertEqualToResult (pick2 (A B)) ((A B) (A B)))
+        """.trimIndent()
+    )
 }

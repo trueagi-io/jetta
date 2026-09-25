@@ -4,6 +4,5 @@
 
 h02_atom_result_body.metta          ASSERT_FAIL:SEMANTIC_DIVERGENCE:atom-result-body   the body of an (-> … Atom) function is evaluated: (q3 (+ 1 2)) gives (foo 2 …)
 h03_eval_one_step.metta             ASSERT_FAIL:SEMANTIC_DIVERGENCE:eval-one-step      eval reduces fully (42), the reference takes one step ((gg)); function/chain/return are not stepwise
-h05_held_nondet.metta               ASSERT_FAIL:SEMANTIC_DIVERGENCE:force-first        __force takes the FIRST answer of a held non-deterministic term: (inc (superpose (1 2))) gives 2 only
 h11_rules_for_compiled_head.metta   ASSERT_FAIL:FEATURE_PENDING:compiled-head-rules    a head compiled from the file ignores rules added/removed at run time (corpus selfprog)
 h12_quote_is_kept.metta             ASSERT_FAIL:SEMANTIC_DIVERGENCE:quote-kept         quote is stripped on evaluation: (quote (+ 1 2)) gives (+ 1 2)
