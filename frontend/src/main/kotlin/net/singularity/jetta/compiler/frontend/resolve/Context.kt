@@ -461,6 +461,10 @@ class Context private constructor(
                                     // FIXME: do nothing for now
                                 }
 
+                                // An operator passed as data — `(cons-atom + (1 2))` in a body:
+                                // the symbol has no type to infer here.
+                                is Special -> {}
+
                                 else -> TODO("it=$arg")
                             }
                         }

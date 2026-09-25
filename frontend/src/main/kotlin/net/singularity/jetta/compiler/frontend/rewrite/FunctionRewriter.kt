@@ -1684,16 +1684,17 @@ class FunctionRewriter(
             val value = if (stepped is Variable)
                 Expression(Symbol(EVAL_KEYWORD, position = stepped.position), stepped, position = stepped.position)
             else stepped
-            return rewriteAtom(
-                Expression(
-                    Symbol(LetRewriter.LET_KEYWORD, position = func.position),
-                    expression.atoms[2],
-                    value,
-                    expression.atoms[3],
-                    position = expression.position,
-                )
+            val let = Expression(
+                Symbol(LetRewriter.LET_KEYWORD, position = func.position),
+                expression.atoms[2],
+                value,
+                expression.atoms[3],
+                position = expression.position,
             )
+            chainLets += let
+            return rewriteAtom(let)
         }
+        forceLetTemplate(expression)?.let { return rewriteAtom(it) }
         // `function`/`return` are minimal MeTTa's evaluation bracket: `(function X)` reduces X one
         // step at a time until it becomes `(return $v)`, then yields `$v`. The bracket exists to
         // express WHEN to stop stepping — and JeTTa does not step: wherever it evaluates, it
@@ -1764,6 +1765,58 @@ class FunctionRewriter(
     private fun isCall(atom: Atom): Boolean {
         val name = ((atom as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name ?: return false
         return name in declaredHeads || isReducibleName(name)
+    }
+
+    /** The `let`s [rewriteExpression] made from a `chain` — see [forceLetTemplate]. By identity. */
+    private val chainLets = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Expression, Boolean>())
+
+    /**
+     * A `let` template is REDUCED after substitution: `(let $x (cons-atom + (1 2)) $x)` answers 3
+     * and `(… (foo $x))` answers `(foo 3)` (measured on metta-repl). A compiled template uses the
+     * VALUE as it was bound, which is right whenever that value is already a normal form — what any
+     * call answers — so only a value that can be an UNREDUCED term is forced where the template
+     * uses it: a term built by a grounded operation ([TERM_BUILDERS]) or the result of a function
+     * that declares its result `Atom`. Not a `let` made from a `chain`: minimal MeTTa's
+     * `(function (chain (cons-atom + (1 2)) $x (return $x)))` answers the term `(+ 1 2)`.
+     */
+    private fun forceLetTemplate(expression: Expression): Expression? {
+        if ((expression.atoms[0] as? Symbol)?.name != LetRewriter.LET_KEYWORD || expression.atoms.size != 4) return null
+        if (expression in chainLets) return null
+        val v = expression.atoms[1] as? Variable ?: return null
+        val source = ((expression.atoms[2] as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name ?: return null
+        if (source !in TERM_BUILDERS && source !in literalAtomResults) return null
+        if (!isReducibleName(Predefined.FORCE)) return null
+        var forced = false
+        // Where the template needs the VALUE: the template itself, a tuple's element, an argument
+        // of an operator or of this file's function — unless that parameter is declared `Atom` or
+        // `Expression`, which takes the term. A builtin's argument is a term position too (it takes
+        // atoms — `(superpose $u)` enumerates the tuple, it does not want it reduced), and quotes
+        // and pattern-binding forms are not entered.
+        fun walk(a: Atom): Atom = when (a) {
+            is Variable -> if (a.name == v.name) { forced = true; Expression(Symbol(Predefined.FORCE), a) } else a
+            is Expression -> {
+                val head = a.atoms.firstOrNull()
+                val headName = (head as? Symbol)?.name
+                when {
+                    head == null -> a
+                    // a function VALUE applied: its parameter types are not known here
+                    head is Variable -> a
+                    head == PredefinedAtoms.QUOTE || headName == Predefined.QUOTE -> a
+                    headName != null && (headName in PATTERN_BINDING_HEADS || headName.startsWith("match")) -> a
+                    headName != null && headName !in patterns && isReducibleName(headName) -> a
+                    // this file's function: a parameter it declares `Atom`/`Expression` takes the term
+                    headName != null && headName in patterns -> {
+                        val terms = literalAtomParams[headName].orEmpty() + literalExpressionParams[headName].orEmpty()
+                        a.copy(atoms = listOf(head) + a.atoms.drop(1).mapIndexed { i, arg -> if (i in terms) arg else walk(arg) })
+                    }
+                    else -> a.copy(atoms = listOf(if (head is Expression) walk(head) else head) + a.atoms.drop(1).map { walk(it) })
+                }
+            }
+            else -> a
+        }
+        val body = walk(expression.atoms[3])
+        if (!forced) return null
+        return expression.copy(atoms = listOf(expression.atoms[0], v, expression.atoms[2], body)).also { chainLets += it }
     }
 
     private fun rewriteExpressionArguments(expression: Expression): Expression {
@@ -1932,6 +1985,13 @@ class FunctionRewriter(
         private const val SUPERPOSE = "superpose"
         private const val COLLAPSE = "collapse"
         private const val UNION_ATOM = "union-atom"
+
+        /**
+         * Grounded operations that answer a term they BUILT, not reduced — see [forceLetTemplate].
+         * Not the multiset operations: they combine COLLAPSED result tuples, whose elements are
+         * values already.
+         */
+        private val TERM_BUILDERS = setOf("cons-atom", "cdr-atom", "car-atom", "atom-subst", "sealed")
 
         /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)
          *  that sets the ordered-top-level per-run visibility cutoff. */
