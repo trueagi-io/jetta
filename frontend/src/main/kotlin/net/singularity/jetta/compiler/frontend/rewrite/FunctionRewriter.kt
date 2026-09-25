@@ -78,8 +78,8 @@ class FunctionRewriter(
     private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1)
 
     /**
-     * Heads whose only `=` rules are stored by an `add-atom` — at top level or inside a function —
-     * so they reach the space at run time and nothing here compiles them.
+     * Heads whose `=` rules an `add-atom` stores or a `remove-atom` drops — at top level or inside a
+     * function — so what they answer is decided by the space at run time, not by compiled code.
      * A call to one is wrapped in `(__reduce …)` (see `JettaProgram.__reduce`), which asks the
      * space when the call runs: before this, `!(add-atom &self (= (g $x $y) (+ $x $y)))` followed
      * by `(g 3 4)` compiled the call as the data `(g 3 4)`. A head defined at top level, or by a
@@ -115,11 +115,11 @@ class FunctionRewriter(
             if ((e.atoms.firstOrNull() as? Special)?.value == Predefined.PATTERN && e.atoms.size == 3)
                 ((e.atoms[1] as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name
             else null
-        // Only a rule an `add-atom` stores: a `(= (h …) $x)` elsewhere is a QUERY — the pattern of
-        // a `match` — and `h` may well have no rule at all.
+        // Only a rule an `add-atom` stores or a `remove-atom` drops: a `(= (h …) $x)` elsewhere is a
+        // QUERY — the pattern of a `match` — and `h` may well have no rule at all.
         fun walk(a: Atom) {
             if (a !is Expression) return
-            if ((a.atoms.firstOrNull() as? Symbol)?.name == ADD_ATOM && a.atoms.size == 3) {
+            if ((a.atoms.firstOrNull() as? Symbol)?.name in SPACE_EDITS && a.atoms.size == 3) {
                 (a.atoms[2] as? Expression)?.let { e -> ruleHead(e)?.let { nested += it } }
             }
             a.atoms.forEach { walk(it) }
@@ -135,7 +135,10 @@ class FunctionRewriter(
             }
         }
         declaredHeads = declared
-        return nested.filterTo(mutableSetOf()) { it !in declared && !isReducibleName(it) }
+        // A head this file ALSO defines is included: its rules are space atoms like any other, so
+        // one added or removed at run time changes what it answers — `(= (color) red)` then
+        // `!(add-atom &self (= (color) blue))` makes `(color)` answer both (h11, corpus selfprog).
+        return nested.filterTo(mutableSetOf()) { !isReducibleName(it) }
     }
 
     /** Argument positions of [expression] whose content is data, not a call — see [dynamicHeads]. */
@@ -533,6 +536,10 @@ class FunctionRewriter(
     }
 
     private fun mkFunctions(): List<Atom> {
+        // A head whose rules change at run time is not compiled: what it answers is the space's
+        // business, and a compiled copy would answer the file's rules only. Its rules stay facts,
+        // and every call to it is a `__reduce` — see [dynamicHeads].
+        dynamicHeads.forEach { patterns.remove(it) }
         val held = holdMetaParams()
         val relationalCallees = computeRelationalCallees()
         return patterns.map { (name, list) ->
@@ -1992,6 +1999,7 @@ class FunctionRewriter(
         const val MAIN = "__main"
 
         private const val ADD_ATOM = "add-atom"
+        private val SPACE_EDITS = setOf(ADD_ATOM, "remove-atom")
         private const val SUPERPOSE = "superpose"
         private const val COLLAPSE = "collapse"
         private const val UNION_ATOM = "union-atom"

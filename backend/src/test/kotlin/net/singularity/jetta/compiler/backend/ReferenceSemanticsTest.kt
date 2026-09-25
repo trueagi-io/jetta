@@ -73,4 +73,20 @@ class ReferenceSemanticsTest : GeneratorTestBase() {
             !(assertEqualToResult (pick2 (A B)) ((A B) (A B)))
         """.trimIndent()
     )
+
+    /** h11: a head defined in the file answers what the space holds after an add or a remove. */
+    @Test
+    fun `rules added or removed at run time change a head the file defines`() = run(
+        "CompiledHeadRules",
+        $$"""
+            (= (color) red)
+            !(add-atom &self (= (color) blue))
+            !(assertEqualToResult (collapse (color)) ((red blue)))
+            (= (function1) OK)
+            !(remove-atom &self (= (function1) OK))
+            !(assertEqualToResult (function1) ((function1)))
+            !(add-atom &self (= (function1) (OK)))
+            !(assertEqualToResult (function1) ((OK)))
+        """.trimIndent()
+    )
 }
