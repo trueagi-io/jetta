@@ -136,9 +136,9 @@ object Assertions {
                 buildString {
                     append("assertEqualToResult failed")
                     append("\nExpected results: ")
-                    append(normalizedExpected)
+                    append(unwrap(unquote(expected)))
                     append("\nActual results:   ")
-                    append(normalizedActual)
+                    append(unwrap(actual))
                 }
             )
         }
