@@ -263,6 +263,57 @@ class AutomaticStdlibImportTest {
         assertTrue(output.contains("done"), "expected every assertion to pass, got:\n" + output)
     }
 
+    /**
+     * A source `quote` keeps its wrapper, as the reference's `(= (quote $atom) NotReducible)` does,
+     * so the library's `(= (unquote (quote $atom)) $atom)` is what unwraps it, a `(quote $v)`
+     * pattern matches it as written, and `get-type` reads the library's `(: quote (-> Atom Atom))`.
+     * Measured on metta-repl 0.2.10.
+     */
+    @Test
+    fun `quote keeps its wrapper and the library unwraps it`(
+        @TempDir src: Path,
+        @TempDir out: Path,
+    ) {
+        File(src.toFile(), "quotes.metta").writeText(
+            """
+            !(assertEqualToResult (quote (+ 1 2)) ((quote (+ 1 2))))
+            !(assertEqualToResult (let _z 5 (quote (f _z))) ((quote (f 5))))
+            !(assertEqualToResult (unquote (quote (a b))) ((a b)))
+            !(assertEqualToResult (let (quote _v) (quote (a b)) _v) ((a b)))
+            !(assertEqualToResult (noreduce-eq (+ 1 2) (+ 1 2)) (True))
+            !(assertEqualToResult (noreduce-eq (+ 1 2) 3) (False))
+            !(assertEqualToResult (get-type (quote a)) (Atom))
+            !(println! done)
+            """.trimIndent().replace('_', '$')
+        )
+        compile(File(src.toFile(), "quotes.metta").absolutePath, out, autoImport = true)
+        val output = run(out, "quotes")
+        assertTrue(output.contains("done"), "expected every assertion to pass, got:\n" + output)
+    }
+
+    /**
+     * The library is compiled WITHOUT importing itself. It used to import its own previous build,
+     * which put a run above every rule — so each rule carried an ordered-visibility guard, and a
+     * program whose watermark sits below the library's atoms (any program with a rule declared
+     * after a run) found `unquote` inert.
+     */
+    @Test
+    fun `a rule declared below a run does not hide the library`(
+        @TempDir src: Path,
+        @TempDir out: Path,
+    ) {
+        File(src.toFile(), "below.metta").writeText(
+            """
+            !(assertEqualToResult (unquote (quote a)) (a))
+            !(println! done)
+            (= (w _x) _x)
+            """.trimIndent().replace('_', '$')
+        )
+        compile(File(src.toFile(), "below.metta").absolutePath, out, autoImport = true)
+        val output = run(out, "below")
+        assertTrue(output.contains("done"), "expected every assertion to pass, got:\n" + output)
+    }
+
     private fun compile(file: String, out: Path, autoImport: Boolean) {
         val compiler = Compiler(
             files = listOf(file),

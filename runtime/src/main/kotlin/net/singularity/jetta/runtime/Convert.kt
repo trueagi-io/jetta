@@ -63,13 +63,14 @@ object Convert {
      * and dedupes by structural [Atom] equality, preserving first-seen order.
      */
     /**
-     * `unquote` — strip ONE `quote` layer: `(quote X) → X`. The runtime half of a Form-2
+     * `__unquote` — strip ONE `quote` layer: `(quote X) → X`. The runtime half of a Form-2
      * pattern-`let` `(let (quote $v) VAL BODY)`, which binds `$v` to the CONTENT of VAL's quote
-     * (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`). A value that is not a
+     * (LetRewriter lowers it to `(let $v (__unquote VAL) BODY)`). A value that is not a
      * `(quote X)` is returned unchanged — the pattern simply didn't match a quote wrapper.
+     * Internal: the user-level `unquote` is the library's rule.
      */
     @JvmStatic
-    fun unquote(value: Any?): Atom {
+    fun __unquote(value: Any?): Atom {
         val a = (if (value is BoundAtom) value.atom else value) as Atom
         return if (a is Expression && a.atoms.size == 2 && isQuoteHead(a.atoms[0])) a.atoms[1] else a
     }

@@ -17,6 +17,7 @@ import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.ir.Run
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.resolve.Context
+import net.singularity.jetta.compiler.frontend.resolve.getJvmClassName
 import net.singularity.jetta.compiler.frontend.resolve.ModuleInterface
 import net.singularity.jetta.compiler.frontend.rewrite.CompositeRewriter
 import net.singularity.jetta.compiler.frontend.rewrite.FunctionRewriter
@@ -308,9 +309,15 @@ class Compiler(
      * Only ENTRY programs get it. A module reached through an `import!` does not, so a library's
      * atoms are not copied once per module space in a program that imports three of them.
      * A program that already imports the library keeps its own import, at its own position.
+     *
+     * The library itself never gets it. The build compiles `stdlib.metta` as an entry program,
+     * and importing its own previous build put a Run above every rule — so each rule declared
+     * after it carried an ordered-visibility guard, and a program's watermark, which is below
+     * the library's atoms, hid `unquote`/`nop`/`switch-internal`/`help!` from it.
      */
     private fun withAutomaticStdlibImport(source: ParsedSource): ParsedSource {
         if (!autoImportStdlib) return source
+        if (source.getJvmClassName() == STDLIB_MODULE) return source
         if (source.code.any { it.isImportOf(STDLIB_MODULE) }) return source
         val directive = Run(
             Expression(listOf(Symbol("import!"), Symbol("&self"), Symbol(STDLIB_MODULE))),

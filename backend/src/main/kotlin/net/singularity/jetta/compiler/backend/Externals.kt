@@ -234,20 +234,18 @@ fun registerExternals(context: Context) {
             true
         )
     )
-    // `unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
-    // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`).
+    // `__unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
+    // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (__unquote VAL) BODY)`).
     // Param is ANY so the argument (e.g. `(render $e)`) IS reduced before the quote is stripped.
     //
-    // NOT a duplicate to delete, though the library defines `(= (unquote (quote $atom)) $atom)`:
-    // a literal `(quote foo)` argument reaches the call as plain `foo` — the quote is consumed at
-    // compile time, not kept as a wrapper — so the library's pattern never matches and
-    // `(unquote (quote foo))` goes inert. The cost of keeping this: `(unquote 42)` answers `42`
-    // where hyperon leaves it inert (he_quoting).
+    // Internal, under its own name: the user-level `unquote` is the library's
+    // `(= (unquote (quote $atom)) $atom)`. A source `quote` keeps its wrapper, so that pattern
+    // matches, and `(unquote 42)` stays inert as in hyperon (he_quoting).
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/Convert",
-                name = "unquote",
+                name = "__unquote",
                 descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM),

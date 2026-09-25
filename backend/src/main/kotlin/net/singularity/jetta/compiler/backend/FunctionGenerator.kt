@@ -795,6 +795,14 @@ open class FunctionGenerator(
             generateAtom(mv, atom, null, false)
             return
         }
+        // The compiler's own quote is never an atom of the program: nested in data it means its
+        // content, as data. A source `(quote X)` reaches here wrapped in one (it keeps its
+        // wrapper), and quoting that again — an inert argument of `get-type` — stored the
+        // internal `Special` in the term, which no `:` fact names.
+        if (atom is Expression && atom.atoms.size == 2 && atom.atoms[0] == PredefinedAtoms.QUOTE) {
+            generateQuoteTerm(mv, atom.atoms[1])
+            return
+        }
         when (atom) {
             is Expression -> {
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
@@ -2153,10 +2161,13 @@ open class FunctionGenerator(
      * comparison branch in [generateBooleanExpr], where treating one as a pattern made
      * `(== (quote $a) (quote $b))` compare the left side's VALUE with the right side's literal
      * `(quote …)` term, and so answer False for every input.
+     *
+     * Only the compiler's own quote (the `Special`) is peeled. A `quote` SYMBOL is the source-level
+     * constructor, kept as data — so a rule pattern `(quote $atom)` is a pattern like any other.
      */
     private fun isQuoteForm(atom: Atom): Boolean {
         val head = (atom as? Expression)?.atoms?.firstOrNull() ?: return false
-        return (head as? Special)?.value == Predefined.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE
+        return (head as? Special)?.value == Predefined.QUOTE
     }
 
     /**
@@ -2449,7 +2460,8 @@ open class FunctionGenerator(
                             if (right is Expression && containsVariable(right) && !isQuoteForm(right)) {
                                 // Use Matcher.match(left, pattern) -> boolean
                                 generateAtom(mv, left, null, false)
-                                generateQuote(mv, right)
+                                // a PATTERN, not an application: it is not type-checked
+                                generateQuote(mv, right, typeCheck = false)
                                 mv.visitMethodInsn(
                                     Opcodes.INVOKESTATIC,
                                     RuntimeNames.MATCHER,

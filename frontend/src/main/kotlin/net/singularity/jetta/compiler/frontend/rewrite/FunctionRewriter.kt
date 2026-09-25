@@ -1673,8 +1673,13 @@ class FunctionRewriter(
         // The head is normalised to the Special HERE, because returning early skips the conversion
         // below — and a Symbol head would leave the form on codegen's data-constructor path, which
         // evaluates its arguments (the very thing quoting must prevent).
-        if (func == PredefinedAtoms.QUOTE || (func is Symbol && func.name == Predefined.QUOTE)) {
-            return expression.copy(atoms = listOf(PredefinedAtoms.QUOTE) + expression.atoms.drop(1))
+        if (func == PredefinedAtoms.QUOTE) return expression
+        // A SOURCE `quote` is an ordinary constructor whose argument is held (the reference's
+        // `(: quote (-> Atom Atom))` + `(= (quote $atom) NotReducible)`): its answer KEEPS the
+        // wrapper, `(quote (+ 1 2))` -> `(quote (+ 1 2))`. So it is the internal quote of the
+        // whole term, not of its argument — which stripped it.
+        if (func is Symbol && func.name == Predefined.QUOTE && expression.atoms.size == 2) {
+            return Expression(PredefinedAtoms.QUOTE, expression, position = expression.position)
         }
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         // `chain` is `let` with the binding evaluated: `(chain X $v T)` binds $v to the value of X
