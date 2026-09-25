@@ -107,4 +107,21 @@ class RuntimeRuleTest : GeneratorTestBase() {
             !(assertEqualToResult (nop (car-atom (mv))) (() ()))
         """.trimIndent()
     )
+
+    /**
+     * `superpose` over a tuple of CALLS is the union of what each call answers (casenew): an empty
+     * element contributes nothing, a multivalued one all its results. It was a product.
+     */
+    @Test
+    fun `superpose over a tuple of calls is the union of their results`() = run(
+        "SuperposeUnion",
+        $$"""
+            (= (wu1) (empty))
+            (= (wu2) (full))
+            (= (two) (superpose (a b)))
+            !(assertEqual (superpose ((wu1) (wu2))) (full))
+            !(assertEqualToResult (superpose ((two) (wu2) c)) (a b (full) c))
+            !(assertEqualToResult (superpose ((a b) (c d))) ((a b) (c d)))
+        """.trimIndent()
+    )
 }

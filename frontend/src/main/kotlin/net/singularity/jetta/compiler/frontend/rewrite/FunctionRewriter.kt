@@ -88,11 +88,15 @@ class FunctionRewriter(
      */
     private var dynamicHeads = emptySet<String>()
 
+    /** Heads this file defines by a top-level `=` rule — see [collectDynamicHeads]. */
+    private var declaredHeads = emptySet<String>()
+
     /** Depth of positions whose content is DATA — a rule's text, an inert argument, a pattern. */
     private var dataDepth = 0
 
     override fun rewrite(source: ParsedSource): ParsedSource {
-        dynamicHeads = if (isReducibleName(Predefined.REDUCE)) collectDynamicHeads(source.code) else emptySet()
+        val heads = collectDynamicHeads(source.code)
+        dynamicHeads = if (isReducibleName(Predefined.REDUCE)) heads else emptySet()
         source.code.forEach {
             when (it) {
                 is Expression -> rewriteTopLevelExpression(it)
@@ -130,6 +134,7 @@ class FunctionRewriter(
                 else -> {}
             }
         }
+        declaredHeads = declared
         return nested.filterTo(mutableSetOf()) { it !in declared && !isReducibleName(it) }
     }
 
@@ -1698,6 +1703,7 @@ class FunctionRewriter(
             return rewriteAtom(expression.atoms[1])
         }
         if (func is Symbol && func.name == "case" && expression.atoms.size == 3) return rewriteCaseCall(expression)
+        if (isReducibleName(Predefined.SUPERPOSE_VALUE)) unionSuperpose(expression)?.let { return rewriteAtom(it) }
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {
             when {
@@ -1715,6 +1721,39 @@ class FunctionRewriter(
                 else -> it
             }
         }
+    }
+
+    /**
+     * `(superpose (e1 … en))` over a literal tuple holding a CALL is the UNION of what each element
+     * evaluates to: the reference hands back the elements and evaluates each one, so
+     * `(superpose ((wu1) (wu2)))` over an empty `(wu1)` answers `(wu2)`'s value alone. Compiled as
+     * written, the tuple was a data constructor over its elements, and a multivalued element was
+     * LIFTED — the whole tuple once per result, a product where the reference takes a union (and
+     * an empty element emptied everything). Rewritten to
+     * `(__superpose (union-atom (collapse e1) (union-atom … (collapse en))))`: each `collapse`
+     * takes its element's bag whole. A tuple of data only (`(a b c)`, `((a b) (c d))`) is left alone.
+     */
+    private fun unionSuperpose(expression: Expression): Expression? {
+        val head = expression.atoms[0] as? Symbol ?: return null
+        if (head.name != SUPERPOSE || expression.atoms.size != 2) return null
+        val tuple = expression.atoms[1] as? Expression ?: return null
+        // `(superpose (f …))` superposes what the CALL answers — a tuple only once it has run.
+        if (tuple.atoms.size < 2 || isCall(tuple) || !tuple.atoms.any { isCall(it) }) return null
+        val pos = expression.position
+        val parts = tuple.atoms.map { Expression(Symbol(COLLAPSE, position = pos), it, position = pos) }
+        val union = parts.dropLast(1).foldRight(parts.last() as Atom) { part, acc ->
+            Expression(Symbol(UNION_ATOM, position = pos), part, acc, position = pos)
+        }
+        // `__superpose`, not `superpose`: an Expression argument of `superpose` is the literal
+        // tuple (the reference does not evaluate it), so `(superpose (union-atom …))` would
+        // superpose `union-atom` and its operands.
+        return Expression(Symbol(Predefined.SUPERPOSE_VALUE, position = head.position), union, position = pos)
+    }
+
+    /** A call to a function of this file, a builtin or a linked one — not a data tuple. */
+    private fun isCall(atom: Atom): Boolean {
+        val name = ((atom as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name ?: return false
+        return name in declaredHeads || isReducibleName(name)
     }
 
     private fun rewriteExpressionArguments(expression: Expression): Expression {
@@ -1880,6 +1919,9 @@ class FunctionRewriter(
         const val MAIN = "__main"
 
         private const val ADD_ATOM = "add-atom"
+        private const val SUPERPOSE = "superpose"
+        private const val COLLAPSE = "collapse"
+        private const val UNION_ATOM = "union-atom"
 
         /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)
          *  that sets the ordered-top-level per-run visibility cutoff. */

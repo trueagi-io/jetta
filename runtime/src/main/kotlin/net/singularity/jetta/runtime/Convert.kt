@@ -43,6 +43,10 @@ object Convert {
             else -> listOf(t)
         }
 
+    /** `superpose` over an evaluated argument — see `FunctionRewriter.unionSuperpose`. */
+    @JvmStatic
+    fun __superpose(tuple: Atom): List<Atom> = superpose(tuple)
+
     /**
      * `empty` — the empty non-deterministic result (hyperon stdlib): zero branches, i.e. an
      * empty bag. Used to PRUNE a branch — `(if (> $d 0) … (empty))` contributes nothing at the

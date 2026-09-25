@@ -37,6 +37,8 @@ object Predefined {
     const val FORCE = "__force"
     /** A call to a head whose only rule is added to the space at run time — `FunctionRewriter.dynamicHeads`. */
     const val REDUCE = "__reduce"
+    /** `superpose` over an EVALUATED argument — the union `FunctionRewriter.unionSuperpose` builds. */
+    const val SUPERPOSE_VALUE = "__superpose"
 }
 
 object PredefinedAtoms {

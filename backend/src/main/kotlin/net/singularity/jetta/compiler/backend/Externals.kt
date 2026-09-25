@@ -195,6 +195,19 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `__superpose` — the same enumeration over an argument that IS evaluated (it is not
+    // `superpose` for the resolver's data rule); emitted only by `FunctionRewriter.unionSuperpose`.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = Predefined.SUPERPOSE_VALUE,
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     // `empty` — the empty non-deterministic bag (zero results); prunes a branch. No args,
     // multivalued (returns a List).
     context.addSystemFunction(
