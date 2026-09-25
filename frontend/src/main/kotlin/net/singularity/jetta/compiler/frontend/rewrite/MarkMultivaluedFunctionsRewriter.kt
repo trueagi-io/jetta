@@ -5,14 +5,13 @@ import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.FunctionDefinition
 import net.singularity.jetta.compiler.frontend.ir.Lambda
+import net.singularity.jetta.compiler.frontend.ir.Match
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 import net.singularity.jetta.compiler.frontend.resolve.isMultivalued
 import net.singularity.jetta.compiler.frontend.resolve.isShadowedByRuntime
 
 class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, FunctionDefinition>) : Rewriter {
-    private val callsLocations = mutableMapOf<String, MutableList<FunctionDefinition>>()
-
     companion object {
         // Non-determinism barriers — see CanonicalFormRewriter.BARRIER_FUNCTIONS.
         private val BARRIER_FUNCTIONS = setOf("collapse", "assertEqual", "assertEqualToResult", "msort", "once", "unique")
@@ -23,25 +22,27 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
             val def = it as FunctionDefinition
             functions[def.name] = def
         }
-        source.code.forEach {
-            when (it) {
-                is FunctionDefinition -> {
-                    if (checkAtom(it.body, it)) {
-                        if (!it.isMultivalued()) {
-                            it.annotations.add(PredefinedAtoms.MULTIVALUED)
-                        }
-                        callsLocations[it.name]?.let { list ->
-                            list.forEach { call -> call.annotations.add(PredefinedAtoms.MULTIVALUED) }
-                        }
-                    }
+        // A FIXPOINT, not one pass: a caller becomes multivalued when any callee does, at any
+        // depth and in any source order. The old single pass patched callers through a
+        // `callsLocations` table filled on the way, which reached ONE level only — with
+        // `a -> b -> c` written in that order and `c` the one that superposes, `b` was marked
+        // when `c` was, but nothing re-marked `a`, so `a` stayed scalar while its body returned
+        // `b`'s bag (`ClassCastException: ArrayList cannot be cast to Grounded` at `(+ 10 (a 1))`).
+        // Marking is monotone and bounded by the number of definitions, so this terminates.
+        val definitions = source.code.filterIsInstance<FunctionDefinition>()
+        do {
+            var changed = false
+            definitions.forEach {
+                if (!it.isMultivalued() && checkAtom(it.body)) {
+                    it.annotations.add(PredefinedAtoms.MULTIVALUED)
+                    changed = true
                 }
-                else -> { }
             }
-        }
+        } while (changed)
         return source
     }
 
-    private fun checkAtom(atom: Atom, func: FunctionDefinition): Boolean {
+    private fun checkAtom(atom: Atom): Boolean {
         when (atom) {
             is Expression -> {
                 if (atom.atoms.isEmpty()) return false
@@ -64,14 +65,22 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                 // Only a lambda in HEAD position is followed. A lambda in an argument slot is a
                 // VALUE — the enclosing function returns the function object, and whatever bag its
                 // body would produce belongs to whoever eventually applies it.
-                (atom.atoms[0] as? Lambda)?.let { if (checkAtom(it.body, func)) return true }
+                (atom.atoms[0] as? Lambda)?.let { if (checkAtom(it.body)) return true }
                 (atom.atoms[0] as? Symbol)?.let {
                     // A rule SHADOWED by a runtime function of the same name is skipped: the
                     // resolver answers every call site with the builtin, so the callee's
                     // valuedness is the builtin's, not this unreachable rule's. hyperon's
                     // stdlib.metta redefines `cdr-atom` over the multivalued `unify`, and reading
                     // that rule here made every caller believe the scalar builtin returned a bag.
-                    functions[it.name]?.takeUnless { def -> def.isShadowedByRuntime() }?.let { def ->
+                    //
+                    // Guarded by ARITY, as `CanonicalFormRewriter.isMultivaluedHead` is: a call
+                    // `Context.resolveAtom` leaves inert for want of it cannot reach this rule, so
+                    // the two passes must agree that it is data. (This guard was once measured to
+                    // re-break `mettaset.metta`; with the fixpoint above it is neutral on the
+                    // whole corpus, and `mettaset`'s crash is the lift's own — it has the same
+                    // `IncompatibleClassChangeError` with or without the guard.)
+                    functions[it.name]?.takeUnless { def -> def.isShadowedByRuntime() }
+                        ?.takeIf { def -> def.params.size == atom.atoms.size - 1 }?.let { def ->
                         if (def.isMultivalued()) {
                             return true
                         }
@@ -81,13 +90,17 @@ class MarkMultivaluedFunctionsRewriter(val functions: MutableMap<String, Functio
                     if (atom.resolved?.isMultiValued == true) {
                         return true
                     }
-                    callsLocations.getOrPut(it.name) { mutableListOf() }.add(func)
                 }
                 atom.atoms.drop(1).forEach {
-                    if (checkAtom(it, func)) return true
+                    if (checkAtom(it)) return true
                 }
                 return false
             }
+            // A multi-clause function's body is a `Match`: the function answers whatever the
+            // branch it takes answers, so a branch BODY that yields a bag makes it multivalued.
+            // The conditions are guards, not results. Without this, `insert`'s `case` over a
+            // comparison left it scalar while its body returned the `case`'s bag (d2).
+            is Match -> return atom.branches.any { checkAtom(it.body) }
             else -> return false
         }
     }

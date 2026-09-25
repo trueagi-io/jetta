@@ -139,7 +139,7 @@ class MatchNestedEvalTest : GeneratorTestBase() {
                 (= (f X) A)
                 (= (f Y) B)
 
-                (: myPair (-> Atom Atom Atom))
+                (: myPair (-> %Undefined% %Undefined% %Undefined%))
                 (= (myPair $a $b) (Pair $a $b))
 
                 (= (combine $x $y) (myPair (f $x) (f $y)))
@@ -189,7 +189,7 @@ class MatchNestedEvalTest : GeneratorTestBase() {
                 (= (g Y) C)
                 (= (g Y) D)
 
-                (: myPair (-> Atom Atom Atom))
+                (: myPair (-> %Undefined% %Undefined% %Undefined%))
                 (= (myPair $a $b) (Pair $a $b))
 
                 (= (combine $x $y) (myPair (f $x) (g $y)))

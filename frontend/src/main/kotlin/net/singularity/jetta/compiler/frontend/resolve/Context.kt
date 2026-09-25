@@ -98,39 +98,97 @@ class Context private constructor(
         messageCollector.clear()
     }
 
-    data class SymbolDef(val owner: String, val func: FunctionDefinition)
-
     /**
-     * One entry of the cross-JVM linker table (the P1 `.jctx` artifact): a user
-     * function's MeTTa name plus everything a runtime `findStatic` needs to LINK
-     * against its already-compiled JVM method — [owner] (the internal class name),
-     * [descriptor] (its JVM signature), and whether it returns a non-determinism bag.
-     */
-    data class LinkerSymbol(
-        val name: String,
-        val owner: String,
-        val descriptor: String,
-        val multivalued: Boolean,
-    )
-
-    /**
-     * The linker table for variable-head dispatch in a COMPILED binary. Serialized to
-     * `<program>.jctx` at compile time and loaded by `JettaProgram.init`; `JettaCallSite`
-     * uses it to resolve `($f x)` when `$f` names a user function, so an AOT run links
-     * against the compiled method instead of leaving the application inert. The resolved
-     * table is the AOT-computed linker symbol table — recomputing it at runtime is exactly
-     * the redundant work the partial-eval architecture exists to kill.
+     * A function this context can resolve a call to. Two flavours, and the type says which:
+     *  - being COMPILED here — [func] is its definition, body included;
+     *  - LINKED from an already-compiled module's `.jctx` interface — [linked] is that entry and
+     *    [func] is null, because there IS no body on this side of the compile.
      *
-     * Skips synthetic entries (`__eval*`, `__main*`) and `main`, and any function that never
-     * got an arrow type (no JVM descriptor to link against).
+     * Everything a call site needs is available either way and should be read through the
+     * accessors below rather than off [func], which is null exactly when there is nothing to
+     * analyse. The nullability is the point: a pass that wants a BODY cannot silently get a
+     * plausible-looking stub, it has to say what a linked module means for it.
      */
-    fun linkerTable(): List<LinkerSymbol> =
+    data class SymbolDef(
+        val owner: String,
+        val func: FunctionDefinition?,
+        val linked: ModuleInterfaceEntry? = null,
+    ) {
+        val name: String get() = func?.name ?: linked!!.name
+
+        /** The declared MeTTa type — refined in place for a source function, final for a linked one. */
+        val arrowType: ArrowType? get() = func?.arrowType ?: linked?.declaredType
+
+        val multivalued: Boolean get() = func?.isMultivalued() ?: (linked?.multivalued == true)
+
+        /** A source rule the resolver will not link a call to, because a builtin serves that name
+         *  and arity. Never true for a linked entry: its module already dropped those. */
+        val shadowedByRuntime: Boolean get() = func?.isShadowedByRuntime() == true
+
+        /** The JVM descriptor, or null for a function that never got an arrow type. */
+        val descriptor: String?
+            get() = linked?.descriptor ?: func?.takeIf { it.arrowType != null }?.getJvmDescriptor()
+
+        /** How many arguments a call must pass, or null when the type is unknown. */
+        val arity: Int? get() = arrowType?.let { it.types.size - 1 }
+
+        /**
+         * The parameter variables to bind when this function's NAME is used as a value and has to
+         * eta-expand into `(\ params (f params))`. A linked module has no parameter list to reuse,
+         * so one is synthesized from the arity — these are fresh binders, and the lambda that gets
+         * built is the only thing that ever reads them.
+         */
+        fun parameterVariables(): List<Variable> =
+            func?.params ?: List(arity ?: 0) { Variable("p$it") }
+    }
+
+    /**
+     * The module INTERFACE for everything resolved in this context, serialized to `<program>.jctx`
+     * at compile time. It carries more than a linker table because it has two readers:
+     *  - the RUNTIME (`JettaProgram.init` → `JettaLinkRegistry`) reads the first four columns to
+     *    resolve `($f x)` when `$f` names a user function, so an AOT run links against the compiled
+     *    method instead of leaving the application inert;
+     *  - the COMPILER reads the whole entry when it IMPORTS an ALREADY-COMPILED module, so a call
+     *    into it resolves without re-parsing and re-resolving that module's source. That needs the
+     *    declared MeTTa type and the `Atom`-parameter flavours on top of the JVM descriptor — see
+     *    [ModuleInterfaceEntry].
+     * Either way the table is the AOT-computed symbol table; recomputing it at load time is
+     * exactly the redundant work the partial-eval architecture exists to kill.
+     *
+     * Context-global (owner disambiguates), so every program's `.jctx` carries the full set.
+     * Skips synthetic entries (`__eval*`, `__main*`) and `main`, and any function that never got
+     * an arrow type (no JVM descriptor to link against).
+     *
+     * Also skips a definition SHADOWED BY A BUILTIN, for the reason its marker already gives:
+     * codegen emits no method for it, because no call site can link to it. Advertising it anyway
+     * described 16 of hyperon `stdlib.metta`'s 57 entries — `id`, `car-atom`, `collapse`,
+     * `assertEqual`, … — as methods of a class that does not have them. The runtime got away with
+     * it (`JettaLinkRegistry` catches the failed `findStatic` and drops the entry), but a compiler
+     * READING this table to link a call into an already-compiled module would emit an
+     * `INVOKESTATIC` to a method that is not there.
+     */
+    fun linkerTable(): List<ModuleInterfaceEntry> =
         resolvedFunctions.entries
             .filter { (name, def) ->
-                !name.startsWith("__") && name != "main" && def.func.arrowType != null
+                !name.startsWith("__") && name != "main" && def.arrowType != null &&
+                        !def.shadowedByRuntime
             }
             .map { (name, def) ->
-                LinkerSymbol(name, def.owner, def.func.getJvmDescriptor(), def.func.isMultivalued())
+                // A linked module's entry is already an interface entry: pass it through rather
+                // than rebuild it, so the program's table says exactly what that module's own
+                // table said and a call linked through either one behaves identically.
+                def.linked?.let { return@map it }
+                val jvm = def.toJvm()
+                ModuleInterfaceEntry(
+                    name = name,
+                    owner = def.owner,
+                    descriptor = jvm.descriptor,
+                    multivalued = def.multivalued,
+                    signature = jvm.signature,
+                    declaredType = def.arrowType,
+                    inertAtomParams = jvm.inertAtomParams,
+                    templateAtomParams = jvm.templateAtomParams,
+                )
             }
 
     private data class AtomWithTypeInfo(val atom: Atom, val info: Scope)
@@ -163,34 +221,109 @@ class Context private constructor(
         }
     }
 
-    private fun SymbolDef.toJvm() = JvmMethod(
-        owner = owner,
-        name = func.name,
-        descriptor = func.getJvmDescriptor(),
-        signature = func.getSignature(),
+    private fun SymbolDef.toJvm(): JvmMethod {
+        // A linked module's interface already carries the answer, computed when THAT module was
+        // compiled and with the body analysis below applied to a body this compile cannot see.
+        linked?.let { return it.toJvmMethod() }
+        val func = func!!
         // A parameter the source declares literally `Atom` is hyperon's meta-type annotation. Only a
         // builtin could say so before — `inertAtomParams` was reachable only from
         // `registerExternals` — so a user function could not take a template, and the reference
         // stdlib's `filter-atom` had its `(> $v 1)` reduced at the call site over a free variable.
-        // It maps to the CONDITIONAL flavour: see `JvmMethod.templateAtomParams` for why holding a
-        // user function's argument unconditionally is wrong for us where it is right for hyperon.
-        templateAtomParams = func.declaredAtomParams,
-    )
+        //
+        // Which flavour it maps to depends on whether the argument can still be needed as a VALUE.
+        // Holding every such argument unconditionally is what hyperon does and what JeTTa cannot
+        // yet afford: hyperon keeps reducing a function's RESULT, so an unreduced term handed on
+        // is merely deferred work, while JeTTa returns its result as it stands — `(ift True
+        // (add-atom &kb (Green $x)))` would never perform the write (e1_kb_write).
+        //
+        // But that only bites when the parameter REACHES the result. When it does not — it is
+        // consumed by the clause guards alone, as in `(: eqa (-> Atom Atom Type))` with
+        // `(= (eqa $x $x) T)`, which compiles to `(match ((== $var0 $var1) => T))` — no reduced
+        // value of it is ever returned, so holding the term is both what hyperon does and free of
+        // the re-reduction debt. Deciding per parameter rather than per function keeps
+        // `(: f (-> Atom Atom …))` precise when one of its arguments escapes and the other does not.
+        val declared = func.declaredAtomParams
+        val escaping = if (declared.isEmpty()) emptySet() else resultVariableNames(func.body)
+        val destructured = if (declared.isEmpty()) emptySet() else destructuredParamIndices(func.body)
+        val held = declared.filterTo(mutableSetOf()) {
+            func.params.getOrNull(it)?.name !in escaping && it !in destructured
+        }
+        // …and a parameter whose value uses the rewriter has already wrapped in `(__force …)` is
+        // held whatever it reaches: the body evaluates it where it needs it, hyperon's way.
+        held += func.heldAtomParams
+        return JvmMethod(
+            owner = owner,
+            name = func.name,
+            descriptor = func.getJvmDescriptor(),
+            signature = func.getSignature(),
+            inertAtomParams = held,
+            templateAtomParams = declared - held,
+        )
+    }
+
+    /**
+     * The variable names that can appear in what [atom] EVALUATES TO, as opposed to those it
+     * merely inspects on the way. A `Match` branch's `cond` is a guard — `(== $var0 $var1)`
+     * decides which branch runs and contributes nothing to its value — so only branch bodies are
+     * followed. Everything else contributes every variable it holds.
+     *
+     * Conservative in the direction that preserves today's behaviour: a shape whose result
+     * positions are not obvious (a `Lambda` — its body may be returned, applied, or captured)
+     * reports ALL of its variables, which keeps the parameter on the existing reduce-the-argument
+     * path.
+     */
+    private fun resultVariableNames(atom: Atom): Set<String> = when (atom) {
+        is Variable -> setOf(atom.name)
+        is Match -> atom.branches.flatMapTo(mutableSetOf()) { resultVariableNames(it.body) }
+        is Expression -> atom.atoms.flatMapTo(mutableSetOf()) { resultVariableNames(it) }
+        is Lambda -> allVariableNames(atom.body)
+        else -> emptySet()
+    }
+
+    /**
+     * Indices of the parameters some clause takes APART. A destructured parameter escapes to the
+     * result through its pieces rather than by name — `(= (ev (Plus $a $b)) (+ (ev $a) (ev $b)))`
+     * compiles to a guard over `$var0` plus `DestructureBinding($a <- $var0[1])`, so `$var0`
+     * itself appears nowhere in the branch body while its parts carry the whole computation.
+     * Reading only [resultVariableNames] would call such a parameter unused and hold the
+     * argument as a term, which silently stops `(ev (d (Mul x x) x))` from evaluating anything.
+     */
+    private fun destructuredParamIndices(atom: Atom): Set<Int> = when (atom) {
+        is Match -> atom.branches.flatMapTo(mutableSetOf()) { branch ->
+            branch.destructuredBindings.map { it.paramIndex } + destructuredParamIndices(branch.body)
+        }
+        is Expression -> atom.atoms.flatMapTo(mutableSetOf()) { destructuredParamIndices(it) }
+        is Lambda -> destructuredParamIndices(atom.body)
+        else -> emptySet()
+    }
+
+    /** Every variable name anywhere in [atom], guards included. */
+    private fun allVariableNames(atom: Atom): Set<String> = when (atom) {
+        is Variable -> setOf(atom.name)
+        is Match -> atom.branches.flatMapTo(mutableSetOf()) {
+            allVariableNames(it.body) + (it.cond?.let(::allVariableNames) ?: emptySet())
+        }
+        is Expression -> atom.atoms.flatMapTo(mutableSetOf()) { allVariableNames(it) }
+        is Lambda -> allVariableNames(atom.body)
+        else -> emptySet()
+    }
 
     /**
      * Record [owner] among ALL the modules that define [func]'s name, beside the single-owner
      * `resolvedFunctions` (whose last writer wins). Keyed by owner, so the repeated resolution
      * rounds over one source refresh that module's entry instead of appending to it.
      */
-    private fun recordFunctionOwner(owner: String, func: FunctionDefinition) {
-        val current = functionOwners[func.name].orEmpty()
-        functionOwners[func.name] = current.filterNot { it.owner == owner } + SymbolDef(owner, func)
+    private fun recordFunctionOwner(def: SymbolDef) {
+        val current = functionOwners[def.name].orEmpty()
+        functionOwners[def.name] = current.filterNot { it.owner == def.owner } + def
     }
 
     private fun addResolvedFunction(owner: String, func: FunctionDefinition) {
         logger.debug { "Registered function: ${func.name} :: ${func.arrowType ?: "untyped"} (owner=$owner)" }
-        resolvedFunctions[func.name] = SymbolDef(owner, func)
-        recordFunctionOwner(owner, func)
+        val def = SymbolDef(owner, func)
+        resolvedFunctions[func.name] = def
+        recordFunctionOwner(def)
         main?.let {
             val lastCall = when (it.body) {
                 is Expression -> (it.body as Expression).atoms.last()
@@ -215,10 +348,45 @@ class Context private constructor(
             source.code.filter { it is FunctionDefinition && it.annotations.contains(PredefinedAtoms.EXPORT) }
                 .map { it as FunctionDefinition }
         external.forEach {
-            resolvedFunctions[it.name] = SymbolDef(source.getJvmClassName(), it)
-            recordFunctionOwner(source.getJvmClassName(), it)
+            val def = SymbolDef(source.getJvmClassName(), it)
+            resolvedFunctions[it.name] = def
+            recordFunctionOwner(def)
         }
     }
+
+    /**
+     * Register a module compiled EARLIER, from its `.jctx` interface: each entry becomes a
+     * function whose calls link against the class the entry names. None of that module's source
+     * is parsed, resolved or generated here — that is the whole point of the artifact.
+     *
+     * The entries land in the same three tables a source module's functions land in, so every
+     * downstream consumer sees a linked module exactly as it sees a compiled-here one: call
+     * resolution ([resolve]), the multi-owner union ([visibleAlternativeOwners] — which is what
+     * makes a user rule ADD to an imported one, the way the reference interpreter answers both
+     * `99` and `42` for a redefined `id`), the multivalued lift, and the linker table this very
+     * artifact is written from.
+     */
+    fun addLinkedModule(entries: List<ModuleInterfaceEntry>) {
+        entries.forEach { entry ->
+            val def = SymbolDef(entry.owner, func = null, linked = entry)
+            logger.debug { "Linked function: ${entry.name} :: ${entry.declaredType ?: "untyped"} (owner=${entry.owner})" }
+            resolvedFunctions[entry.name] = def
+            definedFunctions[entry.name] = def
+            recordFunctionOwner(def)
+        }
+    }
+
+    /** Grounded operators the runtime links by symbol — `GroundedOps.OPS` / `UNARY_OPS`. */
+    private val BUILTIN_OPERATOR_NAMES = setOf(
+        "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "and", "or", "not",
+    )
+
+    /** A name the runtime serves: a registered builtin, or a grounded operator spelled as a Special. */
+    private fun isBuiltinName(name: String): Boolean =
+        systemFunctions.containsKey(name) || name in BUILTIN_OPERATOR_NAMES
+
+    /** Whether [name] is a registered builtin — not a user function this context resolves. */
+    fun isSystemFunction(name: String): Boolean = systemFunctions.containsKey(name)
 
     fun addSystemFunction(resolvedSymbol: ResolvedSymbol) {
         systemFunctions[resolvedSymbol.jvmMethod.name] = resolvedSymbol
@@ -234,11 +402,15 @@ class Context private constructor(
                 }
             }
 
+            // The literal's own type, recorded on the atom. A `Boolean` literal reached the TODO
+            // here (`(apply not False)` in an operator-typed argument slot), and the result was
+            // computed and dropped anyway.
             is Grounded<*> -> {
-                when (atom.value) {
+                if (atom.type == null) atom.type = when (atom.value) {
                     is Int -> GroundedType.INT
                     is Double -> GroundedType.DOUBLE
-                    else -> TODO("${atom.value}")
+                    is Boolean -> GroundedType.BOOLEAN
+                    else -> GroundedType.ATOM
                 }
             }
 
@@ -288,6 +460,10 @@ class Context private constructor(
                                 is Symbol -> {
                                     // FIXME: do nothing for now
                                 }
+
+                                // An operator passed as data — `(cons-atom + (1 2))` in a body:
+                                // the symbol has no type to infer here.
+                                is Special -> {}
 
                                 else -> TODO("it=$arg")
                             }
@@ -477,7 +653,10 @@ class Context private constructor(
     private fun refineFunctionArrowTypes(): Boolean {
         var changed = false
         resolvedFunctions.toList().forEach { (_, def) ->
-            val arrowType = def.func.arrowType ?: return@forEach
+            // Nothing to refine for a module linked from its artifact: its type was settled when
+            // that module was compiled, and there is no body here to collect a better one from.
+            val func = def.func ?: return@forEach
+            val arrowType = func.arrowType ?: return@forEach
             val paramTypes = arrowType.types.dropLast(1)
             val currentReturn = arrowType.types.last()
 
@@ -485,8 +664,8 @@ class Context private constructor(
             //    (e.g. `$n` typed Int by a comparison or an arithmetic operand).
             val refinedParams = if (paramTypes.any { it == GroundedType.ATOM }) {
                 val inferredParamTypes = mutableMapOf<String, Atom>()
-                collectVariableTypes(def.func.body, inferredParamTypes)
-                def.func.params.mapIndexed { index, param ->
+                collectVariableTypes(func.body, inferredParamTypes)
+                func.params.mapIndexed { index, param ->
                     if (paramTypes[index] == GroundedType.ATOM) {
                         val inferred = inferredParamTypes[param.name]
                         if (inferred != null && inferred != GroundedType.ATOM) {
@@ -511,7 +690,7 @@ class Context private constructor(
             //    (Atom/Any) toward a concrete grounded type, never a SeqType (the
             //    multivalued List contract owns that), so this is monotonic and the
             //    enclosing fixpoint converges.
-            val bodyType = inferReturnFromBody(def.func)
+            val bodyType = inferReturnFromBody(func)
             val refinedReturn = if ((currentReturn == GroundedType.ATOM || currentReturn == GroundedType.ANY) &&
                 bodyType != null && bodyType != GroundedType.ATOM && bodyType != GroundedType.ANY &&
                 bodyType !is SeqType
@@ -523,8 +702,8 @@ class Context private constructor(
 
             val refinedTypes = refinedParams + refinedReturn
             if (refinedTypes != arrowType.types) {
-                def.func.arrowType = ArrowType(refinedTypes)
-                addResolvedFunction(def.owner, def.func)
+                func.arrowType = ArrowType(refinedTypes)
+                addResolvedFunction(def.owner, func)
                 changed = true
             }
         }
@@ -945,12 +1124,26 @@ class Context private constructor(
      * such a rule expecting it to be called deserves to know it will not be.
      */
     private fun markDefinitionsShadowedByRuntime(source: ParsedSource) {
-        source.code.filterIsInstance<FunctionDefinition>().forEach {
-            if (systemFunctions[it.name] != null && !it.isShadowedByRuntime()) {
-                it.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
-            }
+        source.code.filterIsInstance<FunctionDefinition>().forEach { def ->
+            if (def.isShadowedByRuntime()) return@forEach
+            val builtin = systemFunctions[def.name] ?: return@forEach
+            // Shadowing is per NAME AND ARITY, not per name. A builtin can only swallow a call
+            // it could actually serve: `(= (div $x $y $accum) …)` is a three-argument rule and
+            // the grounded `div` takes two, so the rule is reachable and must be compiled.
+            // hyperon agrees — `he_minimalmetta.metta` defines exactly that `div/3` on top of
+            // the grounded `div/2` and calls it. Marking it shadowed left `(div 350000 5 0)`
+            // inert with no method and no diagnostic.
+            if (builtinArity(builtin) != def.params.size) return@forEach
+            def.annotations.add(PredefinedAtoms.SHADOWED_BY_RUNTIME)
         }
     }
+
+    /**
+     * How many arguments a builtin takes. Read off the JVM descriptor (its last entry is the
+     * return type) rather than the `arrowType`, which is null for some system functions.
+     */
+    private fun builtinArity(builtin: ResolvedSymbol): Int =
+        builtin.jvmMethod.descriptor.parseDescriptor().size - 1
 
     /**
      * The warning for [markDefinitionsShadowedByRuntime], reported separately because the
@@ -1369,20 +1562,37 @@ class Context private constructor(
                 if (def == null) {
                     // If no suggested type, this is just a plain symbol constant (e.g., T, F)
                     // — not a function reference, so no error needed.
+                    //
+                    // A BUILTIN's name where a function is expected — `(apply not False)` — is the
+                    // operator passed as a value: data here, applied through the variable-head
+                    // dispatch that links grounded operators at run time.
+                    if (suggestedType is ArrowType && isBuiltinName(atom.name)) {
+                        atom.type = GroundedType.ATOM
+                        return
+                    }
                     if (suggestedType != null) {
                         messageCollector.add(CannotResolveSymbolMessage(atom.name, atom.position))
                     }
                     return
                 }
-                // A function's NAME in a value position — passed to a higher-order function, or
-                // sitting in a data slot. It eta-expands into `(\ params (f params))` below.
+                // Where no FUNCTION is expected — a data slot, a tuple, a rule's result, an untyped
+                // parameter — the name is the symbol, as in the reference: `(justdata f 2)` is data
+                // holding `f`, and `((notjustdata 42) 21)` applies the returned `f` through the
+                // variable-head dispatch. Eta-expanded there, a `JettaLambda` object landed in an
+                // `Atom[]` (ArrayStoreException) or printed as `(lol (JettaLambda$0@… 42))`.
+                if (suggestedType !is ArrowType) {
+                    atom.type = GroundedType.ATOM
+                    return
+                }
+                // A function's NAME where a function is expected — passed to a higher-order
+                // parameter declared as an arrow. It eta-expands into `(\ params (f params))` below.
                 //
                 // An incompatibility can only be reported when there is something to compare:
                 // both a type expected here and a declared arrow type. Neither is guaranteed —
                 // an argument slot typed `Atom`, or any value position with no expectation at
                 // all, gives no suggested type, and an untyped callee has no arrow type — and
                 // asserting them threw instead (the `!!`s this replaces).
-                val declared = def.func.arrowType
+                val declared = def.arrowType
                 if (suggestedType != null && declared != null && suggestedType != declared) {
                     messageCollector.add(IncompatibleTypesMessage(suggestedType, declared, atom.position))
                     return
@@ -1393,10 +1603,11 @@ class Context private constructor(
                     atom.type = GroundedType.ATOM
                     return
                 }
+                val params = def.parameterVariables()
                 val wrapper = Lambda(
-                    def.func.params,
+                    params,
                     declared,
-                    Expression(listOf(atom) + def.func.params, def.func.returnType, null, atom.position),
+                    Expression(listOf(atom) + params, declared.types.last(), null, atom.position),
                     position = atom.position
                 )
                 resolveAtom(wrapper, scope, suggestedType)
@@ -1476,7 +1687,7 @@ class Context private constructor(
         }
         when (val atom = expression.atoms[0]) {
             is Symbol -> {
-                val resolved = resolve(atom.name)
+                val resolved = resolve(atom.name, expression.arguments().size)
                 val expectedArity = resolved?.arrowType()?.let { it.types.size - 1 }
                 // The guard used to require `definedFunctions[atom.name] != null`, i.e. it only
                 // covered USER-defined callees. A system function has no entry there, so an
@@ -1869,17 +2080,38 @@ class Context private constructor(
     fun resolve(name: String): ResolvedSymbol? =
         systemFunctions[name] ?: resolveUserFunction(name)
 
+    /**
+     * Resolve a call head knowing how many arguments the CALL SITE passes. A builtin still wins
+     * a tie, but it no longer wins when it could not serve the call at all: hyperon's
+     * `he_minimalmetta.metta` defines `(= (div $x $y $accum) …)` on top of the grounded `div/2`
+     * and calls the three-argument one, and resolving by name alone handed that call the
+     * builtin, whose arity does not match — so the caller marked the application inert and
+     * `(div 350000 5 0)` never reduced, with no method emitted and no diagnostic.
+     *
+     * Falls back to the by-name answer when neither candidate matches, leaving the existing
+     * arity-mismatch handling (inert application + runtime dispatch) exactly as it was.
+     */
+    fun resolve(name: String, arity: Int): ResolvedSymbol? {
+        val system = systemFunctions[name]
+        if (system != null && arityOf(system) == arity) return system
+        val user = resolveUserFunction(name)
+        if (user != null && arityOf(user) == arity) return user
+        return system ?: user
+    }
+
+    private fun arityOf(symbol: ResolvedSymbol): Int? = symbol.arrowType()?.let { it.types.size - 1 }
+
     private fun resolveUserFunction(name: String): ResolvedSymbol? {
         val primary = primaryOwner(name) ?: return null
         val alternatives = visibleAlternativeOwners(name, primary)
         if (alternatives.isEmpty()) {
-            return ResolvedSymbol(primary.toJvm(), primary.func.arrowType, primary.func.isMultivalued())
+            return ResolvedSymbol(primary.toJvm(), primary.arrowType, primary.multivalued)
         }
         // More than one visible module defines this name: the call answers with the union of
         // their results, so its type gains a bag and it counts as multivalued from here on
         // (`MarkMultivaluedFunctionsRewriter` reads `isMultiValued` off the resolved symbol, and
         // `Expression.type` is stamped from this arrow type).
-        val arrowType = primary.func.arrowType?.let {
+        val arrowType = primary.arrowType?.let {
             ArrowType(it.types.dropLast(1) + SeqType(it.types.last()))
         }
         return ResolvedSymbol(primary.toJvm(), arrowType, true, alternatives.map { it.toJvm() })
@@ -1923,15 +2155,15 @@ class Context private constructor(
     private fun visibleAlternativeOwners(name: String, primary: SymbolDef): List<SymbolDef> {
         val visible = visibleOwners ?: return emptyList()
         if (primary.owner !in visible) return emptyList()
-        if (primary.func.arrowType == null || primary.func.isMultivalued()) return emptyList()
-        val descriptor = primary.func.getJvmDescriptor()
+        if (primary.arrowType == null || primary.multivalued) return emptyList()
+        val descriptor = primary.descriptor ?: return emptyList()
         if (descriptor.endsWith(")V")) return emptyList()
         return functionOwners[name].orEmpty().filter {
             it.owner != primary.owner &&
                 it.owner in visible &&
-                it.func.arrowType != null &&
-                !it.func.isMultivalued() &&
-                it.func.getJvmDescriptor() == descriptor
+                it.arrowType != null &&
+                !it.multivalued &&
+                it.descriptor == descriptor
         }
     }
 

@@ -3,6 +3,7 @@ package net.singularity.jetta.runtime
 import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
+import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Special
 import net.singularity.jetta.compiler.frontend.ir.Symbol
 
@@ -42,6 +43,10 @@ object Convert {
             else -> listOf(t)
         }
 
+    /** `superpose` over an evaluated argument — see `FunctionRewriter.unionSuperpose`. */
+    @JvmStatic
+    fun __superpose(tuple: Atom): List<Atom> = superpose(tuple)
+
     /**
      * `empty` — the empty non-deterministic result (hyperon stdlib): zero branches, i.e. an
      * empty bag. Used to PRUNE a branch — `(if (> $d 0) … (empty))` contributes nothing at the
@@ -58,13 +63,14 @@ object Convert {
      * and dedupes by structural [Atom] equality, preserving first-seen order.
      */
     /**
-     * `unquote` — strip ONE `quote` layer: `(quote X) → X`. The runtime half of a Form-2
+     * `__unquote` — strip ONE `quote` layer: `(quote X) → X`. The runtime half of a Form-2
      * pattern-`let` `(let (quote $v) VAL BODY)`, which binds `$v` to the CONTENT of VAL's quote
-     * (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`). A value that is not a
+     * (LetRewriter lowers it to `(let $v (__unquote VAL) BODY)`). A value that is not a
      * `(quote X)` is returned unchanged — the pattern simply didn't match a quote wrapper.
+     * Internal: the user-level `unquote` is the library's rule.
      */
     @JvmStatic
-    fun unquote(value: Any?): Atom {
+    fun __unquote(value: Any?): Atom {
         val a = (if (value is BoundAtom) value.atom else value) as Atom
         return if (a is Expression && a.atoms.size == 2 && isQuoteHead(a.atoms[0])) a.atoms[1] else a
     }
@@ -80,7 +86,12 @@ object Convert {
             else -> listOf(value)
         }
         val distinct = LinkedHashSet<Atom>()
-        bag.forEach { distinct.add((if (it is BoundAtom) it.atom else it) as Atom) }
+        bag.forEach {
+            when (val x = if (it is BoundAtom) it.atom else it) {
+                is Atom -> distinct.add(x)
+                else -> distinct.add(Grounded(x))
+            }
+        }
         return distinct.toList()
     }
 
@@ -94,9 +105,11 @@ object Convert {
      */
     @JvmStatic
     fun collapse(value: Any?): Atom {
-        fun unwrap(a: Any?): Atom {
-            val x = if (a is BoundAtom) a.atom else a
-            return x as Atom
+        // A scalar call hands its value over as it was computed: a grounded result of a function
+        // typed `Int` arrives as a boxed `Integer`, not as an atom (multicall, caseempty).
+        fun unwrap(a: Any?): Atom = when (val x = if (a is BoundAtom) a.atom else a) {
+            is Atom -> x
+            else -> Grounded(x)
         }
         return when (value) {
             null -> Expression(emptyList())

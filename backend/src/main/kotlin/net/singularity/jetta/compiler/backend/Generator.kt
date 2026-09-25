@@ -40,6 +40,13 @@ class Generator(
      * space — the D2.3 eval-time-type-check opt-in set threaded to each [FunctionGenerator].
      */
     private val declaredTypeNames: Set<String> = emptySet(),
+    /**
+     * Names whose `:` declaration is an ARROW — the constructors and functions an inert
+     * application can be type-checked against ([Companion.declaredArrowNamesOf]). A subset of
+     * [declaredTypeNames]: `(: Green Color)` declares a type but not an application shape, so
+     * `(Green Sam)` has nothing to check.
+     */
+    private val declaredArrowNames: Set<String> = emptySet(),
 ) {
     private var lambdaCount = 1
 
@@ -131,7 +138,9 @@ class Generator(
                             )
                         }
                     }
-                    FunctionGenerator(mv, node, true, null, moduleSpaceName, className, declaredTypeNames).generate()
+                    FunctionGenerator(
+                        mv, node, true, null, moduleSpaceName, className, declaredTypeNames, declaredArrowNames,
+                    ).generate()
                     if (generateMain && node.name == FunctionRewriter.MAIN) {
                         val mainDesc = node.getJvmDescriptor()
                         val mv = cw.visitMethod(
@@ -141,9 +150,34 @@ class Generator(
                             null,
                             null
                         )
-                        mv.visitMethodInsn(Opcodes.INVOKESTATIC, className, "__main", mainDesc, false)
-                        if (!mainDesc.endsWith("V")) {
-                            mv.visitInsn(Opcodes.POP)
+                        // `__main` runs on a deep-stacked thread rather than directly: minimal
+                        // MeTTa is continuation-passing, so its recursion depth is the program's
+                        // iteration count (hyperon's own `he_minimalmetta` recurses 70000 times)
+                        // and a default JVM stack overflows around a thousand. See
+                        // [net.singularity.jetta.runtime.DeepStack]; `-Djetta.stackSize=0`
+                        // restores the direct call.
+                        mv.visitLdcInsn(className.replace('/', '.'))
+                        val callBound = staticMaxStackDepth(source)
+                        if (callBound == null) {
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/DeepStack",
+                                "runMain",
+                                "(Ljava/lang/String;)V",
+                                false,
+                            )
+                        } else {
+                            // The program asked to bound its own recursion, and the bound is a
+                            // literal — so the thread's stack can be sized for it at compile time
+                            // and the JVM does the counting for free. See [staticMaxStackDepth].
+                            mv.visitLdcInsn(callBound)
+                            mv.visitMethodInsn(
+                                Opcodes.INVOKESTATIC,
+                                "net/singularity/jetta/runtime/DeepStack",
+                                "runMain",
+                                "(Ljava/lang/String;I)V",
+                                false,
+                            )
                         }
                         mv.visitInsn(Opcodes.RETURN)
                         mv.visitMaxs(1, 1)
@@ -154,6 +188,33 @@ class Generator(
             }
         }
         return listOf(CompilationResult(className, cw.toByteArray()))
+    }
+
+    /**
+     * The recursion bound this program asks for, when the compiler can know it: the value of a
+     * `(pragma! max-stack-depth <literal>)` run. `null` means "nothing to size for".
+     *
+     * Narrow ON PURPOSE. A thread's stack size is fixed when the thread starts, before any run
+     * executes, so only a bound that is knowable statically can be enforced this way — and a
+     * program that sets the pragma TWICE (the reference's own test sets 21 and then 0) has a bound
+     * that varies over its lifetime, which one stack size cannot express. So: exactly one
+     * `max-stack-depth` pragma, a positive integer literal, or nothing. Every other case keeps the
+     * default stack, and `Errors.stackOverflow` still answers the reference's error term whenever
+     * the runtime bound is non-zero — the semantics does not depend on this optimisation, only
+     * how SOON the bound bites.
+     */
+    private fun staticMaxStackDepth(source: ParsedSource): Int? {
+        val values = source.code
+            .filterIsInstance<FunctionDefinition>()
+            .mapNotNull { (it.body as? Expression)?.atoms }
+            .filter { atoms ->
+                atoms.size == 3 &&
+                    (atoms[0] as? Symbol)?.name == "pragma!" &&
+                    (atoms[1] as? Symbol)?.name == "max-stack-depth"
+            }
+            .map { (it[2] as? Grounded<*>)?.value as? Int }
+        val single = values.singleOrNull() ?: return null
+        return if (single > 0) single else null
     }
 
     // --- auto-tabling -------------------------------------------------------------------
@@ -322,7 +383,7 @@ class Generator(
             // methods that can fail verification on their own.
             if (def.isShadowedByRuntime()) return@forEach
             when (val body = def.body) {
-                is Expression -> findLambdas(body, result)
+                is Expression, is Lambda -> findLambdas(body, result)
                 is Match -> {
                     body.branches.forEach { branch ->
                         findLambdas(branch.body, result)
@@ -348,19 +409,18 @@ class Generator(
                 }
                 body.atoms.forEach {
                     when (it) {
-                        is Lambda -> {
-                            val lambdaName = "lambda\$${lambdaCount++}"
-                            acc[lambdaName] = it
-                            findLambdas(it.body, acc)
-                        }
-
-                        is Expression -> {
-                            findLambdas(it, acc)
-                        }
-
+                        is Lambda, is Expression -> findLambdas(it, acc)
                         else -> {}
                     }
                 }
+            }
+
+            // A lambda that IS the body, not only one inside it: a function whose result is
+            // another function's name, `(= (notjustdata $x) f)`, returns `f` eta-expanded.
+            is Lambda -> {
+                val lambdaName = "lambda\$${lambdaCount++}"
+                acc[lambdaName] = body
+                findLambdas(body.body, acc)
             }
 
             else -> {}
@@ -380,6 +440,25 @@ class Generator(
                 val head = fact.atoms.firstOrNull()
                 val isTypeFact = (head as? Special)?.value == ":" || (head as? Symbol)?.name == ":"
                 if (isTypeFact && fact.atoms.size >= 3) (fact.atoms[1] as? Symbol)?.name else null
+            }.toSet()
+
+        /**
+         * The subset of [declaredTypeNamesOf] whose declared type is an ARROW — the names an
+         * INERT application can be checked against at eval time (`Cons`, `S`, `List`), as
+         * opposed to those merely given a type (`(: Green Color)`, nothing to apply). Passed as
+         * [declaredArrowNames]; keeping it separate from the prologue's opt-in set is what stops
+         * a program's plain data constructors from paying for a per-construction check.
+         */
+        fun declaredArrowNamesOf(atoms: List<Expression>): Set<String> =
+            atoms.mapNotNull { fact ->
+                val head = fact.atoms.firstOrNull()
+                val isTypeFact = (head as? Special)?.value == ":" || (head as? Symbol)?.name == ":"
+                if (!isTypeFact || fact.atoms.size < 3) return@mapNotNull null
+                val declared = fact.atoms[2] as? Expression ?: return@mapNotNull null
+                val arrowHead = declared.atoms.firstOrNull()
+                val isArrow = (arrowHead as? Special)?.value == Predefined.ARROW ||
+                    (arrowHead as? Symbol)?.name == Predefined.ARROW
+                if (isArrow) (fact.atoms[1] as? Symbol)?.name else null
             }.toSet()
     }
 }

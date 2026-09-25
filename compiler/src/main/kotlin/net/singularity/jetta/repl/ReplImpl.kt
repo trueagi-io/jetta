@@ -15,10 +15,12 @@ import net.singularity.jetta.compiler.logger.LogLevel
 import net.singularity.jetta.compiler.parser.antlr.AntlrParserFacadeImpl
 import net.singularity.jetta.compiler.backend.registerExternals
 import net.singularity.jetta.compiler.logger.LogConfig
+import net.singularity.jetta.runtime.MettaError
 import net.singularity.jetta.runtime.functions.JitEnv
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.space.SpaceImpl
 import java.io.File
+import java.lang.reflect.InvocationTargetException
 
 class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = LogLevel.DEBUG) : Repl {
     private var counter = 0
@@ -59,6 +61,13 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
             val method = clazz.getMethod(FunctionRewriter.MAIN)
             return EvalResult(method.invoke(null), messages, true)
         } catch (_: NoSuchMethodException) {
+        } catch (e: InvocationTargetException) {
+            // A top-level `(Error …)` ends the program it appears in, and here that program is
+            // one REPL line: the error IS this line's result, exactly as the reference REPL
+            // prints it, and the next line is still accepted. Anything else keeps propagating
+            // wrapped, as it did before this arm existed.
+            val error = (e.targetException as? MettaError) ?: throw e
+            return EvalResult(error.error, messages, true)
         } finally {
             JitEnvRegistry.clear()
         }
@@ -76,7 +85,8 @@ class ReplImpl(runtime: JettaRuntime = DefaultRuntime(), logLevel: LogLevel = Lo
         rewriter.add {
             FunctionRewriter(
                 messageCollector, context.getSpace(),
-                isReducibleName = { context.resolve(it) != null }
+                isReducibleName = { context.resolve(it) != null },
+                inertParamsOf = { context.resolve(it)?.jvmMethod?.inertAtomParams.orEmpty() },
             )
         }
         rewriter.add { LetRewriter() }

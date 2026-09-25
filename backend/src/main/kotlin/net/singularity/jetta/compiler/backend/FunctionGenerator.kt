@@ -33,6 +33,12 @@ open class FunctionGenerator(
      * (backchaining, symbolic interpreters) pays no per-call type-check cost.
      */
     private val declaredTypeNames: Set<String> = emptySet(),
+    /**
+     * Names whose `:` declaration is an arrow. A quoted application headed by one of them is an
+     * INERT application — data with a declared shape — and is type-checked where it is built
+     * ([maybeEmitInertTypeCheck]).
+     */
+    private val declaredArrowNames: Set<String> = emptySet(),
 ) {
     private val destructuredLocals = mutableMapOf<String, Int>()
 
@@ -51,15 +57,75 @@ open class FunctionGenerator(
     // self-recursion, no match/destructuring). See [usesMatcher] for the criterion.
     private val usesMatcher: Boolean = computeUsesMatcher()
 
+    /**
+     * The source term of a top-level `!`-run, or `null` for every other function: only
+     * `__main_<k>` — one generated per `!`-form, see `Context.normalizeMainForCodegen` — is a run,
+     * and its body IS the run's term.
+     */
+    private fun topLevelRunTerm(): String? {
+        val name = (function as? FunctionDefinition)?.name ?: return null
+        // "__main_" = FunctionRewriter.MAIN + "_", spelled out as the RUN_SEQ branch above does.
+        if (!name.startsWith("__main_")) return null
+        if (name.removePrefix("__main_").toIntOrNull() == null) return null
+        return renderRunTerm(function.body)
+    }
+
+    /**
+     * The term as a program would write it. Not `Atom.toString()`: an [Expression] appends its
+     * inferred type, so the run `(println! (down 5))` renders as
+     * `(println! (down 5):Int):Atom` — IR detail in a message meant to name the run that
+     * overflowed.
+     */
+    private fun renderRunTerm(atom: Atom): String = when (atom) {
+        is Expression -> atom.atoms.joinToString(" ", "(", ")") { renderRunTerm(it) }
+        else -> atom.toString()
+    }
+
     fun generate() {
         emitLineNumber(function)
 
+        val runTerm = topLevelRunTerm()
+        if (runTerm == null) {
+            generateBody()
+            mv.visitMaxs(maxStack, maxLocals)
+            return
+        }
+
+        // A top-level run that exhausts the stack answers the reference's `(Error <run>
+        // StackOverflow)` when the program asked for a `max-stack-depth`, instead of crashing;
+        // `Errors.stackOverflow` hands the original error back when it did not, so a program
+        // that never asked keeps today's report. Registered BEFORE the body's own catch-all
+        // `Matcher` finally (ASM writes the table in call order), so a StackOverflowError reaches
+        // this handler first. Zero instructions on the happy path — an exception-table entry —
+        // and by the time the handler runs the stack is unwound to this one frame, which is what
+        // makes it safe to allocate the term here at all.
+        val tryStart = Label()
+        val tryEnd = Label()
+        val handler = Label()
+        mv.visitTryCatchBlock(tryStart, tryEnd, handler, "java/lang/StackOverflowError")
+        mv.visitLabel(tryStart)
+        generateBody()
+        mv.visitLabel(tryEnd)
+        mv.visitLabel(handler)
+        mv.visitLdcInsn(runTerm)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.ERRORS,
+            "stackOverflow",
+            "(Ljava/lang/StackOverflowError;Ljava/lang/String;)Ljava/lang/Throwable;",
+            false,
+        )
+        mv.visitInsn(Opcodes.ATHROW)
+        mv.visitMaxs(maxStack, maxLocals)
+    }
+
+    private fun generateBody() {
         if (!usesMatcher) {
             // No binding-stack interaction: emit the body directly, no push/pop, no
             // exception-safe finally (there is no frame to unwind). generateReturn also
             // skips its pop when usesMatcher is false.
+            maybeEmitTypeCheckPrologue(mv)
             generateAtom(mv, function.body, null, true)
-            mv.visitMaxs(maxStack, maxLocals)
             return
         }
 
@@ -75,6 +141,7 @@ open class FunctionGenerator(
         mv.visitTryCatchBlock(tryStart, tryEnd, finallyHandler, null)
 
         mv.visitLabel(tryStart)
+        maybeEmitTypeCheckPrologue(mv)
         generateAtom(mv, function.body, null, true)
         mv.visitLabel(tryEnd)
 
@@ -85,8 +152,6 @@ open class FunctionGenerator(
         generatePop(mv)
         mv.visitVarInsn(Opcodes.ALOAD, exVar)
         mv.visitInsn(Opcodes.ATHROW)
-
-        mv.visitMaxs(maxStack, maxLocals)
     }
 
     /**
@@ -327,6 +392,7 @@ open class FunctionGenerator(
                                     )
                                 }
                                 generateAtom(mv, it, null, false)
+                                if (isMain) emitRunResultErrorCheck(it)
                             }
                         }
 
@@ -640,7 +706,103 @@ open class FunctionGenerator(
         }
     }
 
-    private fun generateQuote(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
+    /**
+     * Build [atom] as data on the stack, then type-check it if it is an inert application of a
+     * name with a declared arrow (see [maybeEmitInertTypeCheck]).
+     *
+     * The check runs on the TERM AS QUOTED and never descends into it, and that is load-bearing
+     * rather than an economy: the expected side of `assertEqualToResult` is quoted data that
+     * legitimately contains the very term whose error is being asserted —
+     * `((Error (Cons S (Cons Z Nil)) (BadArgType …)))` — one level below its own top. Checking
+     * sub-terms would rewrite that into a doubly-wrapped error and break every such assertion,
+     * which is the structural-replacement hazard D2.2 was bitten by.
+     *
+     * [typeCheck] turns the check off for a term built into a FULLY-INERT parameter slot, where
+     * the point of the slot is that the callee reads the term as the program wrote it.
+     */
+    private fun generateQuote(
+        mv: LocalVariablesSorter,
+        atom: Atom,
+        evalCalls: Boolean = false,
+        typeCheck: Boolean = true,
+    ) {
+        generateQuoteTerm(mv, atom, evalCalls)
+        if (typeCheck) maybeEmitInertTypeCheck(mv, atom)
+    }
+
+    /**
+     * An inert application `(Cons S (Cons Z Nil))` has no `=` rule, hence no compiled function
+     * and no [maybeEmitTypeCheckPrologue] — so nothing held it against `Cons`'s declared arrow
+     * until here. Emitted only for a quoted Expression headed by a Symbol with an arrow
+     * declaration; `JettaProgram.typeCheckInert` answers the `(Error …)` term when the
+     * application is mistyped and the term itself otherwise, keeping the stack's `Expression`
+     * type either way.
+     */
+    private fun maybeEmitInertTypeCheck(mv: LocalVariablesSorter, atom: Atom) {
+        if (atom !is Expression) return
+        val head = atom.atoms.firstOrNull() as? Symbol ?: return
+        if (head.name !in declaredArrowNames) return
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "net/singularity/jetta/runtime/JettaProgram",
+            "typeCheckInert",
+            "(Lnet/singularity/jetta/compiler/frontend/ir/Expression;)" +
+                "Lnet/singularity/jetta/compiler/frontend/ir/Expression;",
+            false,
+        )
+    }
+
+    /**
+     * `(Error …)`-termination for one top-level `!`-run: duplicate the step's result and hand it to
+     * [net.singularity.jetta.runtime.Errors.checkRunResult], which throws when the run answered an
+     * error. The reference stops reading the script at that point (`MettaRunnerMode::TERMINATE`),
+     * so the steps below it must not run, and a throw out of `__main` is what a compiled program
+     * has instead of a runner loop to switch off.
+     *
+     * `DUP` rather than consume-and-return, so the stack keeps the step's own verified type: the
+     * last step's value is what `__main` returns, and the earlier ones are left where they already
+     * were (run-seq never popped them). Emitted only for a step whose value is a JVM REFERENCE —
+     * a primitive or `void` result (`!(+ 1 2)`, a `Unit` step) can not be an error term, and
+     * `DUP`ing a category-2 primitive would be wrong.
+     */
+    private fun emitRunResultErrorCheck(step: Atom) {
+        val type = step.type
+        val leavesReference = when (type) {
+            null,
+            GroundedType.INT, GroundedType.LONG,
+            GroundedType.BOOLEAN, GroundedType.DOUBLE,
+            GroundedType.UNIT -> false
+
+            else -> true
+        }
+        if (!leavesReference) return
+        mv.visitInsn(Opcodes.DUP)
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            RuntimeNames.ERRORS,
+            "checkRunResult",
+            "(Ljava/lang/Object;)V",
+            false,
+        )
+    }
+
+    private fun generateQuoteTerm(mv: LocalVariablesSorter, atom: Atom, evalCalls: Boolean = false) {
+        // A `(__force $x)` is never data, whatever the quoting context: it is the VALUE of a held
+        // parameter, put there by the rewriter precisely because the position needs one — an `==`
+        // operand quotes its Atom-typed sides, and quoting this call compared against the literal
+        // `(__force …)`.
+        if (atom is Expression && isForcedHeldParam(atom)) {
+            generateAtom(mv, atom, null, false)
+            return
+        }
+        // The compiler's own quote is never an atom of the program: nested in data it means its
+        // content, as data. A source `(quote X)` reaches here wrapped in one (it keeps its
+        // wrapper), and quoting that again — an inert argument of `get-type` — stored the
+        // internal `Special` in the term, which no `:` fact names.
+        if (atom is Expression && atom.atoms.size == 2 && atom.atoms[0] == PredefinedAtoms.QUOTE) {
+            generateQuoteTerm(mv, atom.atoms[1])
+            return
+        }
         when (atom) {
             is Expression -> {
                 mv.visitTypeInsn(Opcodes.NEW, Type.getInternalName(Expression::class.java))
@@ -703,7 +865,7 @@ open class FunctionGenerator(
                             )
                         }
                     } else {
-                        generateQuote(mv, sub, evalCalls)
+                        generateQuoteTerm(mv, sub, evalCalls)
                     }
                     mv.visitInsn(Opcodes.AASTORE)
                 }
@@ -913,12 +1075,24 @@ open class FunctionGenerator(
      *    pays no per-call type-check cost;
      *  - a primitive/List return cannot hold an Error atom in its return slot, so those are skipped
      *    too (their eval-time errors are a later phase — multivalued needs a singleton-List wrap).
+     *
+     * …and skipped again when every parameter is declared LITERALLY as the meta-type `Atom`, because
+     * then the check is a TAUTOLOGY: `TypeEngine.checkApp` `continue`s past a meta-`Atom` parameter
+     * without even inferring the argument's type (an `Atom` parameter takes the TERM, so nothing
+     * about the argument can make the call ill-typed), and its other exits answer `null` too. Note
+     * the two conditions read alike but are not: `param.type == GroundedType.ATOM` is the JVM
+     * REPRESENTATION, which `asType()` erases every unknown type to — `(: deriv (-> Atom Atom Atom))`
+     * and `(: Add (-> Nat Nat Nat))` are both all-`ATOM`-represented, and only the first is the
+     * meta-type. [FunctionDefinition.declaredAtomParams] carries the surface spelling for exactly
+     * this reason. Measured on `bench/programs/diff.metta`, whose `deriv` is declared that way: the
+     * prologue was 35% of the program's run time, proving nothing ~7·10⁶ times.
      */
     private fun maybeEmitTypeCheckPrologue(mv: LocalVariablesSorter) {
         val fn = function as? FunctionDefinition ?: return
         if (fn.name !in declaredTypeNames) return
         if (fn.isMultivalued() || fn.returnType != GroundedType.ATOM) return
         if (!fn.params.all { it.type == GroundedType.ATOM }) return
+        if (fn.params.indices.all { it in fn.declaredAtomParams }) return
 
         mv.visitLdcInsn(fn.name)
         emitParamArgsArray(mv)
@@ -984,7 +1158,6 @@ open class FunctionGenerator(
     }
 
     private fun generateMatch(mv: LocalVariablesSorter, match: Match) {
-        maybeEmitTypeCheckPrologue(mv)
         // A Match whose clauses are provably mutually exclusive (FunctionRewriter did not
         // mark the function multivalued) has at most one matching branch, so it compiles to
         // a scalar dispatch — an if-else chain returning each branch value directly, with no
@@ -1510,6 +1683,11 @@ open class FunctionGenerator(
             // verifier rejects at the INVOKESTATIC call against a `Z` parameter. Mirror of
             // the Bool-return case above; sibling to `pushComparisonOperand`'s literal path.
             generateLoadBoolean(arg.name == "True")
+        } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression && isForcedHeldParam(arg)) {
+            // `(__force $x)` over a parameter this function holds unevaluated, landing in a slot the
+            // callee holds too: the callee wants the term, which is what `$x` already is. Quoting
+            // the call instead would hand over the literal `(__force …)`.
+            generateAtom(mv, arg.atoms[1], null, false)
         } else if (jvmSymbol.isParameterInertAtom(index) && arg is Expression) {
             // A FULLY-INERT Atom parameter (e.g. `get-type`): the argument must reach the
             // method un-reduced, so quote the whole term structurally (evalCalls=false ⇒ no
@@ -1518,7 +1696,25 @@ open class FunctionGenerator(
             // application; the plain-`generateAtom` path below would instead take the
             // `evalCalls=true` quote path and evaluate any `resolved != null` sub-application
             // (in d3 `Cons` is `resolved` via the `drop` rule, collapsing the term to `Nil`).
-            generateQuote(mv, arg)
+            //
+            // And no inert TYPE CHECK on the way in: this slot exists so the callee sees the term
+            // as written, while [maybeEmitInertTypeCheck] would hand it
+            // `(Error <term> (BadArgType …))` instead whenever the term is mistyped — which is the
+            // very question `get-type` is being asked. With the library linked, that error term
+            // then had a type of its own, through stdlib's `(: Error (-> Atom Atom ErrorType))`
+            // whose all-`Atom` arrow accepts anything, so `(get-type (Cons 5 (Cons "6" Nil)))`
+            // answered `ErrorType` where the reference answers the empty set. Without the library
+            // the same rewrite happened and `get-type` merely failed to type the error, so the
+            // empty answer was luck.
+            //
+            // The reference holds both answers at once, and that is the point of this slot —
+            // measured on `metta-repl` with NO `pragma!` anywhere: `!(Cons 5 (Cons "6" Nil))`
+            // answers `(Error … (BadArgType 2 (List Number) (List String)))`, which is our own
+            // output verbatim, while `!(get-type (Cons 5 (Cons "6" Nil)))` answers `[]`. The
+            // eval-time check is unconditional there as it is here; `!(pragma! type-check auto)`
+            // gates something else — an extra TOP-LEVEL pre-check that refuses to add an
+            // all-error fact to the space and answers a run's errors without interpreting it.
+            generateQuote(mv, arg, typeCheck = false)
         } else if (index in jvmSymbol.templateAtomParams && arg is Expression && isTemplate(arg)) {
             // A parameter a USER function declares literally `Atom`, handed a TEMPLATE — a term
             // carrying a variable nothing in scope binds, so there is no value to compute. Quote it
@@ -1566,8 +1762,32 @@ open class FunctionGenerator(
         } else {
             generateAtom(mv, arg, null, false, jvmSymbol.doesParameterHaveAnyType(index))
             narrowArgumentToExpression(mv, jvmSymbol, index, argType)
+            unwrapArgumentToPrimitive(mv, jvmSymbol, index, argType)
         }
     }
+
+    /**
+     * An `Atom`-typed argument reaching a PRIMITIVE parameter: a value that travelled as data —
+     * `$it1` bound by the pattern of `(let ($x1 $it1) (iter-next $it) …)` — handed to
+     * `(: iter-next (-> Int Atom))`. The descriptor wants an `int`; the stack holds the `Grounded`
+     * wrapping it, and the class failed verification. Unwrapped the way an `Any` slot is read.
+     */
+    private fun unwrapArgumentToPrimitive(mv: LocalVariablesSorter, jvmSymbol: JvmMethod, index: Int, argType: Atom?) {
+        if (argType != GroundedType.ATOM) return
+        val primitive = when (jvmSymbol.descriptor.parseDescriptor()[index]) {
+            "I" -> GroundedType.INT
+            "J" -> GroundedType.LONG
+            "D" -> GroundedType.DOUBLE
+            "Z" -> GroundedType.BOOLEAN
+            else -> return
+        }
+        unwrapReferenceToPrimitive(mv, primitive)
+    }
+
+    /** A `(__force $x)` that `FunctionRewriter.holdMetaParams` wrapped around a held parameter. */
+    private fun isForcedHeldParam(arg: Expression): Boolean =
+        arg.atoms.size == 2 && (arg.atoms[0] as? Symbol)?.name == Predefined.FORCE && arg.atoms[1] is Variable &&
+            arg.resolved != null
 
     /**
      * An argument that is statically WIDER than an `Expression` parameter needs the cast the
@@ -1685,8 +1905,18 @@ open class FunctionGenerator(
         arguments.forEachIndexed { i, arg ->
             mv.visitInsn(Opcodes.DUP)
             generateLoadInt(i)
-            generateAtom(mv, arg, null, false)
-            boxIfNeeded(mv, arg.type as? GroundedType)
+            val argType = arg.type as? GroundedType
+            val paramType = lambda.params.getOrNull(i)?.type
+            if ((paramType == GroundedType.ATOM || paramType == GroundedType.EXPRESSION) &&
+                argType != null && argType.isGroundedValue()
+            ) {
+                // A value bound to an `Atom` lambda parameter — `(let* (($X $N)) …)` over an `Int`
+                // `$N` — must arrive as an Atom; a bare Integer failed the body's cast (iter).
+                generateGroundedValueArg(mv, arg, argType)
+            } else {
+                generateAtom(mv, arg, null, false)
+                boxIfNeeded(mv, argType)
+            }
             mv.visitInsn(Opcodes.AASTORE)
         }
         mv.visitMethodInsn(
@@ -1931,10 +2161,13 @@ open class FunctionGenerator(
      * comparison branch in [generateBooleanExpr], where treating one as a pattern made
      * `(== (quote $a) (quote $b))` compare the left side's VALUE with the right side's literal
      * `(quote …)` term, and so answer False for every input.
+     *
+     * Only the compiler's own quote (the `Special`) is peeled. A `quote` SYMBOL is the source-level
+     * constructor, kept as data — so a rule pattern `(quote $atom)` is a pattern like any other.
      */
     private fun isQuoteForm(atom: Atom): Boolean {
         val head = (atom as? Expression)?.atoms?.firstOrNull() ?: return false
-        return (head as? Special)?.value == Predefined.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE
+        return (head as? Special)?.value == Predefined.QUOTE
     }
 
     /**
@@ -2227,7 +2460,8 @@ open class FunctionGenerator(
                             if (right is Expression && containsVariable(right) && !isQuoteForm(right)) {
                                 // Use Matcher.match(left, pattern) -> boolean
                                 generateAtom(mv, left, null, false)
-                                generateQuote(mv, right)
+                                // a PATTERN, not an application: it is not type-checked
+                                generateQuote(mv, right, typeCheck = false)
                                 mv.visitMethodInsn(
                                     Opcodes.INVOKESTATIC,
                                     RuntimeNames.MATCHER,

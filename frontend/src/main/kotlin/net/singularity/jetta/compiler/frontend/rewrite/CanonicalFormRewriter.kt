@@ -166,6 +166,35 @@ class CanonicalFormRewriter(
      */
     private fun Expression.isIfForm(): Boolean = atoms[0].isIf() && !isMisappliedSpecial()
 
+    /**
+     * Rewrite the LAMBDA arguments of a lifted call, leaving the call itself alone.
+     *
+     * A multivalued argument registered for a lift is spliced into the `map?`/`flat-map?` node
+     * verbatim, so its own lambda arguments were never rewritten and the multivalued calls
+     * inside THEM never got their lift. That is minimal MeTTa's shape exactly:
+     * `(chain (unify $d True A (chain (eval …) $i $i)) $r $r)` lifts the `unify`, whose else
+     * branch is a lambda holding a `chain` over a bag — which compiled to a lambda with an
+     * `Atom` parameter applied straight to a `List` (ClassCastException at run time). The same
+     * form written OUTSIDE a lift — `(chain (eval …) $d (unify …))` — was always fine, which is
+     * why this went unnoticed.
+     *
+     * Only the lambda positions are touched. Rewriting the call itself would collapse it to its
+     * own lift variable (it is registered in `multivaluedCalls`), which is precisely what the
+     * splice is avoiding; the compound-lift path next to this one can afford a full
+     * `rewriteAtom` because its sources are NOT registered.
+     */
+    private fun rewriteLambdaArguments(atom: Expression): Expression {
+        var changed = false
+        val atoms = atom.atoms.map {
+            if (it is Lambda) {
+                val rewritten = rewriteAtom(it)
+                if (rewritten !== it) changed = true
+                rewritten
+            } else it
+        }
+        return if (changed) atom.copy(atoms = atoms) else atom
+    }
+
     private fun rewriteAtom(atom: Atom): Atom =
         when (atom) {
             is Expression -> {
@@ -231,7 +260,7 @@ class CanonicalFormRewriter(
                         expression,
                         position = expression.position
                     ),
-                    replacement[0].second,
+                    rewriteLambdaArguments(replacement[0].second),
                     position = expression.position
                 ),
                 op = PredefinedAtoms.FLAT_MAP_
@@ -282,9 +311,22 @@ class CanonicalFormRewriter(
                 // `let` whose result is a bag (`((let $x (get-atoms &self) (get-type $x)))`
                 // — the enclosing tuple must run per element, not hold the application).
                 && (atom.atoms[0] is Symbol || atom.atoms[0] is Lambda)
+                // A BARRIER argument is recorded because its own arguments carry lifts, not
+                // because it answers a bag: `(collapse (let $c (superpose …) …))` is one tuple,
+                // and lifting it made `println!` map over that tuple as if it were a `List`
+                // (ICCE in `simpleMap`). A barrier that does answer a bag (`unique`) is still
+                // lifted — its head says so.
+                && !isScalarBarrierCall(atom)
             ) {
+                // Flagged non-deterministic is not the same as answering a bag. A SCALAR builtin
+                // head (`car-atom`, `change-state!`) scopes its multivalued leaves to the enclosing
+                // call, so rewritten it is `(car-atom $v0)` — one value, bound by THIS call's lift.
+                // Lifting it again made `(println! (car-atom (mv)))` map over that value as if it
+                // were a `List` (ICCE in `simpleMap`). A `Special` head (`+`) never came here.
+                val rewritten = rewriteAtom(atom)
+                if (!yieldsBag(rewritten)) return rewritten
                 val v = variableCount++
-                compoundLifts.add(Triple(v, rewriteAtom(atom), atom.type))
+                compoundLifts.add(Triple(v, rewritten, atom.type))
                 return mkVariable(v, expression.position)
             }
             return rewriteAtom(atom)
@@ -515,14 +557,16 @@ class CanonicalFormRewriter(
                         if (f.name == "match") {
                             return false
                         }
-                        // A rule shadowed by a builtin counts as ABSENT here — see [userDefinition].
-                        val def = userDefinition(f.name)
-                        val userMultivalued = def != null && def.isMultivalued()
+                        // A rule shadowed by a builtin counts as ABSENT here — see [userDefinition]
+                        // — and so does one this call cannot reach for want of arity, see
+                        // [isMultivaluedHead].
+                        val def = calleeAt(f.name, atom.atoms.size - 1)
+                        val userMultivalued = def != null && def.multivalued
                         // A system multivalued function (e.g. `superpose`, `generate`):
                         // present in systemFunctions with isMultiValued, absent from
                         // definedFunctions. `match` is already excluded above.
                         val systemMultivalued = def == null &&
-                                context.resolve(f.name)?.isMultiValued == true
+                                context.resolve(f.name, atom.atoms.size - 1)?.isMultiValued == true
                         if (userMultivalued || systemMultivalued) {
                             // Check if arguments contain multivalued sub-calls.
                             // If so, don't register this call at the parent scope —
@@ -530,7 +574,7 @@ class CanonicalFormRewriter(
                             val hasMultivaluedArgs = atom.atoms.drop(1).any { arg ->
                                 arg is Expression && arg.atoms.isNotEmpty() &&
                                         arg.atoms[0] is Symbol &&
-                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name, arg.atoms.size - 1)
                             }
                             // A bare multivalued call that is a direct barrier argument is
                             // handed over whole (as its List result) — skip lifting it so
@@ -587,6 +631,23 @@ class CanonicalFormRewriter(
                         if (collectNonDeterministicAtomsRecursively(f.body, f, f.body.id)) {
                             isMultivalued = true
                         }
+                        // A `match` as the VALUE of such an application — `(let $v (match …) B)` —
+                        // binds `$v` once per result, as in the reference; everywhere else the
+                        // lift leaves `match` to its own lowerings. Registered at this
+                        // application's scope, so the application runs inside the lift.
+                        if (!barrierArg) atom.atoms.drop(1).forEach { arg ->
+                            if (arg is Expression && (arg.atoms.firstOrNull() as? Symbol)?.name == "match") {
+                                val scopeId = reducedScopeId ?: getScopeId(arg)
+                                if (scopeId != arg.id) {
+                                    multivaluedCalls[arg.id] = variableCount
+                                    multivaluedCallsInverse.getOrPut(scopeId) { mutableListOf() }
+                                        .add(variableCount to arg)
+                                    variableCount++
+                                    multivaluedAtoms.add(arg.id)
+                                    isMultivalued = true
+                                }
+                            }
+                        }
                     }
 
                     else -> {}
@@ -627,11 +688,12 @@ class CanonicalFormRewriter(
                     // compound stays self-contained (children scoped to it) and is NOT
                     // compound-lifted — bubbling here would desync with rewriteExpression,
                     // which leaves barrier args inlined.
-                    val isMvCompound = !barrierArg && headName != null && isMultivaluedHead(headName) &&
+                    val isMvCompound = !barrierArg && headName != null &&
+                            isMultivaluedHead(headName, atom.atoms.size - 1) &&
                             atom.atoms.drop(1).any { arg ->
                                 arg is Expression && arg.atoms.isNotEmpty() &&
                                         arg.atoms[0] is Symbol &&
-                                        isMultivaluedHead((arg.atoms[0] as Symbol).name)
+                                        isMultivaluedHead((arg.atoms[0] as Symbol).name, arg.atoms.size - 1)
                             }
                     val childScope = if (isMvCompound) {
                         reducedScopeId
@@ -691,13 +753,18 @@ class CanonicalFormRewriter(
         return isMultivalued
     }
 
+    private fun isScalarBarrierCall(atom: Expression): Boolean {
+        val name = (atom.atoms[0] as? Symbol)?.name ?: return false
+        return name in BARRIER_FUNCTIONS && !isMultivaluedHead(name, atom.atoms.size - 1)
+    }
+
     private fun Expression.checkIsNonDeterministicRecursively(): Boolean {
         if (atoms.isEmpty()) return false
         // Safe lookup: a Symbol head need not be a user-defined function — it can be a data
         // constructor or a system builtin, absent from definedFunctions. Treat those as not
         // multivalued rather than asserting (`!!`) and NPE-ing (crashed if2/smartdispatch/…).
         val head = atoms[0]
-        if (head is Symbol && userDefinition(head.name)?.isMultivalued() == true) return true
+        if (head is Symbol && calleeAt(head.name, atoms.size - 1)?.multivalued == true) return true
         atoms.drop(1).forEach {
             if (it is Expression && it.checkIsNonDeterministicRecursively()) return true
         }
@@ -732,7 +799,7 @@ class CanonicalFormRewriter(
     private fun yieldsBag(atom: Atom): Boolean {
         if (atom !is Expression || atom.atoms.isEmpty()) return false
         return when (val h = atom.atoms[0]) {
-            is Symbol -> isMultivaluedHead(h.name)
+            is Symbol -> isMultivaluedHead(h.name, atom.atoms.size - 1)
             is Lambda ->
                 h.body.isNonDeterministic() || h.returnType is SeqType ||
                     h.body.type is SeqType || yieldsBag(h.body)
@@ -743,11 +810,26 @@ class CanonicalFormRewriter(
         }
     }
 
-    private fun isMultivaluedHead(name: String): Boolean {
+    /**
+     * Whether an application of [name] to [argumentCount] arguments answers a result BAG.
+     *
+     * The argument count is not a detail: a name is only this callee AT ITS OWN ARITY. Called
+     * with any other number of arguments the form is DATA — `Context.resolveAtom`'s arity guard
+     * leaves it inert for the runtime to reduce — and asking the wrong callee about valuedness
+     * produces exactly the lie [userDefinition] describes. The reference library's `map-atom` is
+     * `(-> Expression Variable Atom Expression)` and multivalued, while `holfunctions.metta`
+     * writes the two-argument `(map-atom (1 2 3) mapfun)`: the lift wrapped that inert term in a
+     * `map?`, and `simpleMap` was handed an `Expression` where it wanted a `List`.
+     */
+    private fun isMultivaluedHead(name: String, argumentCount: Int): Boolean {
         if (name == "match") return false
-        return userDefinition(name)?.isMultivalued()
-            ?: (context.resolve(name)?.isMultiValued == true)
+        return calleeAt(name, argumentCount)?.multivalued
+            ?: (context.resolve(name, argumentCount)?.isMultiValued == true)
     }
+
+    /** [userDefinition], narrowed to a call that passes the number of arguments it declares. */
+    private fun calleeAt(name: String, argumentCount: Int): Context.SymbolDef? =
+        userDefinition(name)?.takeIf { it.arity == null || it.arity == argumentCount }
 
     /**
      * The user `=` definition a call to [name] actually reaches, or null when the call links to the
@@ -761,8 +843,8 @@ class CanonicalFormRewriter(
      * (`IncompatibleClassChangeError: Expression does not implement List` in `simpleMap`, or a
      * VerifyError when the lift's lambda inherited the lie in its descriptor).
      */
-    private fun userDefinition(name: String): FunctionDefinition? =
-        context.definedFunctions[name]?.func?.takeUnless { it.isShadowedByRuntime() }
+    private fun userDefinition(name: String): Context.SymbolDef? =
+        context.definedFunctions[name]?.takeUnless { it.shadowedByRuntime }
 
     private fun getArrayTypeForFunc(op: Atom, name: String): ArrowType? =
         (userDefinition(name)?.arrowType?.types

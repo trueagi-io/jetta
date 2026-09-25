@@ -1,10 +1,12 @@
 package net.singularity.jetta.runtime
 
+import net.singularity.jetta.compiler.frontend.ir.Atom
 import net.singularity.jetta.compiler.frontend.ir.BoundAtom
 import net.singularity.jetta.compiler.frontend.ir.Expression
 import net.singularity.jetta.compiler.frontend.ir.Grounded
 import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.PredefinedAtoms
+import net.singularity.jetta.compiler.frontend.ir.Variable
 
 object Assertions {
     /**
@@ -115,10 +117,11 @@ object Assertions {
             throw AssertionError(
                 buildString {
                     append("assertEqual failed")
+                    // The raw values, not their comparison keys: a key prints as `ExprKey(…)`.
                     append("\nExpected: ")
-                    append(normalize(expected))
+                    append(unwrap(expected))
                     append("\nActual:   ")
-                    append(normalize(actual))
+                    append(unwrap(actual))
                 }
             )
         }
@@ -133,11 +136,191 @@ object Assertions {
                 buildString {
                     append("assertEqualToResult failed")
                     append("\nExpected results: ")
-                    append(normalizedExpected)
+                    append(unwrap(unquote(expected)))
                     append("\nActual results:   ")
-                    append(normalizedActual)
+                    append(unwrap(actual))
                 }
             )
         }
     }
+
+    // --- the `_assert-results-are-*` family -----------------------------------------------
+
+    /**
+     * Alpha-equivalence: [a] and [b] are structurally equal up to a consistent RENAMING of their
+     * variables, so `(Father $X)` and `(Father $Y)` are equivalent while `(Father $X)` and
+     * `(Son $X)` are not. The renaming must be a BIJECTION, which is why both directions are
+     * tracked: without [backward], `(f $a $b)` and `(f $c $c)` would pass, since `$a`->`$c` and
+     * `$b`->`$c` are each consistent read one way.
+     *
+     * Shared by the `=alpha` builtin ([JettaProgram]) and the alpha half of this family; the
+     * reference grounds both on the same `atoms_are_equivalent`.
+     */
+    internal fun alphaEquivalent(
+        a: Atom,
+        b: Atom,
+        forward: MutableMap<String, String> = HashMap(),
+        backward: MutableMap<String, String> = HashMap(),
+    ): Boolean = when {
+        a is Variable && b is Variable -> {
+            val f = forward.putIfAbsent(a.name, b.name) ?: b.name
+            val r = backward.putIfAbsent(b.name, a.name) ?: a.name
+            f == b.name && r == a.name
+        }
+        a is Variable || b is Variable -> false
+        a is Expression && b is Expression ->
+            a.atoms.size == b.atoms.size &&
+                a.atoms.indices.all { alphaEquivalent(a.atoms[it], b.atoms[it], forward, backward) }
+        a is Expression || b is Expression -> false
+        else -> a == b
+    }
+
+    private fun unwrap(value: Any?): Any? =
+        when (val v = JettaProgram.deref(value)) {
+            is BoundAtom -> unwrap(v.atom)
+            else -> v
+        }
+
+    /**
+     * The bag of results in an argument of the `_assert-results-are-*` family.
+     *
+     * The reference hands these a COLLAPSED TUPLE — an `Expression` whose children are the
+     * results — and the library's MeTTa definitions always build one, through
+     * `(metta (collapse $actual) %Undefined% $space)`. Through our runtime that pair answers
+     * `Convert.collapse`'s single tuple wrapped in the usual multivalued result `List`, so the
+     * argument arrives here as a one-element `List` holding the tuple. A `List` of any other
+     * size is a bare result bag — nothing in the library produces one, but a direct call can —
+     * and is taken as the bag itself.
+     */
+    private fun resultBag(value: Any?): List<Atom> {
+        val v = unwrap(value)
+        if (v is List<*>) {
+            return if (v.size == 1) resultBag(v[0]) else v.mapNotNull { unwrap(it) as? Atom }
+        }
+        return when (v) {
+            is Expression -> v.atoms
+            is Atom -> listOf(v)
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * Multiset equality under an arbitrary [eq], mirroring the reference's `compare_vec_no_order`
+     * over a `ListMap` keyed by the custom equality: each element joins the first bucket whose
+     * representative it is [eq]-equal to, and the bags are equal when every bucket's two counts
+     * agree. [bagsEqual]'s hash grouping cannot express this — alpha equivalence has no canonical
+     * key to group by, because which renaming is the right one depends on what the atom is being
+     * compared against.
+     */
+    private fun bagsEqualBy(
+        actual: List<Atom>,
+        expected: List<Atom>,
+        eq: (Atom, Atom) -> Boolean,
+    ): Boolean {
+        if (actual.size != expected.size) return false
+        val representatives = mutableListOf<Atom>()
+        val counts = mutableListOf<IntArray>()
+        fun bucketOf(atom: Atom): IntArray {
+            val existing = representatives.indexOfFirst { eq(it, atom) }
+            if (existing >= 0) return counts[existing]
+            representatives.add(atom)
+            return IntArray(2).also { counts.add(it) }
+        }
+        actual.forEach { bucketOf(it)[0]++ }
+        expected.forEach { bucketOf(it)[1]++ }
+        return counts.all { it[0] == it[1] }
+    }
+
+    /**
+     * The shared body of the four `_assert-results-are-*` entry points: compare two result bags
+     * and answer the unit atom, or fail.
+     *
+     * The reference answers `(Error <assert> <report>)` on a mismatch; we THROW, as [assertEqual]
+     * and [assertEqualToResult] do. A failing assert that answers an inert error term is silent,
+     * and a silent assert is exactly the false pass that hid `assertAlphaEqualToResult` from this
+     * suite for as long as the library was not linked: with the library's definition missing, the
+     * call was an unresolved head, i.e. data, and `!(assertAlphaEqualToResult (+ 1 2) (WRONG))`
+     * succeeded. Throwing also keeps failures visible along the library route once our own
+     * `assertEqual*` builtins stop shadowing the MeTTa definitions.
+     */
+    private fun compareResults(
+        name: String,
+        actual: Any?,
+        expected: Any?,
+        assert: Any?,
+        message: Any?,
+        eq: (Atom, Atom) -> Boolean,
+    ): Atom {
+        val actualBag = resultBag(actual)
+        val expectedBag = resultBag(expected)
+        if (!bagsEqualBy(actualBag, expectedBag, eq)) {
+            throw AssertionError(
+                buildString {
+                    append(name)
+                    append(" failed")
+                    if (message != null) {
+                        append("\n")
+                        append(unwrap(message))
+                    } else {
+                        append("\nExpected: ")
+                        append(expectedBag)
+                        append("\nGot:      ")
+                        append(actualBag)
+                    }
+                    append("\nIn:       ")
+                    append(unwrap(assert))
+                }
+            )
+        }
+        return JettaProgram.UNIT_ATOM
+    }
+
+    /** Structural equality of two results, under the coercions [normalize] applies. */
+    private fun resultsEqual(a: Atom, b: Atom): Boolean = normalize(a) == normalize(b)
+
+    /** Alpha-equivalence of two results, with any bindings resolved first (as `=alpha` does). */
+    private fun resultsAlphaEqual(a: Atom, b: Atom): Boolean =
+        alphaEquivalent(Matcher.resolveDeep(a), Matcher.resolveDeep(b))
+
+    /**
+     * `_assert-results-are-equal <actual-results> <expected-results> <assert>` — the grounded
+     * comparison hyperon's `stdlib.metta` builds every `assertEqual*` on. The library's MeTTa
+     * definition collapses each side and then hands both bags plus the ORIGINAL assert term here,
+     * for the error message. That term is the assert's own self-application
+     * (`(assertEqual $actual $expected)`), which is why the third parameter is INERT in
+     * `Externals`: reducing it re-enters the assert and never returns.
+     */
+    @JvmStatic
+    fun `_assert-results-are-equal`(actual: Any?, expected: Any?, assert: Atom): Atom =
+        compareResults("_assert-results-are-equal", actual, expected, assert, null, ::resultsEqual)
+
+    /** [_assert-results-are-equal] with the caller's own failure message. */
+    @JvmStatic
+    fun `_assert-results-are-equal-msg`(
+        actual: Any?,
+        expected: Any?,
+        assert: Atom,
+        message: Atom,
+    ): Atom =
+        compareResults("_assert-results-are-equal-msg", actual, expected, assert, message, ::resultsEqual)
+
+    /** [_assert-results-are-equal], comparing up to a renaming of variables. */
+    @JvmStatic
+    fun `_assert-results-are-alpha-equal`(actual: Any?, expected: Any?, assert: Atom): Atom =
+        compareResults(
+            "_assert-results-are-alpha-equal", actual, expected, assert, null, ::resultsAlphaEqual,
+        )
+
+    /** [_assert-results-are-alpha-equal] with the caller's own failure message. */
+    @JvmStatic
+    fun `_assert-results-are-alpha-equal-msg`(
+        actual: Any?,
+        expected: Any?,
+        assert: Atom,
+        message: Atom,
+    ): Atom =
+        compareResults(
+            "_assert-results-are-alpha-equal-msg", actual, expected, assert, message,
+            ::resultsAlphaEqual,
+        )
 }

@@ -46,7 +46,8 @@ abstract class GeneratorTestBase {
         rewriter.add {
             FunctionRewriter(
                 messageCollector, context.getSpace(),
-                isReducibleName = { context.resolve(it) != null }
+                isReducibleName = { context.resolve(it) != null },
+                inertParamsOf = { context.resolve(it)?.jvmMethod?.inertAtomParams.orEmpty() },
             )
         }
         rewriter.add { LetRewriter() }
@@ -64,8 +65,12 @@ abstract class GeneratorTestBase {
         SpaceDirectorySerializer.save(context.getSpace() as SpaceImpl, outputDir, programName = programName)
         JettaProgram.setDataDir(outputDir)
 
-        val declaredTypeNames = Generator.declaredTypeNamesOf((context.getSpace() as SpaceImpl).getAtoms())
-        val generator = Generator(autoTable = autoTable, declaredTypeNames = declaredTypeNames)
+        val spaceAtoms = (context.getSpace() as SpaceImpl).getAtoms()
+        val generator = Generator(
+            autoTable = autoTable,
+            declaredTypeNames = Generator.declaredTypeNamesOf(spaceAtoms),
+            declaredArrowNames = Generator.declaredArrowNamesOf(spaceAtoms),
+        )
         val compiled = generator.generate(result)
         compiled.forEach {
             log.debug { "Writing " + it.className }

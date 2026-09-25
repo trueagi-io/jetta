@@ -283,21 +283,28 @@ class MatchGeneratorTest : GeneratorTestBase() {
      * This is the minimal reproduction of the Plato backward-chaining bug:
      *   (= (deduce (And $a $b)) (And (deduce $a) (deduce $b)))
      * stripped down to plain function calls without match &self.
+     *
+     * The declarations say `%Undefined%`, not `Atom`, and the difference is now meaningful:
+     * `Atom` is the META-type, which holds the argument as a term instead of reducing it, so
+     * `(myAnd (f $a) (f $b))` would compare `(f P)` against `T` and answer `F`. That behaviour
+     * has its own test below; this one is about lambda CAPTURE, and `%Undefined%` erases to the
+     * same `Atom` descriptor without claiming meta-ness — which is what the backchaining
+     * programs it models do (they declare no types at all).
      */
     @Test
     fun `two destructured variables captured by nested flat-map lambdas`() {
         compile(
             "DestrCaptureNested.metta",
             $$"""
-                (: f (-> Atom Atom))
+                (: f (-> %Undefined% %Undefined%))
                 (= (f P) T)
                 (= (f Q) T)
 
-                (: combine (-> Atom Atom))
+                (: combine (-> %Undefined% %Undefined%))
                 (= (combine (And $a $b)) (myAnd (f $a) (f $b)))
                 (= (combine $x) $x)
 
-                (: myAnd (-> Atom Atom Atom))
+                (: myAnd (-> %Undefined% %Undefined% %Undefined%))
                 (= (myAnd T T) T)
                 (= (myAnd $x $y) F)
             """.trimIndent(),
@@ -320,6 +327,52 @@ class MatchGeneratorTest : GeneratorTestBase() {
             println("combine(And P Q) results: $results")
             assertTrue(results.any { it.toString() == "T" },
                 "Expected T from myAnd(f(P), f(Q)) but got: $results")
+        }
+    }
+
+    /**
+     * The same program declared with the meta-type `Atom`, which is the contrast: a parameter
+     * declared `Atom` takes its argument as a TERM, so `(f P)` reaches `myAnd` unreduced,
+     * `(= (myAnd T T) T)` does not match it, and the answer is `F` — what hyperon answers.
+     *
+     * Holding it is conditional on the parameter not reaching the RESULT: `myAnd`'s two
+     * parameters are consumed by the clause guards alone (`(myAnd T T)` compiles to a `==`
+     * guard, and the catch-all returns the constant `F`), so no unreduced term escapes and
+     * JeTTa's missing result re-reduction cannot bite. A declaration like
+     * `(= (ift True $x) $x)`, whose parameter IS the result, keeps the reduce-the-argument
+     * behaviour — see `JvmMethod.templateAtomParams` and `Context.resultVariableNames`.
+     */
+    @Test
+    fun `a declared Atom parameter consumed only by guards is not reduced`() {
+        compile(
+            "DestrCaptureMeta.metta",
+            $$"""
+                (: f (-> Atom Atom))
+                (= (f P) T)
+                (= (f Q) T)
+
+                (: combine (-> Atom Atom))
+                (= (combine (And $a $b)) (myAnd (f $a) (f $b)))
+                (= (combine $x) $x)
+
+                (: myAnd (-> Atom Atom Atom))
+                (= (myAnd T T) T)
+                (= (myAnd $x $y) F)
+            """.trimIndent(),
+            mapImpl, flatMapImpl
+        ) { context ->
+            registerExternals(context)
+        }.let { (result, messageCollector) ->
+            messageCollector.list().forEach { println(it) }
+            val classes = result.toMap().toClasses()
+            JettaProgram.init("DestrCaptureMeta")
+
+            val method = classes["DestrCaptureMeta"]!!.getMethod("combine", Atom::class.java)
+            val andExpr = Expression(Symbol("And"), Symbol("P"), Symbol("Q"))
+            val results = method.invoke(null, andExpr) as List<*>
+            println("combine(And P Q) results: $results")
+            assertTrue(results.any { it.toString() == "F" },
+                "Expected F — an Atom-declared parameter holds `(f P)` as a term: $results")
         }
     }
 }

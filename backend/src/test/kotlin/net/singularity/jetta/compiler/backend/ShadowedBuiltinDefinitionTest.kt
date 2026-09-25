@@ -60,7 +60,7 @@ class ShadowedBuiltinDefinitionTest : GeneratorTestBase() {
         val code = """
             (= (cdr-atom _atom)
               (chain (decons-atom _atom) _ht (unify (_head _tail) _ht _tail (Error bad))))
-            (: udft (-> Expression Atom))
+            (: udft (-> Expression %Undefined%))
             (= (udft _params)
               (if (== () _params) (%Undefined%)
                 (let _tail-params (cdr-atom _params)

@@ -83,9 +83,16 @@ object JUnitXmlReportWriter {
      * test panels colour and group the entries the way developers already expect.
      */
     private fun emitFailureOrError(entry: ReportEntry, expectedNote: String?): String {
-        val tag = if (entry.status == TestStatus.ASSERT_FAIL) "failure" else "error"
+        // A top-level `(Error …)` is the program's own answer being wrong, like a false assertion —
+        // not the infrastructure throwing — so it is a `failure`, not an `error`.
+        val tag = if (entry.status == TestStatus.ASSERT_FAIL || entry.status == TestStatus.ERROR_TERM) {
+            "failure"
+        } else {
+            "error"
+        }
         val type = when (entry.status) {
             TestStatus.ASSERT_FAIL -> "AssertionError"
+            TestStatus.ERROR_TERM -> "MettaError"
             TestStatus.RUN_EXCEPTION -> "RuntimeException"
             TestStatus.COMPILE_FAIL -> "CompileError"
             TestStatus.PASS -> "Unexpected"
@@ -105,7 +112,8 @@ object JUnitXmlReportWriter {
 
     /** Whether this entry should be counted under the testsuite's `failures` attribute. */
     private fun ReportEntry.isFailureForJunit(): Boolean =
-        classification == Classification.UNEXPECTED_FAIL && status == TestStatus.ASSERT_FAIL ||
+        classification == Classification.UNEXPECTED_FAIL &&
+                (status == TestStatus.ASSERT_FAIL || status == TestStatus.ERROR_TERM) ||
                 classification == Classification.REGRESSION ||
                 classification == Classification.UNEXPECTED_PASS
 

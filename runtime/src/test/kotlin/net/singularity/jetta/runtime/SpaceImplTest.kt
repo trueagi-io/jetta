@@ -21,6 +21,127 @@ class SpaceImplTest {
         return (f.get(space) as Map<*, *>).size
     }
 
+    /**
+     * `import!` does not copy: it records that this space reads THROUGH the module's. So the
+     * library's atom answers a query, while `get-atoms` — which is what a program asks about
+     * itself — answers only the program's own fact.
+     */
+    @Test
+    fun `a delegated atom is visible to a query but is not the space's own`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val library = SpaceImpl().apply { enablePerCallBindings = false }
+        val own = Expression(Symbol("MyFact"), Symbol("apple"))
+        val fromLibrary = Expression(Symbol(":"), Symbol("id"), Symbol("Type"))
+        space.add(own)
+        library.add(fromLibrary)
+        space.addDelegate(library)
+
+        assertEquals(listOf(own, fromLibrary), space.getAtoms())
+        assertEquals(listOf(own), space.getOwnAtoms())
+        assertEquals(1, space.match(Expression(Symbol(":"), Symbol("id"), Variable("t")), Variable("t")).size)
+    }
+
+    /** A fact the space does not own cannot be removed from it — it lives in the other space. */
+    @Test
+    fun `remove does not reach through a delegate`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val library = SpaceImpl().apply { enablePerCallBindings = false }
+        val fromLibrary = Expression(Symbol("Lib"), Symbol("one"))
+        library.add(fromLibrary)
+        space.addDelegate(library)
+
+        assertFalse(space.remove(fromLibrary))
+        assertEquals(listOf(fromLibrary), space.getAtoms())
+    }
+
+    /** Delegation is transitive: a module that imports another is read through as well. */
+    @Test
+    fun `delegation is transitive`() {
+        val a = SpaceImpl().apply { enablePerCallBindings = false }
+        val b = SpaceImpl().apply { enablePerCallBindings = false }
+        val c = SpaceImpl().apply { enablePerCallBindings = false }
+        val deep = Expression(Symbol("Deep"), Symbol("fact"))
+        c.add(deep)
+        b.addDelegate(c)
+        a.addDelegate(b)
+
+        assertEquals(listOf(deep), a.getAtoms())
+        assertEquals(1, a.match(Expression(Symbol("Deep"), Variable("x")), Variable("x")).size)
+    }
+
+    /**
+     * The diamond A→B,C→D reads D ONCE. With copying this was the `importedModules` per-space
+     * guard; with delegation it is identity-dedup in the closure, and getting it wrong doubles
+     * every one of the shared module's answers.
+     */
+    @Test
+    fun `a diamond reads the shared module once`() {
+        val a = SpaceImpl().apply { enablePerCallBindings = false }
+        val b = SpaceImpl().apply { enablePerCallBindings = false }
+        val c = SpaceImpl().apply { enablePerCallBindings = false }
+        val d = SpaceImpl().apply { enablePerCallBindings = false }
+        val shared = Expression(Symbol("Shared"), Symbol("fact"))
+        d.add(shared)
+        b.addDelegate(d)
+        c.addDelegate(d)
+        a.addDelegate(b)
+        a.addDelegate(c)
+
+        assertEquals(listOf(shared), a.getAtoms())
+        assertEquals(1, a.match(Expression(Symbol("Shared"), Variable("x")), Variable("x")).size)
+    }
+
+    /** A cycle terminates — two modules importing each other is a diagnostic, not a hang. */
+    @Test
+    fun `a delegation cycle terminates`() {
+        val a = SpaceImpl().apply { enablePerCallBindings = false }
+        val b = SpaceImpl().apply { enablePerCallBindings = false }
+        val fromA = Expression(Symbol("A"), Symbol("one"))
+        val fromB = Expression(Symbol("B"), Symbol("two"))
+        a.add(fromA)
+        b.add(fromB)
+        a.addDelegate(b)
+        b.addDelegate(a)
+
+        assertEquals(listOf(fromA, fromB), a.getAtoms())
+        assertEquals(listOf(fromB, fromA), b.getAtoms())
+    }
+
+    /**
+     * A conjunction must be able to take one conjunct from the program and the next from the
+     * module it reads through — so the fan-out belongs inside the join, per sub-pattern, not
+     * around it.
+     */
+    @Test
+    fun `a conjunction joins across a delegate`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val library = SpaceImpl().apply { enablePerCallBindings = false }
+        space.add(Expression(Symbol("Owns"), Symbol("sam"), Symbol("rex")))
+        library.add(Expression(Symbol("Dog"), Symbol("rex")))
+        space.addDelegate(library)
+
+        val pattern = Expression(
+            Symbol(","),
+            Expression(Symbol("Owns"), Variable("p"), Variable("d")),
+            Expression(Symbol("Dog"), Variable("d")),
+        )
+        assertEquals(listOf(Symbol("sam")), space.match(pattern, Variable("p")))
+    }
+
+    /** An atom added after the delegation is still the space's own, and still visible. */
+    @Test
+    fun `an atom added after an import is own and visible`() {
+        val space = SpaceImpl().apply { enablePerCallBindings = false }
+        val library = SpaceImpl().apply { enablePerCallBindings = false }
+        library.add(Expression(Symbol("Lib"), Symbol("one")))
+        space.addDelegate(library)
+        val addedLater = Expression(Symbol("Mine"), Symbol("two"))
+        space.add(addedLater)
+
+        assertEquals(listOf(addedLater), space.getOwnAtoms())
+        assertEquals(1, space.match(Expression(Symbol("Mine"), Variable("x")), Variable("x")).size)
+    }
+
     @Test
     fun `structurally-identical variable patterns reuse one cached indexer`() {
         // `Variable` has identity equality, so an Expression-keyed cache used to MISS on every

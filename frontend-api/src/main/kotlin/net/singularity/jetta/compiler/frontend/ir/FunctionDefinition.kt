@@ -17,6 +17,13 @@ data class FunctionDefinition(
      * user function's argument is held only when it is a template rather than unconditionally.
      */
     val declaredAtomParams: Set<Int> = emptySet(),
+    /**
+     * Parameters declared with a meta-type (`Atom` or `Expression`) that are handed over UNEVALUATED
+     * unconditionally, as hyperon hands a meta-typed argument: `FunctionRewriter.holdMetaParams`
+     * has already wrapped every occurrence the body needs as a VALUE in `(__force …)`, so the call
+     * site may pass the term as written. `Context` makes these the callee's inert parameters.
+     */
+    val heldAtomParams: Set<Int> = emptySet(),
 ) : FunctionLike {
     override val returnType: Atom?
         get() = arrowType?.types?.last()

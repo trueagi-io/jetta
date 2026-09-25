@@ -194,6 +194,12 @@ object JettaCallSite {
             if (bodies.size > 1) return bodies.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
         }
         val nf = reduceToFixedPoint(spaceName, atom)
+        // `Empty` is the reference interpreter's marker for "no result", not a symbol that can be
+        // a value: its own stdlib defines `(= (empty) Empty)` and reducing to it yields the empty
+        // bag. This only started to matter when that library began arriving in the space — a
+        // reasoning rule's `(if (== …) (empty) …)` reduced through the rule and handed back the
+        // SYMBOL, so a program that must answer `()` answered `(Empty)` instead.
+        if (nf is Symbol && nf.name == EMPTY_RESULT) return emptyList()
         val bag = executeSpecialForm(spaceName, nf, depth) ?: return listOf(nf)
         return bag.flatMap { reduceToBag(spaceName, unwrapBound(it), depth + 1) }
     }
@@ -205,10 +211,34 @@ object JettaCallSite {
      * [BoundAtom] carrying its rule's bindings (already substituted into the body).
      */
     private fun allRuleBodies(spaceName: String, expr: Expression): List<Atom> {
+        if (isRuntimeOwnedHead(expr)) return emptyList()
         val r = Variable(REDUCE_VAR)
         val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
         return JettaProgram.match(spaceName, pattern, r)
     }
+
+    /**
+     * Is [expr] headed by a form the RUNTIME implements ([executeSpecialForm])? Then a space `=`
+     * rule for it is ignored, and the runtime's own implementation answers.
+     *
+     * This is the reflective half of the rule `Context.markDefinitionsShadowedByRuntime` already
+     * applies at compile time — a definition shadowed by a builtin of the same name is not
+     * compiled — and it started to matter when the standard library stopped being copied and
+     * became visible through delegation at every watermark. hyperon's library defines
+     * `(= (let $pattern $atom $template) (unify $atom $pattern $template Empty))`; taking that
+     * rule turned `((lambda $x (+ $x 1)) 2)` into an inert `(unify 2 $x (+ $x 1) Empty)` instead
+     * of 3, because the rewrite lands on a minimal-MeTTa operation our reflective reducer does
+     * not execute — while `let` itself is one it does. Before delegation this was luck: the
+     * library's copy sat past the run's watermark and was invisible.
+     */
+    private fun isRuntimeOwnedHead(expr: Expression): Boolean =
+        opHeadName(expr.atoms.firstOrNull()) in RUNTIME_OWNED_HEADS ||
+            // An UNBOUND variable in head position is not an operator to look up: queried as
+            // `(= ($a b) $r)` it unifies with EVERY rule of that arity, the library's included,
+            // and each result is reduced in turn — exponential, and never what the reference does
+            // (`(mid ($a b))` over `(= (mid $x) (let (a b) $x $x))` answers the one `(a b)`; here
+            // it ran out of memory). A head BOUND by the time it is reduced has been resolved.
+            Matcher.resolveBinding(expr.atoms.firstOrNull() ?: return false) is Variable
 
     /**
      * D3 increment (a) — RELATIONAL reduction of a compiled function called with a FREE-variable
@@ -379,6 +409,15 @@ object JettaCallSite {
         }
         val head = inner.atoms[0]
         if (opHeadName(head) == QUOTE_HEAD) return listOf(inner)
+        // `if` is lazy here as everywhere: only the chosen branch is reduced. Reducing both first
+        // is wrong for an effect and never terminates for a recursive definition written as a term
+        // (`(if (== $n 0) 1 (* $n (fac (- $n 1))))` handed to a held `Expression` parameter).
+        if (opHeadName(head) == SPECIAL_IF && inner.atoms.size == 4) {
+            return reduceTemplate(spaceName, inner.atoms[1], depth + 1).flatMap { cond ->
+                val branch = if (JettaProgram.isTruthy(unwrapBound(cond))) inner.atoms[2] else inner.atoms[3]
+                reduceTemplate(spaceName, branch, depth + 1)
+            }
+        }
         // Argument bags, crossed: `(f (a) (b))` where both reduce to two values runs `f` four
         // times, the same product the compiled `flat-map?` lifts build. Bounded, because a
         // template that forks unboundedly is a runaway, not an answer.
@@ -398,9 +437,48 @@ object JettaCallSite {
         for (args in combos) {
             val expr = Expression(listOf(head) + args)
             val bag = invokeMultivaluedRegistry(expr)
-            if (bag != null) out.addAll(bag) else out.addAll(reduceBag(spaceName, expr))
+            if (bag != null) { out.addAll(bag); continue }
+            val value = invokeScalarRegistry(expr)
+            if (value != null) { out.add(value); continue }
+            // A space rule answers its BODY, which is a new term to evaluate, not a value: over
+            // `(= (fib $N) (if (< $N 2) $N (+ (fib (- $N 1)) (fib (- $N 2)))))` one step leaves
+            // `(+ (fib 14) (fib 13))`. Reduced again from depth 0 — the nesting budget is about
+            // the shape of ONE term, and a recursion through rules is the program's own, bounded
+            // like any other by its stack.
+            for (r in reduceBag(spaceName, expr)) {
+                val body = unwrapBound(r)
+                if (body is Expression && body != expr) out.addAll(reduceTemplate(spaceName, body, 0))
+                else out.add(r)
+            }
         }
         return out
+    }
+
+    /**
+     * Invoke [expr]'s head as a SINGLE-VALUED compiled function over the already-reduced arguments,
+     * or null when it is not one. Preferred over [reduceBag] for the same reason the multivalued
+     * twin is: the space holds the same function's clauses, and rewriting by them is one step, not
+     * an evaluation — `(fac 2)` came back as `(* 2 (fac (- 2 1)))`. Unlike [reduceViaRegistry] a
+     * primitive result (`int`) is a value here, boxed to an atom, not a reason to decline.
+     */
+    private fun invokeScalarRegistry(expr: Expression): Atom? {
+        val name = opHeadName(Matcher.resolveBinding(expr.atoms[0])) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: BuiltinLinks.lookup(name) ?: return null
+        if (entry.multivalued) return null
+        if (entry.paramTypes.size != expr.atoms.size - 1) return null
+        val args = arrayOfNulls<Any?>(expr.atoms.size - 1)
+        for (i in 1 until expr.atoms.size) args[i - 1] = expr.atoms[i]
+        val result = try {
+            JettaLinkRegistry.invoke(entry, args)
+        } catch (_: ClassCastException) {
+            return null
+        } catch (_: NullPointerException) {
+            return null
+        }
+        // A grounded operator answers null for "not computable over these operands" — leave it to
+        // the step reducer, as [reduceViaRegistry] does.
+        if (result == null || result is List<*>) return null
+        return unwrapBound(toAtom(result))
     }
 
     /**
@@ -416,7 +494,7 @@ object JettaCallSite {
      */
     private fun invokeMultivaluedRegistry(expr: Expression): List<Atom>? {
         val name = opHeadName(Matcher.resolveBinding(expr.atoms[0])) ?: return null
-        val entry = JettaLinkRegistry.lookup(name) ?: return null
+        val entry = JettaLinkRegistry.lookup(name) ?: BuiltinLinks.lookup(name) ?: return null
         if (!entry.multivalued) return null
         if (entry.paramTypes.size != expr.atoms.size - 1) return null
         val args = arrayOfNulls<Any?>(expr.atoms.size - 1)
@@ -441,6 +519,7 @@ object JettaCallSite {
      * `JettaProgram.matchEval` uses), then the raw atom is unwrapped.
      */
     private fun reduceOnce(spaceName: String, expr: Expression): Atom? {
+        if (isRuntimeOwnedHead(expr)) return null
         val r = Variable(REDUCE_VAR)
         val pattern = Expression(listOf(Special(PATTERN_EQ), expr, r))
         val results = JettaProgram.match(spaceName, pattern, r)
@@ -618,6 +697,27 @@ object JettaCallSite {
     }
 
     /**
+     * The bag of a call whose head has no compiled definition, only rules that reach the space at
+     * run time (see `JettaProgram.__reduce`). The rules are asked by unification, as
+     * [reduceOrInert] asks them, so a free variable in the call is bound per rule and each answer
+     * keeps its branch's bindings — `(get-state (status (Goal $goal)))` over two `status` rules
+     * binds `$goal` once per goal. Each rule body is then EVALUATED, which is what a rule answers.
+     * No rule: the call is its own normal form.
+     */
+    @JvmStatic
+    fun reduceRuntimeRuleCall(spaceName: String, atom: Atom): List<Atom> {
+        val call = resolveDeep(unwrapBound(atom))
+        if (call !is Expression || call.atoms.isEmpty()) return listOf(call)
+        val r = Variable(REDUCE_VAR)
+        val rules = JettaProgram.match(spaceName, Expression(listOf(Special(PATTERN_EQ), call, r)), r)
+        if (rules.isEmpty()) return listOf(call)
+        return rules.flatMap { rule ->
+            val values = reduceTemplate(spaceName, unwrapBound(rule), 0)
+            if (rule is BoundAtom) values.map { BoundAtom(unwrapBound(it), rule.bindings) } else values
+        }
+    }
+
+    /**
      * Resolve every bound variable in [atom], recursing into sub-expressions.
      * [Matcher.resolveBinding] is shallow (a top-level [Variable] only), but a
      * call argument is typically a compound like `(making $y)` whose variable is
@@ -645,6 +745,9 @@ object JettaCallSite {
     private const val PATTERN_EQ = "="
     private const val REDUCE_VAR = "__reduce_r"
 
+    /** The reference interpreter's "no result" symbol — see [reduceToBag]. */
+    private const val EMPTY_RESULT = "Empty"
+
     // D3 increment D.1 — special-form head names (mirror `Predefined`, kept local by the
     // same convention as PATTERN_EQ). `match`/`empty` have no `Predefined` entry (they are
     // compiled specially in the frontend); `if`/`==` mirror Predefined.IF / Predefined.COND_EQ.
@@ -653,6 +756,9 @@ object JettaCallSite {
     private const val SPECIAL_IF = "if"
     private const val SPECIAL_EQ = "=="
     private const val SPECIAL_LET = "let"
+
+    /** The heads [executeSpecialForm] answers itself — see [isRuntimeOwnedHead]. */
+    private val RUNTIME_OWNED_HEADS = setOf(SPECIAL_MATCH, SPECIAL_EMPTY, SPECIAL_IF, SPECIAL_EQ, SPECIAL_LET)
 
     /** hyperon's boolean symbols, produced by the runtime `==` special form. */
     private val TRUE_SYMBOL = Symbol("True")

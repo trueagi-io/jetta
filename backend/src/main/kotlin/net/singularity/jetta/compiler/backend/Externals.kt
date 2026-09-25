@@ -2,6 +2,7 @@ package net.singularity.jetta.compiler.backend
 
 import net.singularity.jetta.compiler.frontend.ir.ArrowType
 import net.singularity.jetta.compiler.frontend.ir.GroundedType
+import net.singularity.jetta.compiler.frontend.ir.Predefined
 import net.singularity.jetta.compiler.frontend.ir.ResolvedSymbol
 import net.singularity.jetta.compiler.frontend.ir.SeqType
 import net.singularity.jetta.compiler.frontend.resolve.Context
@@ -69,6 +70,59 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // The `_assert-results-are-*` family — the grounded comparison every `assertEqual*` in
+    // hyperon's `stdlib.metta` is built on, and what lets the library's own `assertAlphaEqual*`
+    // definitions run at all. Registered as one group, as the reference registers them
+    // (`lib/src/metta/runner/stdlib/debug.rs`), rather than growing a Kotlin twin of each of the
+    // eight `assert*` entry points that call them.
+    //
+    // Both result bags are ANY: each reaches the call as a chain-bound variable holding what
+    // `(metta (collapse …) %Undefined% $space)` answered, which is a result `List` and not an
+    // Atom. The ASSERT TERM is inert ATOM — it is the caller's own self-application, since
+    // `assertAlphaEqualToResult`'s body passes `(assertAlphaEqualToResult $actual $expected-results)`
+    // for the error message, so reducing it re-enters the assert and recurses until the stack
+    // ends. That is precisely what `--stdlib d5_auto_types.metta` did before this.
+    listOf("_assert-results-are-equal", "_assert-results-are-alpha-equal").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = RuntimeNames.ASSERTIONS,
+                    name = op,
+                    descriptor = "(Ljava/lang/Object;Ljava/lang/Object;" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;)" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                    inertAtomParams = setOf(2),
+                ),
+                // Answers the unit atom `()`, not void: the library calls this in the tail of a
+                // `chain`, which is a value position (`println!` is typed this way for the same
+                // reason).
+                ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
+    // The `-msg` pair, whose fourth parameter REPLACES the generated report. Inert for the same
+    // reason as the assert term: it is the message the caller wrote, not something to evaluate.
+    listOf("_assert-results-are-equal-msg", "_assert-results-are-alpha-equal-msg").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = RuntimeNames.ASSERTIONS,
+                    name = op,
+                    descriptor = "(Ljava/lang/Object;Ljava/lang/Object;" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;)" +
+                            "Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                    inertAtomParams = setOf(2, 3),
+                ),
+                ArrowType(
+                    GroundedType.ANY, GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM,
+                    GroundedType.ATOM,
+                ),
+                false
+            )
+        )
+    }
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
@@ -141,6 +195,19 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `__superpose` — the same enumeration over an argument that IS evaluated (it is not
+    // `superpose` for the resolver's data rule); emitted only by `FunctionRewriter.unionSuperpose`.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/Convert",
+                name = Predefined.SUPERPOSE_VALUE,
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     // `empty` — the empty non-deterministic bag (zero results); prunes a branch. No args,
     // multivalued (returns a List).
     context.addSystemFunction(
@@ -167,14 +234,18 @@ fun registerExternals(context: Context) {
             true
         )
     )
-    // `unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
-    // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (unquote VAL) BODY)`).
+    // `__unquote` — strip one `quote` layer; the runtime half of a Form-2 pattern-`let`
+    // `(let (quote $v) VAL BODY)` (LetRewriter lowers it to `(let $v (__unquote VAL) BODY)`).
     // Param is ANY so the argument (e.g. `(render $e)`) IS reduced before the quote is stripped.
+    //
+    // Internal, under its own name: the user-level `unquote` is the library's
+    // `(= (unquote (quote $atom)) $atom)`. A source `quote` keeps its wrapper, so that pattern
+    // matches, and `(unquote 42)` stays inert as in hyperon (he_quoting).
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/Convert",
-                name = "unquote",
+                name = "__unquote",
                 descriptor = "(Ljava/lang/Object;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM),
@@ -198,7 +269,10 @@ fun registerExternals(context: Context) {
                 // resolves either shape through `resolveSpaceName`. The reference stdlib passes it
                 // that way throughout — `(= (add-reduct $dst $atom) (add-atom $dst $atom))` — and a
                 // `String` parameter rejected the `Atom` at CLASS LOAD, taking the class with it.
-                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                // The atom is stored AS WRITTEN — the reference declares it `Atom`. Evaluated, a
+                // rule's body ran at the add: `(= (fib $N) (if (< $N 2) …))` compared a free `$N`.
+                inertAtomParams = setOf(1)
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
@@ -209,8 +283,9 @@ fun registerExternals(context: Context) {
             JvmMethod(
                 owner = "net/singularity/jetta/runtime/JettaProgram",
                 name = "remove-atom",
-                // Object space — see `add-atom` above.
-                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+                // Object space and an inert atom — see `add-atom` above.
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(1)
             ),
             ArrowType(GroundedType.ANY, GroundedType.ATOM, GroundedType.ATOM),
             false
@@ -284,6 +359,70 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // The reference stdlib's `*-math` family plus `min-atom`/`max-atom`
+    // ([net.singularity.jetta.runtime.MathOps]). Every parameter is ATOM rather than DOUBLE:
+    // the answers are not type-uniform (`(abs-math -5)` is `5`, `(sqrt-math 9)` is `3.0`), and
+    // an ATOM slot is also what lets a non-numeric operand reach the method so it can answer
+    // the reference's `(Error … (BadArgType 1 Number String))` instead of failing to verify.
+    val ATOM_D = "Lnet/singularity/jetta/compiler/frontend/ir/Atom;"
+    listOf(
+        "sqrt-math", "abs-math", "trunc-math", "ceil-math", "floor-math", "round-math",
+        "sin-math", "asin-math", "cos-math", "acos-math", "tan-math", "atan-math",
+        "isnan-math", "isinf-math", "min-atom", "max-atom",
+    ).forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = "net/singularity/jetta/runtime/MathOps",
+                    name = op,
+                    descriptor = "($ATOM_D)$ATOM_D",
+                ),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
+    listOf("pow-math", "log-math").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = "net/singularity/jetta/runtime/MathOps",
+                    name = op,
+                    descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                ),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
+    // The multiset operations over expressions
+    // ([net.singularity.jetta.runtime.AtomSetOps]). ATOM parameters: the operand is a data
+    // expression like `(a b c d d)`, which must arrive un-evaluated — read as an application
+    // its head `a` means nothing.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/AtomSetOps",
+                name = "unique-atom",
+                descriptor = "($ATOM_D)$ATOM_D",
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    listOf("union-atom", "intersection-atom", "subtraction-atom").forEach { op ->
+        context.addSystemFunction(
+            ResolvedSymbol(
+                JvmMethod(
+                    owner = "net/singularity/jetta/runtime/AtomSetOps",
+                    name = op,
+                    descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                ),
+                ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+                false
+            )
+        )
+    }
     // `car-atom` / `cdr-atom` — head and tail of an expression (`(car-atom (a b c))` → `a`,
     // `(cdr-atom (a b c))` → `(b c)`). Argument is ATOM so a bound list variable arrives as
     // its Expression value; result is an Atom (an element, or a tail Expression). Pure and
@@ -332,6 +471,51 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `for-each-in-atom` — apply a function to each element for its effect, answer `()`.
+    // Both parameters are INERT: the first is a data tuple whose head means nothing as an
+    // application, and the second is the NAME of a function, which must not be reduced at the
+    // call site (`println!` with no argument is not what is meant).
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "for-each-in-atom",
+                descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `=alpha` — alpha-equivalence. Both operands are INERT: they are terms to compare, and
+    // their variables are part of the comparison rather than something to bind or reduce.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "=alpha",
+                descriptor = "($ATOM_D$ATOM_D)$ATOM_D",
+                inertAtomParams = setOf(0, 1)
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
+    // `get-type-space` — `get-type` against a named space. Space arg is Object (the baked
+    // `&`-name String convention every space-taking builtin reads); the atom arg is inert ATOM
+    // for the same reason as `get-type` — it is type-checked as written, not evaluated.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = "get-type-space",
+                descriptor = "(Ljava/lang/Object;Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;",
+                inertAtomParams = setOf(1)
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     // `get-doc` / `help!` — documentation. The argument is ATOM (unreduced) so a documented
     // symbol arrives as its Symbol and an application `(f a b)` as an inert Expression; get-doc
     // queries the `@doc`/`:` facts in `&self` and returns a `@doc-formal` structure (or `Empty`),
@@ -374,9 +558,35 @@ fun registerExternals(context: Context) {
             false
         )
     )
+    // `pragma!` — the reference's runtime mode flags. BOTH parameters are inert: `auto` /
+    // `bare-minimal` are bare symbols that mean nothing as applications, and a numeric value must
+    // arrive as the literal. Answers the unit atom, so a top-level `!(pragma! …)` is a unit-valued
+    // run like the reference's. Registered at all because it was previously an unresolved head:
+    // `!(pragma! type-check auto)` compiled to inert data and set nothing (d5 passed BECAUSE of
+    // that). Impure, so listed in Generator.impureGrounded. See Pragmas for what is acted on.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = RuntimeNames.PRAGMAS,
+                name = "pragma!",
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;" +
+                    "Lnet/singularity/jetta/compiler/frontend/ir/Atom;)" +
+                    "Lnet/singularity/jetta/compiler/frontend/ir/Atom;",
+                inertAtomParams = setOf(0, 1),
+            ),
+            ArrowType(GroundedType.ATOM, GroundedType.ATOM, GroundedType.ATOM),
+            false
+        )
+    )
     // `nop` — run the argument, discard its value, yield `()`. ANY param so the argument is
     // REDUCED (the effect happens); the unit result is what makes `!(nop (change-state! …))` a
     // unit-valued top-level run in the hyperon test scripts.
+    //
+    // NOT a duplicate to delete, though the library defines `nop` too: it defines it at TWO
+    // arities, `(= (nop) ())` and `(= (nop $x) ())`, and one name compiles to one function whose
+    // parameters come from its first clause — so the library's `nop` is the nullary one and its
+    // unary clause is a dead branch. This builtin is what serves `(nop x)`; it can go once a name
+    // may carry clauses of several arities.
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
@@ -495,6 +705,31 @@ fun registerExternals(context: Context) {
             true
         )
     )
+    // `evalc` / `metta` — the space-scoped and full-interpreter flavours of `eval`. Same
+    // Object-typed code argument and same result bag; the extra arguments (space, and for
+    // `metta` the expected type) are accepted for reference compatibility. See JettaJit.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/functions/JettaJit",
+                name = "evalc",
+                descriptor = "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ANY, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/functions/JettaJit",
+                name = "metta",
+                descriptor = "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ANY, GroundedType.ANY, GroundedType.ANY, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
     context.addSystemFunction(
         ResolvedSymbol(
             JvmMethod(
@@ -528,6 +763,36 @@ fun registerExternals(context: Context) {
                 inertAtomParams = setOf(0)
             ),
             ArrowType(GroundedType.ATOM, GroundedType.ANY, ArrowType(GroundedType.ATOM, GroundedType.ATOM), SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `__force` — the value of a term a meta-typed parameter was handed unevaluated; emitted only
+    // by `FunctionRewriter.holdMetaParams`, never written by a user. The argument is the held
+    // parameter itself, so inert: the term must arrive as it is, and this call evaluates it.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = Predefined.FORCE,
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;",
+                inertAtomParams = setOf(0)
+            ),
+            // Multivalued: a held term answers ALL its results, each use independently —
+            // `(+ $x $x)` over `(superpose (1 2))` is 2 3 3 4 in the reference.
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
+            true
+        )
+    )
+    // `__reduce` — a call to a head whose only rules are added to the space at run time; emitted
+    // only by `FunctionRewriter`. The argument is the call as data, its arguments evaluated.
+    context.addSystemFunction(
+        ResolvedSymbol(
+            JvmMethod(
+                owner = "net/singularity/jetta/runtime/JettaProgram",
+                name = Predefined.REDUCE,
+                descriptor = "(Lnet/singularity/jetta/compiler/frontend/ir/Atom;)Ljava/util/List;"
+            ),
+            ArrowType(GroundedType.ATOM, SeqType(GroundedType.ATOM)),
             true
         )
     )

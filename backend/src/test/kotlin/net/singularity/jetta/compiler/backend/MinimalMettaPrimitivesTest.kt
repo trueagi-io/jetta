@@ -122,13 +122,18 @@ class MinimalMettaPrimitivesTest : GeneratorTestBase() {
         )
     }
 
-    /** The case `eval` exists for is untouched: a program handed over as DATA is compiled. */
+    /**
+     * The case `eval` exists for is untouched: a program handed over as DATA is compiled. A `quote`
+     * is not such a program — it keeps its wrapper, and the reference answers the call itself,
+     * `(eval (quote …))`: not reducible, and so not unwrapped here either.
+     */
     @Test
-    fun `eval still compiles a quoted program`() {
+    fun `eval compiles a program, and a quote stays a quote`() {
         run(
             "EvalQuoted",
             """
-            !(assertEqual (eval (quote (+ 1 2))) 3)
+            !(assertEqual (eval (+ 1 2)) 3)
+            !(assertEqualToResult (eval (quote (+ 1 2))) ((quote (+ 1 2))))
             """.trimIndent().d()
         )
     }
@@ -144,8 +149,8 @@ class MinimalMettaPrimitivesTest : GeneratorTestBase() {
             "EvalNonProgram",
             """
             !(assertEqual (eval 4) 4)
-            !(assertEqual (eval (quote (3 4))) (3 4))
-            !(assertEqual (eval (quote (+ _v 1))) (+ _v 1))
+            !(assertEqual (eval (3 4)) (3 4))
+            !(assertEqual (eval (+ _v 1)) (+ _v 1))
             """.trimIndent().d()
         )
     }
@@ -167,9 +172,9 @@ class MinimalMettaPrimitivesTest : GeneratorTestBase() {
         run(
             "SealedSubst",
             """
-            (: keep (-> Variable Atom Atom))
+            (: keep (-> Variable Atom %Undefined%))
             (= (keep _var _t) (sealed (_var) _t))
-            (: subst (-> Variable Atom Atom))
+            (: subst (-> Variable Atom %Undefined%))
             (= (subst _var _t) (atom-subst 7 _var _t))
             !(assertEqual (keep _v (tpl _v 1)) (tpl _v 1))
             !(assertEqual (subst _v (tpl _v 1)) (tpl 7 1))

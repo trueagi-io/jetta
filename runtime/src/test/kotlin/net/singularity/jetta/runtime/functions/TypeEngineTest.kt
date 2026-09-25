@@ -9,7 +9,9 @@ import net.singularity.jetta.compiler.frontend.ir.Variable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -215,5 +217,104 @@ class TypeEngineTest {
             TypeEngine.TypeError(2, expr(sym("List"), arrow(sym("Nat"), sym("Nat"))), expr(sym("List"), sym("Nat"))),
             TypeEngine.checkApp(badList, atoms),
         )
+    }
+
+    // --- the `Atom` meta-type (b5 `eqa`) --------------------------------------------------
+
+    /** `(: eqa (-> Atom Atom Type))(: Z Nat)(: Add (-> Nat Nat Nat))` — b5's declarations. */
+    private val eqaAtoms = listOf(
+        typeFact(sym("eqa"), arrow(sym("Atom"), sym("Atom"), sym("Type"))),
+        typeFact(sym("Z"), sym("Nat")),
+        typeFact(sym("S"), arrow(sym("Nat"), sym("Nat"))),
+        typeFact(sym("Add"), arrow(sym("Nat"), sym("Nat"), sym("Nat"))),
+    )
+
+    @Test
+    fun `an Atom parameter accepts an argument of any type`() {
+        // Was (BadArgType 1 Atom Nat): `Atom` is the meta-type, not a type Nat must unify with.
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), sym("Z")), eqaAtoms))
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), expr(sym("Add"), sym("Z"), sym("Z"))), eqaAtoms))
+        // Arguments of two DIFFERENT types are equally fine — `Atom` constrains nothing, so
+        // unlike `(-> $t $t Type)` it does not tie the two positions together.
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), sym("S")), eqaAtoms))
+    }
+
+    @Test
+    fun `an Atom parameter accepts an argument that is itself ill-typed`() {
+        // `(A B)` applies a non-arrow head, so inferType is null. A real type would reject the
+        // call; the meta-type never inspects the argument at all.
+        val illTyped = expr(sym("A"), sym("B"), sym("C"))
+        assertNull(TypeEngine.checkApp(expr(sym("eqa"), sym("Z"), illTyped), eqaAtoms))
+        assertEquals(sym("Type"), TypeEngine.inferType(expr(sym("eqa"), sym("Z"), illTyped), eqaAtoms))
+    }
+
+    @Test
+    fun `an Atom parameter does not weaken its siblings`() {
+        // `(: half (-> Atom Nat Type))` — position 1 waves anything through, position 2 does not.
+        val atoms = eqaAtoms + typeFact(sym("half"), arrow(sym("Atom"), sym("Nat"), sym("Type")))
+        assertNull(TypeEngine.checkApp(expr(sym("half"), sym("S"), sym("Z")), atoms))
+        assertEquals(
+            TypeEngine.TypeError(2, sym("Nat"), arrow(sym("Nat"), sym("Nat"))),
+            TypeEngine.checkApp(expr(sym("half"), sym("Z"), sym("S")), atoms),
+        )
+    }
+
+    @Test
+    fun `Atom stays an ordinary term for unification`() {
+        // The meta-type is read ONLY in the arrow-apply loops. `unify` is shared with the
+        // pattern paths (`letMatch`, `if-unify`), where a wildcard `Atom` would make the bare
+        // symbol match any term.
+        assertFalse(TypeEngine.unify(sym("Atom"), sym("Z"), HashMap()))
+        assertTrue(TypeEngine.unify(sym("Atom"), sym("Atom"), HashMap()))
+    }
+
+    // --- the `:`-fact index (it is a cache, so these are about staleness) ------------------
+
+    /**
+     * The index is global and keyed by the atom list, so two spaces must not read each other's
+     * declarations. Keying it by the list's LENGTH alone did exactly that — a program's modules, a
+     * REPL's successive spaces and a JIT-eval'd fragment all reach this one object.
+     */
+    @Test
+    fun `two atom lists of the same size keep their own declarations`() {
+        val nat = listOf(typeFact(sym("X"), sym("Nat")))
+        val bool = listOf(typeFact(sym("X"), sym("Bool")))
+        repeat(3) {
+            assertEquals(sym("Nat"), TypeEngine.inferType(sym("X"), nat))
+            assertEquals(sym("Bool"), TypeEngine.inferType(sym("X"), bool))
+        }
+    }
+
+    /** An atom appended to the space is visible to the next inference, not hidden by the cache. */
+    @Test
+    fun `a declaration added to the space is picked up`() {
+        val before = listOf(typeFact(sym("X"), sym("Nat")))
+        val after = before + typeFact(sym("Y"), sym("Bool"))
+        assertEquals(sym("%Undefined%"), TypeEngine.inferType(sym("Y"), before))
+        assertEquals(sym("Bool"), TypeEngine.inferType(sym("Y"), after))
+    }
+
+    /**
+     * A GROUND declared type is handed back as the space holds it — the renaming walk that used to
+     * rebuild it node by node on every fetch was the hottest frame of a type-checked program.
+     * Nobody may mutate a type term for this to be safe.
+     */
+    @Test
+    fun `a ground declared type is not rebuilt per fetch`() {
+        val declared = arrow(sym("Nat"), sym("Nat"))
+        val atoms = listOf(typeFact(sym("S"), declared))
+        assertSame(declared, TypeEngine.inferType(sym("S"), atoms))
+        assertSame(declared, TypeEngine.inferType(sym("S"), atoms))
+    }
+
+    /** …while one carrying variables is still freshened per fetch, so two uses cannot capture. */
+    @Test
+    fun `a declaration with variables is freshened per fetch`() {
+        val atoms = listOf(typeFact(sym("Nil"), expr(sym("List"), v("t"))))
+        val first = TypeEngine.inferType(sym("Nil"), atoms)!!
+        val second = TypeEngine.inferType(sym("Nil"), atoms)!!
+        assertNotEquals(first, second)
+        assertTrue(TypeEngine.unify(first, expr(sym("List"), sym("Nat")), HashMap()))
+        assertTrue(TypeEngine.unify(second, expr(sym("List"), sym("Bool")), HashMap()))
     }
 }

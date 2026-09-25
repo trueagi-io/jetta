@@ -40,6 +40,24 @@ class OrderedTopLevelTest : GeneratorTestBase() {
      * type after. Under the old load-all-first model the first assert would already see
      * `(: Foo Bar)` and wrongly return `Bar` — this is what the per-run watermark fixes.
      */
+    /**
+     * The watermark hides STATIC facts written below the running form, never an atom a run has
+     * added: `(dyn 1)` sits past the watermark in the store, and was hidden from the very next
+     * `match`. `get-atoms &self` is ordered the same way. Answers read off hyperon's metta-repl.
+     */
+    @Test
+    fun `an added atom is visible at once, a fact written below is not`() = runLenient(
+        "OrderedAddedAtom",
+        """
+            !(add-atom &self (dyn 1))
+            !(assertEqual (collapse (match &self (dyn ${'$'}x) ${'$'}x)) (1))
+            !(assertEqual (collapse (match &self (stat ${'$'}x) ${'$'}x)) ())
+            !(assertEqual (collapse (get-atoms &self)) ((dyn 1)))
+            (stat 2)
+            !(assertEqual (collapse (match &self (stat ${'$'}x) ${'$'}x)) (2))
+        """.trimIndent()
+    )
+
     @Test
     fun `get-type sees only declarations above the run`() = runLenient(
         "OrderedGetType",

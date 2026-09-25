@@ -52,7 +52,11 @@ class QuotedComparisonTest : GeneratorTestBase() {
         )
     }
 
-    /** The empty expression is what a `cdr-atom` walk terminates on, so pin it computed too. */
+    /**
+     * The empty expression is what a `cdr-atom` walk terminates on, so pin it computed too — as a
+     * VALUE, bound first. Written as an argument the application itself is what a meta-typed
+     * parameter receives, and it is not `()` (measured on `metta-repl`: False).
+     */
     @Test
     fun `quoted equality recognises a computed empty expression`() {
         run(
@@ -60,8 +64,9 @@ class QuotedComparisonTest : GeneratorTestBase() {
             """
             (: noreduce-eq (-> Atom Atom Bool))
             (= (noreduce-eq ~a ~b) (== (quote ~a) (quote ~b)))
-            !(assertEqual (noreduce-eq (cdr-atom (3)) ()) True)
-            !(assertEqual (noreduce-eq (cdr-atom (2 3)) ()) False)
+            !(assertEqual (let ~t (cdr-atom (3)) (noreduce-eq ~t ())) True)
+            !(assertEqual (let ~t (cdr-atom (2 3)) (noreduce-eq ~t ())) False)
+            !(assertEqual (noreduce-eq (cdr-atom (3)) ()) False)
             """.trimIndent().v()
         )
     }
@@ -102,7 +107,7 @@ class QuotedComparisonTest : GeneratorTestBase() {
             """
             (: noreduce-eq (-> Atom Atom Bool))
             (= (noreduce-eq ~a ~b) (== (quote ~a) (quote ~b)))
-            (: for-each (-> Expression Atom Atom))
+            (: for-each (-> Expression Atom %Undefined%))
             (= (for-each ~expr ~func)
               (if (noreduce-eq ~expr ())
                 ()

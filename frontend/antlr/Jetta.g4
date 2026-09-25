@@ -319,7 +319,11 @@ RPAREN
 //     reference stdlib.metta uses it throughout, and without it `$type'` lexed as `$type`
 //     followed by a QUOTE that swallowed the next atom. Only in the continuation class: a
 //     name still cannot START with a quote, so the `'(a b)` quote syntax is untouched.
+//   * a leading '=' when a name FOLLOWS it, so `=alpha` is one token. Bare '=' stays the
+//     EQUAL token that heads a rule — ANTLR's longest match picks IDENT only when at least
+//     one name character follows immediately, and `(= (f $x) $y)` has a space there.
 IDENT
     : [a-zA-Z_&.%,] [a-zA-Z0-9_\-%*']* [!?]?
     | ':' ':' [a-zA-Z0-9_\-%*']* [!?]?
+    | '=' [a-zA-Z_] [a-zA-Z0-9_\-%*']* [!?]?
     ;

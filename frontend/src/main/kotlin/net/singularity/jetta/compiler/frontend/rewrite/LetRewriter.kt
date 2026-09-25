@@ -51,6 +51,8 @@ class LetRewriter : Rewriter {
         if (expression.atoms.isEmpty()) return expression
 
         val head = expression.atoms[0]
+        // quoted data is left as written — a `let` in it is a term, not a binding
+        if (expression.atoms.size == 2 && head == PredefinedAtoms.QUOTE) return expression
         // `let*` — sequential bindings. `(let* (($v1 e1) ($v2 e2) …) body)` desugars to
         // right-nested `let`s, `(let $v1 e1 (let $v2 e2 … body))`, so each later binding sees
         // the earlier ones. The nested `let`s are then rewritten to lambdas by the branch below.
@@ -70,7 +72,7 @@ class LetRewriter : Rewriter {
             }
         }
         if (head is Symbol && head.name == LET_KEYWORD && expression.atoms.size == 4) {
-            val lhs = expression.atoms[1]
+            val lhs = sourceQuotePattern(expression.atoms[1])
             val rawValue = expression.atoms[2]
             val rawBody = expression.atoms[3]
             if (lhs is Variable) {
@@ -88,7 +90,7 @@ class LetRewriter : Rewriter {
             }
             // Form 2 — a `(quote $v)` pattern LHS: `(let (quote $v) VAL BODY)` binds `$v` to the
             // CONTENT of VAL's quote (VAL evaluates to `(quote X)` ⇒ `$v = X`). Lower to Form-1
-            // over the runtime `unquote` helper: `(let $v (unquote VAL) BODY)`, then let the
+            // over the runtime `__unquote` helper: `(let $v (__unquote VAL) BODY)`, then let the
             // variable-LHS branch above build the lambda. This is what `render` relies on to
             // peel and recompose quoted sub-programs. (General structural patterns still fall
             // through — a unify-based follow-up shared with `case`.)
@@ -133,7 +135,12 @@ class LetRewriter : Rewriter {
             // there depends on it.
             if (lhs is Expression) {
                 val vars = collectPatternVars(lhs)
-                if (vars.isNotEmpty()) {
+                // A GROUND pattern lowers too: `(let (a b) $x $x)` is a test that VAL unifies with
+                // `(a b)`, the body running once per result that does, over a lambda of no
+                // parameters. Left as a call of `let` it reached the reflective reducer, which
+                // looped on it with the library loaded (corpus `types.metta`) and threw an
+                // ArrayStoreException without it.
+                run {
                     val value = rewriteAtom(rawValue)
                     val body = rewriteAtom(rawBody)
                     val paramList = Expression(vars.map { Variable(it) }, position = lhs.position)
@@ -156,6 +163,17 @@ class LetRewriter : Rewriter {
         )
     }
 
+    /**
+     * A source `(quote X)` reaches here as the compiler's quote of the whole term (see
+     * `FunctionRewriter.rewriteExpression`: the wrapper is kept as data). In a PATTERN it is the
+     * term `(quote X)` itself — peel the compiler's layer so it is matched as written.
+     */
+    private fun sourceQuotePattern(lhs: Atom): Atom {
+        if (lhs !is Expression || lhs.atoms.size != 2 || lhs.atoms[0] != PredefinedAtoms.QUOTE) return lhs
+        val inner = lhs.atoms[1]
+        return if (inner is Expression && (inner.atoms.firstOrNull() as? Symbol)?.name == "quote") inner else lhs
+    }
+
     private fun isQuoteHead(head: Atom): Boolean =
         (head as? Symbol)?.name == "quote" || (head as? Special)?.value == "quote"
 
@@ -176,7 +194,7 @@ class LetRewriter : Rewriter {
     companion object {
         const val LET_KEYWORD = "let"
         const val LETSTAR_KEYWORD = "let*"
-        const val UNQUOTE_KEYWORD = "unquote"
+        const val UNQUOTE_KEYWORD = "__unquote"
         const val LETMATCH_KEYWORD = "letMatch"
     }
 }

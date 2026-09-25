@@ -53,9 +53,9 @@ class GroundedOpsListTest : GeneratorTestBase() {
             (@ pick multivalued)
             (: pick (-> Atom))
             (= (pick) (superpose (1 2)))
-            (: proj (-> Atom Atom))
+            (: proj (-> %Undefined% %Undefined%))
             (= (proj $x) $x)
-            (: g2 (-> Atom Atom Atom))
+            (: g2 (-> %Undefined% %Undefined% %Undefined%))
             (= (g2 $a $b) (P $a $b))
             !(assertEqualToResult
                (g2 (proj (pick)) (proj (pick)))

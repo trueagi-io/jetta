@@ -3,9 +3,10 @@ package net.singularity.jetta.test
 /**
  * Outcome of running a single `.metta` file.
  *
- * The four values are deliberately distinct (rather than collapsed into a boolean)
+ * The five values are deliberately distinct (rather than collapsed into a boolean)
  * because each tells a different story to the developer: a compile failure points
  * at the parser/resolver, an `AssertionError` from `assertEqual*` points at semantics,
+ * a top-level `(Error …)` points at a MeTTa-level error the program itself produced,
  * and a runtime exception points at codegen or the standard library.
  */
 enum class TestStatus {
@@ -14,6 +15,17 @@ enum class TestStatus {
 
     /** The program threw an [AssertionError], typically from `assertEqual` / `assertEqualToResult`. */
     ASSERT_FAIL,
+
+    /**
+     * A top-level `!`-run answered an `(Error …)` term, which ENDS the program — the reference
+     * interpreter stops reading the script there too.
+     *
+     * A failure, and separate from [PASS] on purpose: without it, implementing termination would
+     * INFLATE the score, since a file that stops early without throwing looks like a file that ran
+     * to completion. It mirrors the rule the hyperon side of the parity crosstab already applies —
+     * any `(Error …)` printed at top level means that file failed on the reference.
+     */
+    ERROR_TERM,
 
     /** The program threw a non-assertion `Throwable` while executing — NPE, ClassCastException, etc. */
     RUN_EXCEPTION,

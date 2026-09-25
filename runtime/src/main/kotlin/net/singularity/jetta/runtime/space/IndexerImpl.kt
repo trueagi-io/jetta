@@ -273,4 +273,21 @@ class IndexerImpl(val pattern: Expression) : Indexer {
     fun getPackedIndex(): PackedIndex {
         return PackedIndex(schema, packedMatches.toList(), spaceVarSubstitutions.toList())
     }
+
+    /**
+     * Does this index hold nothing? Answered WITHOUT [getPackedIndex], which copies both backing
+     * lists — a space queried only to be skipped (the common case for a module read through an
+     * `import!`: the standard library has no rule for the program's own function) must cost a
+     * field read, not a copy of someone else's index.
+     */
+    internal fun isEmptyIndex(): Boolean = packedMatches.isEmpty()
+
+    /**
+     * The delegated spaces' indexes for THIS pattern, cached on the owning index so a query
+     * needs no second map lookup, with the delegation epoch they were resolved at. Read and
+     * written only by [SpaceImpl.delegateQueries]. Holding the delegate's live `IndexerImpl` (not
+     * a snapshot of its results) is what keeps an atom added to the module later visible here.
+     */
+    internal var delegateQueries: List<DelegateQuery> = emptyList()
+    internal var delegateEpoch: Long = -1
 }

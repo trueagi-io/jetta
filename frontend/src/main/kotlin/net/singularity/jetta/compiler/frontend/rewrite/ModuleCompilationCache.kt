@@ -23,4 +23,15 @@ class ModuleCompilationCache {
     val resolved: MutableMap<Path, ParsedSource> = mutableMapOf()
     val resolving: MutableSet<Path> = mutableSetOf()
     val imports: MutableMap<Path, MutableSet<Path>> = mutableMapOf()
+
+    /**
+     * Modules imported as ARTIFACTS instead of source, keyed by module name. They have no
+     * `.metta` path on this machine to key them by, and nothing about them is compiled here, so
+     * they stay out of [resolved] — which is the compilation queue — and out of [imports], whose
+     * edges are between paths.
+     */
+    val precompiled: MutableMap<String, PrecompiledModule> = mutableMapOf()
+
+    /** For each importer's canonical path, the names of the precompiled modules it imports. */
+    val precompiledImports: MutableMap<Path, MutableSet<String>> = mutableMapOf()
 }

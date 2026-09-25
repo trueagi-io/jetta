@@ -34,6 +34,12 @@ class FunctionRewriter(
      * it keep the pre-existing quote-the-template behaviour).
      */
     private val isReducibleName: (String) -> Boolean = { false },
+    /**
+     * The parameter indices at which a builtin or an already-linked function takes its argument
+     * INERT (`JvmMethod.inertAtomParams`). A held meta parameter passed there is a TERM, not a
+     * value, so [holdMetaParams] does not force it. Defaults to none.
+     */
+    private val inertParamsOf: (String) -> Set<Int> = { emptySet() },
 ) : Rewriter {
     private val typeInfo = mutableMapOf<String, Atom>()
 
@@ -47,6 +53,12 @@ class FunctionRewriter(
      * argument only when it is a template — see that field for why.
      */
     private val literalAtomParams = mutableMapOf<String, Set<Int>>()
+
+    /** As [literalAtomParams], for the meta-type `Expression`. Read only by [holdMetaParams]. */
+    private val literalExpressionParams = mutableMapOf<String, Set<Int>>()
+
+    /** Functions whose declaration writes the RESULT type literally as `Atom` — see [holdMetaParams]. */
+    private val literalAtomResults = mutableSetOf<String>()
     private val annotations = mutableMapOf<String, List<Atom>>()
     private val patterns = mutableMapOf<String, MutableList<Pattern>>()
     private val runs = mutableListOf<Atom>()
@@ -63,9 +75,29 @@ class FunctionRewriter(
     // `ordinal` = the rule's source position among facts (== runtime storeIndex), or -1 when no
     // `!`-run precedes it (so no reduction guard is emitted — the hot facts-then-runs shape). See
     // [mkFunctions] / MatchBranch.sourceOrdinal / `docs/specs/ordered_top_level_semantics_plan.md`.
-    private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1)
+    // `raw` = the body as written, before any rewrite — what an `Atom`-result function answers.
+    private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1, val raw: Atom? = null)
+
+    /**
+     * Heads whose `=` rules an `add-atom` stores or a `remove-atom` drops — at top level or inside a
+     * function — so what they answer is decided by the space at run time, not by compiled code.
+     * A call to one is wrapped in `(__reduce …)` (see `JettaProgram.__reduce`), which asks the
+     * space when the call runs: before this, `!(add-atom &self (= (g $x $y) (+ $x $y)))` followed
+     * by `(g 3 4)` compiled the call as the data `(g 3 4)`. A head defined at top level, or by a
+     * builtin or a linked module, is excluded; empty in a file that writes no such rule, so
+     * nothing else changes.
+     */
+    private var dynamicHeads = emptySet<String>()
+
+    /** Heads this file defines by a top-level `=` rule — see [collectDynamicHeads]. */
+    private var declaredHeads = emptySet<String>()
+
+    /** Depth of positions whose content is DATA — a rule's text, an inert argument, a pattern. */
+    private var dataDepth = 0
 
     override fun rewrite(source: ParsedSource): ParsedSource {
+        val heads = collectDynamicHeads(source.code)
+        dynamicHeads = if (isReducibleName(Predefined.REDUCE)) heads else emptySet()
         source.code.forEach {
             when (it) {
                 is Expression -> rewriteTopLevelExpression(it)
@@ -75,6 +107,51 @@ class FunctionRewriter(
         }
         val mainPart = if (runs.isNotEmpty()) mkMain() else listOf()
         return ParsedSource(source.filename, mkFunctions() + mainPart)
+    }
+
+    private fun collectDynamicHeads(code: List<Atom>): Set<String> {
+        val declared = mutableSetOf<String>()
+        val nested = mutableSetOf<String>()
+        fun ruleHead(e: Expression): String? =
+            if ((e.atoms.firstOrNull() as? Special)?.value == Predefined.PATTERN && e.atoms.size == 3)
+                ((e.atoms[1] as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name
+            else null
+        // Only a rule an `add-atom` stores or a `remove-atom` drops: a `(= (h …) $x)` elsewhere is a
+        // QUERY — the pattern of a `match` — and `h` may well have no rule at all.
+        fun walk(a: Atom) {
+            if (a !is Expression) return
+            if ((a.atoms.firstOrNull() as? Symbol)?.name in SPACE_EDITS && a.atoms.size == 3) {
+                (a.atoms[2] as? Expression)?.let { e -> ruleHead(e)?.let { nested += it } }
+            }
+            a.atoms.forEach { walk(it) }
+        }
+        code.forEach { form ->
+            when (form) {
+                is Expression -> {
+                    val head = ruleHead(form)
+                    if (head != null) { declared += head; walk(form.atoms[2]) } else walk(form)
+                }
+                is Run -> walk(form.expression)
+                else -> {}
+            }
+        }
+        declaredHeads = declared
+        // A head this file ALSO defines is included: its rules are space atoms like any other, so
+        // one added or removed at run time changes what it answers — `(= (color) red)` then
+        // `!(add-atom &self (= (color) blue))` makes `(color)` answer both (h11, corpus selfprog).
+        return nested.filterTo(mutableSetOf()) { !isReducibleName(it) }
+    }
+
+    /** Argument positions of [expression] whose content is data, not a call — see [dynamicHeads]. */
+    private fun dataSlotsOf(expression: Expression): Set<Int> {
+        val head = expression.atoms[0]
+        if ((head as? Special)?.value == Predefined.PATTERN) return expression.atoms.indices.toSet()
+        val name = (head as? Symbol)?.name ?: return emptySet()
+        return when (name) {
+            "let" -> setOf(1)
+            "unify" -> setOf(2)
+            else -> inertParamsOf(name).mapTo(mutableSetOf()) { it + 1 }
+        }
     }
 
     private fun hasConstantsInPattern(pattern: Expression): Boolean =
@@ -283,18 +360,223 @@ class FunctionRewriter(
      * unreduced. `%Undefined%` is deliberately NOT included — it is the gradual wildcard, and its
      * argument is an ordinary value.
      */
-    private fun literalAtomIndices(declaration: Atom): Set<Int> {
-        val types = (declaration as? Expression)?.atoms ?: return emptySet()
-        if ((types.firstOrNull() as? Symbol)?.name != Predefined.ARROW &&
-            (types.firstOrNull() as? Special)?.value != Predefined.ARROW
-        ) return emptySet()
+    private fun literalAtomIndices(declaration: Atom, metaType: String = "Atom"): Set<Int> {
+        val types = arrowTypes(declaration) ?: return emptySet()
         // drop the arrow itself and the result type
         val params = types.drop(1).dropLast(1)
         // The surface spelling, as `asType()` matches it below — `GroundedType`'s own name is private.
-        return params.indices.filter { (params[it] as? Symbol)?.name == "Atom" }.toSet()
+        return params.indices.filter { (params[it] as? Symbol)?.name == metaType }.toSet()
+    }
+
+    /** Whether a `(-> …)` declaration writes its result type literally as `Atom`. */
+    private fun declaresAtomResult(declaration: Atom): Boolean =
+        (arrowTypes(declaration)?.takeIf { it.size >= 2 }?.last() as? Symbol)?.name == "Atom"
+
+    private fun arrowTypes(declaration: Atom): List<Atom>? {
+        val types = (declaration as? Expression)?.atoms ?: return null
+        if ((types.firstOrNull() as? Symbol)?.name != Predefined.ARROW &&
+            (types.firstOrNull() as? Special)?.value != Predefined.ARROW
+        ) return null
+        return types
+    }
+
+    /**
+     * Hand a META-typed argument over as the TERM, and evaluate it where the body needs its value —
+     * hyperon's semantics, at no cost to a function that does not ask for it.
+     *
+     * The reference passes an argument whose parameter is declared `Expression` or `Atom` without
+     * evaluating it, substitutes it into the rule's body, and evaluates that body — so the term is
+     * reduced exactly where it lands in a value position, and left alone where it lands in a
+     * position that takes a term: an inert parameter of the callee, a `quote`, or the result of a
+     * function whose own result type is `Atom` (measured on `metta-repl`: `(: q (-> Atom Atom))
+     * (= (q $x) $x) !(q (+ 1 2))` answers `(+ 1 2)`, `(wu1 (+ 2 4) (+ 4 2))` over
+     * `(= (wu1 $a $b) (42 $a $b))` answers `(42 6 6)`, and `(-> Expression Number)` over
+     * `(+ $x 1)` answers 4). A compiled body is the same program with the substitution done by
+     * the JVM, so the rewrite is local: each VALUE occurrence of a held parameter becomes
+     * `(__force $x)` (see `JettaProgram.__force`), every other occurrence is left as it is, and
+     * `Context` makes the parameter inert so the call site passes the term.
+     *
+     * Which parameters are held, per function:
+     *  * `Expression` — always, when no clause destructures it. Evaluating it at the call site is
+     *    not merely early, it is a type error: `(+ 4 2)` becomes a number where the descriptor
+     *    wants an `Expression`, and the class does not verify.
+     *  * `Atom` — only when some occurrence really is a TERM position. One used only as a value has
+     *    nothing to gain but laziness, and keeps the compiled eager path at the call site and the
+     *    `templateAtomParams` rule that goes with it.
+     *
+     * A parameter some clause destructures or repeats is matched structurally, which is the
+     * existing path. One that reaches a form binding variables in a pattern (`match`, `unify`, …)
+     * is left alone too: a `(__force …)` inside a pattern would be a different pattern.
+     */
+    private fun holdMetaParams(): Map<String, Set<Int>> {
+        // Without the runtime's `__force` registered (a bare resolver in a test) nothing can
+        // evaluate a held term, so nothing is held.
+        if (!isReducibleName(Predefined.FORCE)) return emptyMap()
+        // A held parameter of a function in THIS file is a term position for its callers, and
+        // that can make one of THEIR `Atom` parameters held in turn — so decide to a fixpoint. The
+        // sets only grow, and each is bounded by its declaration.
+        var held = mapOf<String, Set<Int>>()
+        repeat(MAX_HOLD_ROUNDS) {
+            val next = patterns.keys.associateWith { heldParamsOf(it, held) }.filterValues { it.isNotEmpty() }
+            if (next == held) return@repeat
+            held = next
+        }
+        for ((name, chosen) in held) {
+            val atomResult = name in literalAtomResults
+            patterns[name] = patterns.getValue(name).mapTo(mutableListOf()) { clause ->
+                val forced = chosen.mapTo(mutableSetOf()) { (clause.pattern.atoms[it + 1] as Variable).name }
+                val value = walkMetaUses(clause.value, true, atomResult, held) { v, isTerm ->
+                    if (!isTerm && v.name in forced) Expression(Symbol(Predefined.FORCE), v) else v
+                }
+                // A forced value is a bag, so a `superpose` tuple holding one is a union now — the
+                // rewrite `rewriteExpression` gives a tuple of calls, applied after the fact.
+                clause.copy(value = unionSuperposeDeep(value))
+            }
+        }
+        return held
+    }
+
+    /**
+     * A function declaring its result literally `Atom` answers its body SUBSTITUTED, not reduced:
+     * `(: q3 (-> Atom Atom)) (= (q3 $x) (foo (+ 1 1) $x))` gives `(foo (+ 1 1) (+ 1 2))` for
+     * `(q3 (+ 1 2))` at the reference. So the body is the quoted term as written — the parameters
+     * are still values in it, evaluated or held by their own declared types.
+     *
+     * Not for a body written in minimal MeTTa (`function`/`chain`/`eval`/`return`/`metta`): the
+     * reference steps those afterwards, and we have no stepping, so their full evaluation stands in
+     * for it. Every `Atom`-result function of the standard library is of that kind.
+     *
+     * Nor, for now, where the template could not be the answer: a function whose result is a BAG
+     * (annotated multivalued, or clauses that overlap — the branches still return one bag), or one
+     * taking a function-typed parameter, whose value is a compiled lambda and not yet storable
+     * as data (the reference answers `(inc 3)` for `(apply-it inc 3)`). Those still reduce.
+     */
+    private fun templateAtomResultBodies() {
+        for (name in literalAtomResults) {
+            val clauses = patterns[name] ?: continue
+            if (clauses.any { c -> c.raw == null || mentionsAny(c.raw, MINIMAL_METTA_STEPS) }) continue
+            if (annotations[name].orEmpty().contains(PredefinedAtoms.MULTIVALUED)) continue
+            if (!clausesAreMutuallyExclusive(clauses)) continue
+            if ((typeInfo[name] as? ArrowType)?.types?.dropLast(1)?.any { it is ArrowType } == true) continue
+            patterns[name] = clauses.mapTo(mutableListOf()) { c ->
+                if (c.raw is Expression) c.copy(value = quoteAtom(c.raw)) else c
+            }
+        }
+    }
+
+    private fun mentionsAny(atom: Atom, names: Set<String>): Boolean = when (atom) {
+        is Symbol -> atom.name in names
+        is Expression -> atom.atoms.any { mentionsAny(it, names) }
+        else -> false
+    }
+
+    /** One round of [holdMetaParams] for [name], given what is [held] so far. */
+    private fun heldParamsOf(name: String, held: Map<String, Set<Int>>): Set<Int> {
+        val clauses = patterns.getValue(name)
+        val expressionParams = literalExpressionParams[name].orEmpty()
+        val candidates = literalAtomParams[name].orEmpty() + expressionParams
+        if (candidates.isEmpty()) return emptySet()
+        val atomResult = name in literalAtomResults
+        val usable = candidates.filter { i ->
+            clauses.all { clause ->
+                val v = clause.pattern.atoms.getOrNull(i + 1) as? Variable
+                v != null && clause.pattern.atoms.count { it == v } == 1
+            }
+        }
+        if (usable.isEmpty()) return emptySet()
+        val uses = MetaUses()
+        clauses.forEach { clause ->
+            val names = usable.associateBy { (clause.pattern.atoms[it + 1] as Variable).name }
+            walkMetaUses(clause.value, true, atomResult, held, { uses.opaqueNames += it }) { v, isTerm ->
+                if (isTerm) names[v.name]?.let { uses.term += it }
+                v
+            }
+            names.forEach { (n, i) -> if (n in uses.opaqueNames) uses.opaque += i }
+            uses.opaqueNames.clear()
+        }
+        return usable.filterTo(mutableSetOf()) { i ->
+            i !in uses.opaque && (i in expressionParams || i in uses.term)
+        }
+    }
+
+    private class MetaUses {
+        val term = mutableSetOf<Int>()
+        val opaque = mutableSetOf<Int>()
+        val opaqueNames = mutableSetOf<String>()
+    }
+
+    /**
+     * Visit every variable occurrence of [atom], telling [onUse] whether it sits in a TERM position
+     * (`true`) or a VALUE position, and rebuild the atom from what [onUse] returns — a parameter
+     * [held] by a function of this file is a term position, like a builtin's inert one. [resultPos]:
+     * the occurrence is (part of) what the function returns; with [atomResult] such an occurrence
+     * is a term. A form that binds pattern variables is not descended — its variables are reported
+     * through [onOpaque], so the parameter can be left on the existing path.
+     */
+    private fun walkMetaUses(
+        atom: Atom,
+        resultPos: Boolean,
+        atomResult: Boolean,
+        held: Map<String, Set<Int>>,
+        onOpaque: (String) -> Unit = {},
+        onUse: (Variable, Boolean) -> Atom,
+    ): Atom {
+        fun walk(a: Atom, res: Boolean): Atom = walkMetaUses(a, res, atomResult, held, onOpaque, onUse)
+        fun asTerm(a: Atom): Atom { varNamesIn(a).forEach { onOpaque(it) }; return a }
+        return when (atom) {
+            is Variable -> onUse(atom, resultPos && atomResult)
+            is Expression -> {
+                val atoms = atom.atoms
+                val head = atoms.firstOrNull() ?: return atom
+                val headName = (head as? Symbol)?.name ?: (head as? Special)?.value
+                when {
+                    headName == Predefined.QUOTE -> {
+                        atoms.drop(1).forEach { sub -> termUses(sub, onUse) }
+                        atom
+                    }
+                    headName == Predefined.IF && atoms.size == 4 ->
+                        atom.copy(listOf(head, walk(atoms[1], false), walk(atoms[2], resultPos), walk(atoms[3], resultPos)))
+                    headName == "let" && atoms.size == 4 && atoms[1] is Variable ->
+                        atom.copy(listOf(head, atoms[1], walk(atoms[2], false), walk(atoms[3], resultPos)))
+                    head is Variable -> atom.copy(listOf(head) + atoms.drop(1).map { walk(it, false) })
+                    headName != null && (headName in PATTERN_BINDING_HEADS || headName.startsWith("match")) ->
+                        asTerm(atom)
+                    headName != null && head is Symbol && !(headName in patterns || isReducibleName(headName)) ->
+                        // a data constructor: evaluated where it stands, element by element
+                        atom.copy(atoms.map { walk(it, resultPos) })
+                    head is Symbol || head is Special -> {
+                        val inert = when {
+                            head !is Symbol -> emptySet()
+                            headName in patterns -> held[headName].orEmpty()
+                            else -> inertParamsOf(headName!!)
+                        }
+                        atom.copy(listOf(head) + atoms.drop(1).mapIndexed { i, arg ->
+                            if (i in inert) { termUses(arg, onUse); arg } else walk(arg, false)
+                        })
+                    }
+                    // a tuple headed by a number, a string, a nested expression: data
+                    else -> atom.copy(atoms.map { walk(it, resultPos) })
+                }
+            }
+            else -> atom
+        }
+    }
+
+    private fun termUses(atom: Atom, onUse: (Variable, Boolean) -> Atom) {
+        when (atom) {
+            is Variable -> onUse(atom, true)
+            is Expression -> atom.atoms.forEach { termUses(it, onUse) }
+            else -> {}
+        }
     }
 
     private fun mkFunctions(): List<Atom> {
+        // A head whose rules change at run time is not compiled: what it answers is the space's
+        // business, and a compiled copy would answer the file's rules only. Its rules stay facts,
+        // and every call to it is a `__reduce` — see [dynamicHeads].
+        dynamicHeads.forEach { patterns.remove(it) }
+        templateAtomResultBodies()
+        val held = holdMetaParams()
         val relationalCallees = computeRelationalCallees()
         return patterns.map { (name, list) ->
             if (list.size == 1 && !hasConstantsInPattern(list[0].pattern) &&
@@ -309,6 +591,7 @@ class FunctionRewriter(
                     annotations[name]?.toMutableList() ?: mutableListOf(),
                     position = pattern.pattern.position,
                     declaredAtomParams = literalAtomParams[name].orEmpty(),
+                    heldAtomParams = held[name].orEmpty(),
                 )
             } else {
                 val arrowType = typeInfo[name] as? ArrowType
@@ -359,6 +642,7 @@ class FunctionRewriter(
                     annotations[name]?.toMutableList() ?: mutableListOf(),
                     position = list[0].pattern.position,
                     declaredAtomParams = literalAtomParams[name].orEmpty(),
+                    heldAtomParams = held[name].orEmpty(),
                 )
             }
         }
@@ -617,6 +901,11 @@ class FunctionRewriter(
      * has to reach an else-branch.
      */
     private val UNIFY_KEYWORD = "unify"
+    private val CASE_KEYWORD = "case"
+    private val MATCH_KEYWORD = "match"
+    private val LET_VALUE_VARIABLE = "__letValue"
+    private val CASE_VARIABLE = "__case"
+    private val CASE_BAG_VARIABLE = "__caseBag"
     private val UNIFY_MATCH_KEYWORD = "unifyMatch"
 
     /**
@@ -1099,12 +1388,14 @@ class FunctionRewriter(
      * passes `$template` through). Substituting into a template and then evaluating it is the
      * runtime-compilation path, not this one.
      */
-    private fun lowerUnify(expression: Expression, scope: Set<String>): Atom {
+    private fun lowerUnify(expression: Expression, scope: Set<String>, alsoBound: List<String> = emptyList()): Atom {
         val a = expression.atoms[1]
         val b = expression.atoms[2]
         val thenBranch = expression.atoms[3]
         val elseBranch = expression.atoms[4]
-        val bound = (varNamesIn(a) + varNamesIn(b)).distinct().filter { it !in scope }
+        // [alsoBound]: variables the unification binds although neither side NAMES them here —
+        // the free variables of a pattern-`let`'s value, which reaches `unify` as `$__letValue`.
+        val bound = (varNamesIn(a) + varNamesIn(b) + alsoBound).distinct().filter { it !in scope }
         val inner = scope + bound
         val params = Expression(bound.map { Variable(it) }, position = expression.position)
         return Expression(
@@ -1159,6 +1450,109 @@ class FunctionRewriter(
         )
     }
 
+    /**
+     * `(case VAL ((PAT BODY) …))` as the reference defines it: every result of VAL is matched
+     * against the patterns by UNIFICATION, the first clause that unifies wins, and a result no
+     * clause unifies with yields nothing. An `Empty` clause fires when VAL has no result at all.
+     *
+     *     (let $__case VAL (unify $__case PAT1 BODY1 (unify $__case PAT2 BODY2 (empty))))
+     *
+     * and, with an `(Empty E)` clause, VAL's results are collected first so that their absence
+     * can be seen:
+     *
+     *     (let $__bag (collapse VAL) (unify $__bag () E (let $__case (superpose $__bag) …)))
+     *
+     * The old lowering compared with `==` (so a pattern with variables, or a Bool read back as
+     * data, never matched), dropped the `Empty` clause, and answered `()` when nothing matched —
+     * a value where the reference has none (caseempty, ifcasenondet).
+     */
+    private fun desugarCase(expression: Expression): Atom? {
+        val clausesExpr = expression.atoms[2] as? Expression ?: return null
+        val clauses = clausesExpr.atoms.map { it as? Expression ?: return null }
+        if (clauses.any { it.atoms.size != 2 }) return null
+        val position = expression.position
+        fun sym(name: String) = Symbol(name, position = position)
+        fun expr(vararg atoms: Atom) = Expression(atoms.toList(), position = position)
+        val caseVar = Variable(CASE_VARIABLE, position = position)
+        val isEmptyClause = { c: Expression -> (c.atoms[0] as? Symbol)?.name == "Empty" }
+        var chain: Atom = expr(sym("empty"))
+        for (clause in clauses.filterNot(isEmptyClause).asReversed()) {
+            chain = expr(sym(UNIFY_KEYWORD), caseVar, clause.atoms[0], clause.atoms[1], chain)
+        }
+        val emptyClause = clauses.firstOrNull(isEmptyClause)
+            ?: return expr(sym(LetRewriter.LET_KEYWORD), caseVar, expression.atoms[1], chain)
+        val bag = Variable(CASE_BAG_VARIABLE, position = position)
+        // The emptiness test is a `unify` against `()` rather than an `if`: its branches are
+        // lambdas, so the `superpose` over the bag is lifted INSIDE the else-branch. Under an `if`
+        // the lift hoists it above the test, and an empty bag then maps over nothing at all.
+        return expr(
+            sym(LetRewriter.LET_KEYWORD), bag, expr(sym("collapse"), expression.atoms[1]),
+            expr(
+                sym(UNIFY_KEYWORD), bag, Expression(emptyList(), position = position),
+                emptyClause.atoms[1],
+                expr(sym(LetRewriter.LET_KEYWORD), caseVar, expr(sym("superpose"), bag), chain),
+            ),
+        )
+    }
+
+    /**
+     * A `match` whose template BRANCHES — holds an `if`, a `unify` or a `case` — evaluated the way
+     * the reference evaluates it: once per match, with the pattern's variables bound to that
+     * match's values.
+     *
+     *     (match S P T)  →  (let ($v1 … $vn) (match S P ($v1 … $vn)) T)
+     *
+     * The match answers plain data (the tuple of its variables' values, the fast path), and the
+     * pattern-`let` — `letMatch`, applied per result — makes those variables PARAMETERS of the
+     * lambda that holds T. The template paths of [rewriteMatch] cannot do this for a branching form: a template
+     * compiled as a lambda captures the pattern variables before the match has run, so
+     * `(match &self (p $x $y) (unify $y 1 one other))` unified a free `$y` and said `one` for every
+     * fact, and an `if` template came back as unevaluated data.
+     *
+     * Only variables not already in [scope] become parameters: one bound around the `match` is a
+     * value the pattern is matched against, and stays a capture of the enclosing slot.
+     */
+    private fun evaluateTemplateOverBindings(expression: Expression, scope: Set<String>): Atom {
+        val position = expression.position
+        val names = varNamesIn(expression.atoms[2]).filter { it !in scope }
+        fun tuple() = Expression(names.map { Variable(it, position = position) }, position = position)
+        return Expression(
+            listOf(
+                Symbol(LetRewriter.LET_KEYWORD, position = position),
+                tuple(),
+                expression.copy(atoms = listOf(expression.atoms[0], expression.atoms[1], expression.atoms[2], tuple())),
+                expression.atoms[3],
+            ),
+            position = position,
+        )
+    }
+
+    /** Whether [atom] holds a form whose branch depends on a VALUE: `if`, `unify`, `case`. */
+    private fun containsBranchingForm(atom: Atom): Boolean {
+        if (atom !is Expression || atom.atoms.isEmpty()) return false
+        val head = atom.atoms[0]
+        if (head == PredefinedAtoms.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE) return false
+        // The parser already makes `if` a `Special`; `unify`/`case` are still Symbols here.
+        val name = (head as? Symbol)?.name ?: (head as? Special)?.value
+        if ((name == Predefined.IF && atom.atoms.size == 4) ||
+            (name == UNIFY_KEYWORD && atom.atoms.size == 5) ||
+            (name == CASE_KEYWORD && atom.atoms.size == 3)
+        ) return true
+        return atom.atoms.any { containsBranchingForm(it) }
+    }
+
+    /**
+     * A `let` left-hand side that is a STRUCTURE to unify, not a variable to bind: any expression
+     * but the `(quote $v)` form, which `LetRewriter` lowers onto its quote peeler.
+     */
+    private fun isStructuralPattern(lhs: Atom): Boolean {
+        if (lhs !is Expression) return false
+        val head = lhs.atoms.firstOrNull()
+        val isQuote = head == PredefinedAtoms.QUOTE || (head as? Symbol)?.name == Predefined.QUOTE ||
+            (head as? Special)?.value == Predefined.QUOTE
+        return !(isQuote && lhs.atoms.size == 2 && lhs.atoms[1] is Variable)
+    }
+
     /** Variable names in [atom], in document order. */
     private fun varNamesIn(atom: Atom): List<String> {
         val out = mutableListOf<String>()
@@ -1184,7 +1578,47 @@ class FunctionRewriter(
         val name = (head as? Symbol)?.name
         if (head == PredefinedAtoms.QUOTE || name == Predefined.QUOTE) return atom
         if (name == UNIFY_KEYWORD && atom.atoms.size == 5) return lowerUnify(atom, scope)
+        if (name == CASE_KEYWORD && atom.atoms.size == 3) {
+            desugarCase(atom)?.let { return lowerUnifyForms(it, scope) }
+        }
         if (name == IF_EQUAL_KEYWORD && atom.atoms.size == 5) return lowerIfEqual(atom, scope)
+        if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4 && isStructuralPattern(atom.atoms[1])) {
+            // A pattern-`let` IS a `unify`, as the reference defines it:
+            // `(= (let $p $a $t) (unify $a $p $t Empty))`. Lowered through `unify` it binds the
+            // variables of BOTH sides — `(let ($a $b 3) (1 2 $c) …)` gives `$c` = 3 (corpus
+            // `letlet`) — which the `letMatch` route could not, because only this pass knows which
+            // names are in scope. A failed match yields nothing.
+            //
+            // The VALUE is evaluated first, through an ordinary variable `let`: the reference's
+            // `let` takes it as `%Undefined%` (reduced) and only then hands it to `unify`, whose
+            // `Atom` parameters are not reduced at all.
+            val position = atom.position
+            val value = Variable(LET_VALUE_VARIABLE, position = position)
+            // A variable FREE in the value is bound by the unification too — to the pattern's
+            // subterm, which may be a computation: `(let ($x (42 (if (== $x 2) 43 44))) (3 (42 $z))
+            // (+ $x $z))` binds `$z` to the `if`, and the reference evaluates it after substitution
+            // (47). Such a variable is a parameter of the branch, and forced where its value is used.
+            val valueFree = varNamesIn(atom.atoms[2]).distinct().filter { it !in scope && it != LET_VALUE_VARIABLE }
+            val body = if (valueFree.isEmpty() || !isReducibleName(Predefined.FORCE)) atom.atoms[3]
+            else walkMetaUses(atom.atoms[3], true, false, emptyMap()) { v, isTerm ->
+                if (!isTerm && v.name in valueFree) Expression(Symbol(Predefined.FORCE), v) else v
+            }
+            val unify = Expression(
+                listOf(
+                    Symbol(UNIFY_KEYWORD, position = position), value, atom.atoms[1], body,
+                    Expression(listOf(Symbol("empty", position = position)), position = position),
+                ),
+                position = position,
+            )
+            return Expression(
+                listOf(
+                    Symbol(LetRewriter.LET_KEYWORD, position = position), value,
+                    lowerUnifyForms(atom.atoms[2], scope),
+                    lowerUnify(unify, scope + LET_VALUE_VARIABLE, valueFree),
+                ),
+                position = position,
+            )
+        }
         if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {
             return atom.copy(
                 atoms = listOf(
@@ -1192,6 +1626,22 @@ class FunctionRewriter(
                     atom.atoms[1],
                     lowerUnifyForms(atom.atoms[2], scope),
                     lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[1])),
+                )
+            )
+        }
+        // `(match SPACE PATTERN TEMPLATE)` binds PATTERN's variables in TEMPLATE: a `unify` (or a
+        // `case`) in the template must see them as values, not as fresh binders of its own — else
+        // `(match &self (p $x $y) (unify $y 1 one other))` unified a free `$y` and always said `one`.
+        if (name == MATCH_KEYWORD && atom.atoms.size == 4) {
+            if (containsBranchingForm(atom.atoms[3])) {
+                return lowerUnifyForms(evaluateTemplateOverBindings(atom, scope), scope)
+            }
+            return atom.copy(
+                atoms = listOf(
+                    head,
+                    lowerUnifyForms(atom.atoms[1], scope),
+                    atom.atoms[2],
+                    lowerUnifyForms(atom.atoms[3], scope + varNamesIn(atom.atoms[2])),
                 )
             )
         }
@@ -1209,20 +1659,18 @@ class FunctionRewriter(
         }
         if (name == LetRewriter.LETSTAR_KEYWORD && atom.atoms.size == 3) {
             val bindings = atom.atoms[1] as? Expression ?: return atom
-            var acc = scope
-            val rewrittenBindings = bindings.atoms.map { pair ->
-                if (pair !is Expression || pair.atoms.size != 2) return@map pair
-                val value = lowerUnifyForms(pair.atoms[1], acc)
-                acc = acc + varNamesIn(pair.atoms[0])
-                pair.copy(atoms = listOf(pair.atoms[0], value))
-            }
-            return atom.copy(
-                atoms = listOf(
-                    head,
-                    bindings.copy(atoms = rewrittenBindings),
-                    lowerUnifyForms(atom.atoms[2], acc),
+            // `let*` is nested `let`s — desugared HERE, so each pair takes the `let` branch above
+            // with the scope its predecessors built, and a STRUCTURAL pair lowers through
+            // `unify` like any pattern-`let` (corpus `letlet`: `(let* ((($f1 $c1 3) (1 2 $d1))) …)`).
+            if (bindings.atoms.any { it !is Expression || it.atoms.size != 2 }) return atom
+            val nested = bindings.atoms.foldRight(atom.atoms[2]) { pair, body ->
+                pair as Expression
+                Expression(
+                    listOf(Symbol(LetRewriter.LET_KEYWORD, position = atom.position), pair.atoms[0], pair.atoms[1], body),
+                    position = atom.position,
                 )
-            )
+            }
+            return lowerUnifyForms(nested, scope)
         }
         if (head is Special && head.value == Predefined.LAMBDA && atom.atoms.size == 3) {
             return atom.copy(
@@ -1261,8 +1709,13 @@ class FunctionRewriter(
         // The head is normalised to the Special HERE, because returning early skips the conversion
         // below — and a Symbol head would leave the form on codegen's data-constructor path, which
         // evaluates its arguments (the very thing quoting must prevent).
-        if (func == PredefinedAtoms.QUOTE || (func is Symbol && func.name == Predefined.QUOTE)) {
-            return expression.copy(atoms = listOf(PredefinedAtoms.QUOTE) + expression.atoms.drop(1))
+        if (func == PredefinedAtoms.QUOTE) return expression
+        // A SOURCE `quote` is an ordinary constructor whose argument is held (the reference's
+        // `(: quote (-> Atom Atom))` + `(= (quote $atom) NotReducible)`): its answer KEEPS the
+        // wrapper, `(quote (+ 1 2))` -> `(quote (+ 1 2))`. So it is the internal quote of the
+        // whole term, not of its argument — which stripped it.
+        if (func is Symbol && func.name == Predefined.QUOTE && expression.atoms.size == 2) {
+            return Expression(PredefinedAtoms.QUOTE, expression, position = expression.position)
         }
         if (func is Symbol && func.name == "match") return rewriteMatchCall(expression)
         // `chain` is `let` with the binding evaluated: `(chain X $v T)` binds $v to the value of X
@@ -1282,16 +1735,17 @@ class FunctionRewriter(
             val value = if (stepped is Variable)
                 Expression(Symbol(EVAL_KEYWORD, position = stepped.position), stepped, position = stepped.position)
             else stepped
-            return rewriteAtom(
-                Expression(
-                    Symbol(LetRewriter.LET_KEYWORD, position = func.position),
-                    expression.atoms[2],
-                    value,
-                    expression.atoms[3],
-                    position = expression.position,
-                )
+            val let = Expression(
+                Symbol(LetRewriter.LET_KEYWORD, position = func.position),
+                expression.atoms[2],
+                value,
+                expression.atoms[3],
+                position = expression.position,
             )
+            chainLets += let
+            return rewriteAtom(let)
         }
+        forceLetTemplate(expression)?.let { return rewriteAtom(it) }
         // `function`/`return` are minimal MeTTa's evaluation bracket: `(function X)` reduces X one
         // step at a time until it becomes `(return $v)`, then yields `$v`. The bracket exists to
         // express WHEN to stop stepping — and JeTTa does not step: wherever it evaluates, it
@@ -1311,6 +1765,7 @@ class FunctionRewriter(
             return rewriteAtom(expression.atoms[1])
         }
         if (func is Symbol && func.name == "case" && expression.atoms.size == 3) return rewriteCaseCall(expression)
+        if (isReducibleName(Predefined.SUPERPOSE_VALUE)) unionSuperpose(expression)?.let { return rewriteAtom(it) }
         if (func is Symbol && func.name == "assertEqualToResult") return rewriteAssertionCall(expression)
         return rewriteExpressionArguments(expression).let {
             when {
@@ -1321,16 +1776,130 @@ class FunctionRewriter(
                 // and needn't special-case arity (they destructure `atoms[3]` directly).
                 func is Special && func.value == Predefined.IF && it.atoms.size == 3 ->
                     it.copy(atoms = it.atoms + Expression(emptyList()))
-                func is Symbol && specials.contains(func.name) -> mkSpecialFromSymbol(it)
+                func is Symbol && specials.contains(func.name) && !isOutOfShapeAsSpecial(it) ->
+                    mkSpecialFromSymbol(it)
+                func is Symbol && dataDepth == 0 && func.name in dynamicHeads ->
+                    Expression(Symbol(Predefined.REDUCE, position = func.position), it, position = it.position)
                 else -> it
             }
         }
     }
 
-    private fun rewriteExpressionArguments(expression: Expression): Expression =
-        expression.copy(atoms = expression.atoms.map {
-            rewriteAtom(it)
+    /**
+     * `(superpose (e1 … en))` over a literal tuple holding a CALL is the UNION of what each element
+     * evaluates to: the reference hands back the elements and evaluates each one, so
+     * `(superpose ((wu1) (wu2)))` over an empty `(wu1)` answers `(wu2)`'s value alone. Compiled as
+     * written, the tuple was a data constructor over its elements, and a multivalued element was
+     * LIFTED — the whole tuple once per result, a product where the reference takes a union (and
+     * an empty element emptied everything). Rewritten to
+     * `(__superpose (union-atom (collapse e1) (union-atom … (collapse en))))`: each `collapse`
+     * takes its element's bag whole. A tuple of data only (`(a b c)`, `((a b) (c d))`) is left alone.
+     */
+    private fun unionSuperpose(expression: Expression): Expression? {
+        val head = expression.atoms[0] as? Symbol ?: return null
+        if (head.name != SUPERPOSE || expression.atoms.size != 2) return null
+        val tuple = expression.atoms[1] as? Expression ?: return null
+        // `(superpose (f …))` superposes what the CALL answers — a tuple only once it has run.
+        if (tuple.atoms.isEmpty() || isCall(tuple) || !tuple.atoms.any { isCall(it) }) return null
+        val pos = expression.position
+        val parts = tuple.atoms.map { Expression(Symbol(COLLAPSE, position = pos), it, position = pos) }
+        val union = parts.dropLast(1).foldRight(parts.last() as Atom) { part, acc ->
+            Expression(Symbol(UNION_ATOM, position = pos), part, acc, position = pos)
+        }
+        // `__superpose`, not `superpose`: an Expression argument of `superpose` is the literal
+        // tuple (the reference does not evaluate it), so `(superpose (union-atom …))` would
+        // superpose `union-atom` and its operands.
+        return Expression(Symbol(Predefined.SUPERPOSE_VALUE, position = head.position), union, position = pos)
+    }
+
+    private fun unionSuperposeDeep(atom: Atom): Atom {
+        if (atom !is Expression || atom.atoms.isEmpty()) return atom
+        if (atom.atoms[0] == PredefinedAtoms.QUOTE || (atom.atoms[0] as? Symbol)?.name == Predefined.QUOTE) return atom
+        val inner = atom.copy(atoms = atom.atoms.map { unionSuperposeDeep(it) })
+        return if (isReducibleName(Predefined.SUPERPOSE_VALUE)) unionSuperpose(inner) ?: inner else inner
+    }
+
+    /** A call to a function of this file, a builtin or a linked one — not a data tuple. */
+    private fun isCall(atom: Atom): Boolean {
+        val name = ((atom as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name ?: return false
+        return name in declaredHeads || isReducibleName(name)
+    }
+
+    /** The `let`s [rewriteExpression] made from a `chain` — see [forceLetTemplate]. By identity. */
+    private val chainLets = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Expression, Boolean>())
+
+    /**
+     * A `let` template is REDUCED after substitution: `(let $x (cons-atom + (1 2)) $x)` answers 3
+     * and `(… (foo $x))` answers `(foo 3)` (measured on metta-repl). A compiled template uses the
+     * VALUE as it was bound, which is right whenever that value is already a normal form — what any
+     * call answers — so only a value that can be an UNREDUCED term is forced where the template
+     * uses it: a term built by a grounded operation ([TERM_BUILDERS]) or the result of a function
+     * that declares its result `Atom`. Not a `let` made from a `chain`: minimal MeTTa's
+     * `(function (chain (cons-atom + (1 2)) $x (return $x)))` answers the term `(+ 1 2)`.
+     */
+    private fun forceLetTemplate(expression: Expression): Expression? {
+        if ((expression.atoms[0] as? Symbol)?.name != LetRewriter.LET_KEYWORD || expression.atoms.size != 4) return null
+        if (expression in chainLets) return null
+        val v = expression.atoms[1] as? Variable ?: return null
+        val source = ((expression.atoms[2] as? Expression)?.atoms?.firstOrNull() as? Symbol)?.name ?: return null
+        if (source !in TERM_BUILDERS && source !in literalAtomResults) return null
+        if (!isReducibleName(Predefined.FORCE)) return null
+        var forced = false
+        // Where the template needs the VALUE: the template itself, a tuple's element, an argument
+        // of an operator or of this file's function — unless that parameter is declared `Atom` or
+        // `Expression`, which takes the term. A builtin's argument is a term position too (it takes
+        // atoms — `(superpose $u)` enumerates the tuple, it does not want it reduced), and quotes
+        // and pattern-binding forms are not entered.
+        fun walk(a: Atom): Atom = when (a) {
+            is Variable -> if (a.name == v.name) { forced = true; Expression(Symbol(Predefined.FORCE), a) } else a
+            is Expression -> {
+                val head = a.atoms.firstOrNull()
+                val headName = (head as? Symbol)?.name
+                when {
+                    head == null -> a
+                    // a function VALUE applied: its parameter types are not known here
+                    head is Variable -> a
+                    head == PredefinedAtoms.QUOTE || headName == Predefined.QUOTE -> a
+                    headName != null && (headName in PATTERN_BINDING_HEADS || headName.startsWith("match")) -> a
+                    headName != null && headName !in patterns && isReducibleName(headName) -> a
+                    // this file's function: a parameter it declares `Atom`/`Expression` takes the term
+                    headName != null && headName in patterns -> {
+                        val terms = literalAtomParams[headName].orEmpty() + literalExpressionParams[headName].orEmpty()
+                        a.copy(atoms = listOf(head) + a.atoms.drop(1).mapIndexed { i, arg -> if (i in terms) arg else walk(arg) })
+                    }
+                    else -> a.copy(atoms = listOf(if (head is Expression) walk(head) else head) + a.atoms.drop(1).map { walk(it) })
+                }
+            }
+            else -> a
+        }
+        val body = walk(expression.atoms[3])
+        if (!forced) return null
+        return expression.copy(atoms = listOf(expression.atoms[0], v, expression.atoms[2], body)).also { chainLets += it }
+    }
+
+    private fun rewriteExpressionArguments(expression: Expression): Expression {
+        val data = if (dynamicHeads.isEmpty()) emptySet() else dataSlotsOf(expression)
+        return expression.copy(atoms = expression.atoms.mapIndexed { i, arg ->
+            if (i in data) {
+                dataDepth++
+                try { rewriteAtom(arg) } finally { dataDepth-- }
+            } else rewriteAtom(arg)
         })
+    }
+
+    /**
+     * Whether turning this head into a `Special` would produce a form the grounded operator
+     * cannot serve. `div`, `mod`, `and`, … are WORDS, so a program may legitimately define its
+     * own function of the same name at a different arity — hyperon's `he_minimalmetta.metta`
+     * defines `(= (div $x $y $accum) …)` on top of the grounded `div/2` and calls it.
+     *
+     * Made a `Special` regardless, such a call was `isMisappliedSpecial` from then on: the
+     * resolver stamped it inert data before ever looking for a user function, so `(div 10 5 0)`
+     * never reduced and nothing diagnosed it. Left a `Symbol`, it resolves — or stays inert
+     * exactly as any other unresolved application does.
+     */
+    private fun isOutOfShapeAsSpecial(expression: Expression): Boolean =
+        mkSpecialFromSymbol(expression).isMisappliedSpecial()
 
     private fun mkSpecialFromSymbol(expression: Expression): Expression {
         val atoms = expression.atoms.mapIndexed { index, atom ->
@@ -1359,7 +1928,7 @@ class FunctionRewriter(
                     // rewrite depends on which variables are already in scope, and the clause head
                     // is what seeds that scope. See [lowerUnify].
                     val body = lowerUnifyForms(expression.atoms[2], varNamesIn(pattern).toSet())
-                    list.add(Pattern(pattern, rewriteAtom(body), ordinal))
+                    list.add(Pattern(pattern, rewriteAtom(body), ordinal, raw = expression.atoms[2]))
                 }
                 // Every `(= lhs rhs)` is ALSO an equality fact in the space, whether or
                 // not its head compiles to a JVM function. This is the reference
@@ -1378,6 +1947,8 @@ class FunctionRewriter(
                     // Record which parameters were written LITERALLY as `Atom` before `asType()`
                     // erases every unknown type to the same thing — see [literalAtomParams].
                     literalAtomParams[symbol.name] = literalAtomIndices(expression.atoms[2])
+                    literalExpressionParams[symbol.name] = literalAtomIndices(expression.atoms[2], "Expression")
+                    if (declaresAtomResult(expression.atoms[2])) literalAtomResults += symbol.name
                     typeInfo[symbol.name] = rewriteAtom(expression.atoms[2]).asType()
                     // ALSO keep the type as a space fact so it is visible at runtime
                     // (`get-doc` / future `get-type` query `&self`). This is additive: the
@@ -1455,7 +2026,34 @@ class FunctionRewriter(
         }
 
     companion object {
+        private const val MAX_HOLD_ROUNDS = 8
+
+        /**
+         * Forms (as [rewriteAtom] leaves them) that bind variables in a pattern of their own; a held
+         * parameter inside one is not rewritten — see [holdMetaParams]. `match…` is matched by prefix.
+         */
+        private val PATTERN_BINDING_HEADS = setOf(
+            "let", "let*", "unify", "unifyMatch", "letMatch", "case", "chain", "sealed", "atom-subst",
+            Predefined.LAMBDA,
+        )
+
         const val MAIN = "__main"
+
+        private const val ADD_ATOM = "add-atom"
+        private val SPACE_EDITS = setOf(ADD_ATOM, "remove-atom")
+        private const val SUPERPOSE = "superpose"
+        private const val COLLAPSE = "collapse"
+        private const val UNION_ATOM = "union-atom"
+
+        /**
+         * Grounded operations that answer a term they BUILT, not reduced — see [forceLetTemplate].
+         * Not the multiset operations: they combine COLLAPSED result tuples, whose elements are
+         * values already.
+         */
+        /** Minimal-MeTTa forms the reference steps through, which we evaluate in one go. */
+        private val MINIMAL_METTA_STEPS = setOf("function", "chain", "eval", "evalc", "return", "metta")
+
+        private val TERM_BUILDERS = setOf("cons-atom", "cdr-atom", "car-atom", "atom-subst", "sealed")
 
         /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)
          *  that sets the ordered-top-level per-run visibility cutoff. */

@@ -17,6 +17,7 @@ import net.singularity.jetta.runtime.functions.JettaLinkRegistry
 import net.singularity.jetta.runtime.functions.JitEnvRegistry
 import net.singularity.jetta.runtime.functions.TypeEngine
 import net.singularity.jetta.runtime.space.ManifestExtension
+import net.singularity.jetta.runtime.space.ArtifactSource
 import net.singularity.jetta.runtime.space.SpaceDirectorySerializer
 import net.singularity.jetta.runtime.space.SpaceId
 import net.singularity.jetta.runtime.space.SpaceImpl
@@ -69,6 +70,10 @@ open class JettaProgram {
         @JvmStatic
         fun `set-watermark!`(w: Atom): Atom {
             currentWatermark = ((w as? Grounded<*>)?.value as? Number)?.toInt() ?: -1
+            // The first watermark is set before the first run it guards, so the store holds
+            // exactly the static facts here — see SpaceImpl.sealStaticPrefix.
+            (SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")) as? SpaceImpl)
+                ?.sealStaticPrefix()
             return UNIT_ATOM
         }
 
@@ -142,6 +147,7 @@ open class JettaProgram {
             importedModules.clear()
             currentSpaceName = programName
             currentWatermark = -1
+            Pragmas.reset()
 
             // Explicit override: `-Djetta.dataDir=<dir>` points the loader at the artifacts
             // directory regardless of cwd. The intended way to run a compiled program from
@@ -199,7 +205,12 @@ open class JettaProgram {
             when (val ext = manifest.extension) {
                 is ManifestExtension.DeepCopy -> {
                     ext.loadModules.forEach { mod ->
-                        val moduleSpace = SpaceDirectorySerializer.load(dataDir, mod.spaceId)
+                        val moduleSpace = loadModuleSpace(mod.spaceId)
+                            ?: throw IllegalStateException(
+                                "module '${mod.spaceId}' is listed in $programName.manifest.json but its space " +
+                                    "was found neither under '${dataDir.toAbsolutePath()}' nor among the modules " +
+                                    "shipped with the compiler"
+                            )
                         SpaceRegistry.register(SpaceId.FromModule(mod.spaceId), moduleSpace)
                     }
                 }
@@ -207,6 +218,23 @@ open class JettaProgram {
                     TODO("Track 2F — alias-strategy runtime loading not yet implemented")
             }
         }
+
+        /**
+         * A module's space, from the program's own artifact directory or — failing that — from
+         * the modules SHIPPED inside the compiler's jar, which is where the standard library
+         * lives. Null when neither has it.
+         *
+         * Order matters: a module built alongside the program wins over a shipped one of the same
+         * name, so a project can override the library it links against without renaming it. The
+         * compiler resolves the interface the same way round.
+         */
+        private fun loadModuleSpace(moduleName: String): SpaceImpl? =
+            runCatching {
+                SpaceDirectorySerializer.loadOrNull(ArtifactSource.Directory(dataDir), moduleName)
+            }.getOrNull()
+                ?: runCatching {
+                    SpaceDirectorySerializer.loadOrNull(ArtifactSource.shipped(), moduleName)
+                }.getOrNull()
 
         private fun spaceMismatch(
             programName: String,
@@ -328,7 +356,7 @@ open class JettaProgram {
         }
 
         /** The unit atom `()` — hyperon's return value for the side-effecting space ops. */
-        private val UNIT_ATOM: Atom = Expression(emptyList())
+        internal val UNIT_ATOM: Atom = Expression(emptyList())
 
         /**
          * `nop` — evaluate [value] for its effect and discard it, returning the unit atom `()`.
@@ -378,18 +406,39 @@ open class JettaProgram {
             return UNIT_ATOM
         }
 
-        /** `get-atoms` — the full non-deterministic bag of atoms currently in [space]. */
+        /**
+         * `get-atoms` — the non-deterministic bag of atoms [space] OWNS.
+         *
+         * Not what an `import!` copied in: the reference keeps an imported module in its own
+         * space and delegates queries into it, so `(get-atoms &self)` on a one-fact program with
+         * the standard library loaded answers that one fact, not the library's three hundred.
+         * `f1_imports` asserts exactly this, at a point where the program has no facts yet.
+         * Every other query still reads the whole space, as the reference does — its library's
+         * declarations ARE visible to a reflective `match &self`.
+         */
         @JvmStatic
-        fun `get-atoms`(space: Any?): List<Atom> =
-            SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getAtoms()
+        fun `get-atoms`(space: Any?): List<Atom> {
+            val name = resolveSpaceName(space)
+            val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(name))
+            // `&self` is ordered like `match &self`: a fact written below the running `!`-form is
+            // not there yet (f1's opening assertion, hyperon's `(get-atoms &self)` before a fact).
+            if (name == currentSpaceName && target is SpaceImpl) return target.getOwnVisibleAtoms(currentWatermark)
+            return target.getOwnAtoms()
+        }
 
         /**
          * `import!` — runtime, order-sensitive module import (hyperon semantics).
          *
-         * `(import! &space M)` copies every atom of module `M`'s space into the space named
-         * `&space`, AT THE POINT OF EXECUTION. Unlike a compile-time merge this respects
-         * program order: `(match &self …)` before an `(import! &self M)` does not see M's
-         * atoms, and after it does — which is exactly what c2_spaces asserts.
+         * `(import! &space M)` makes the space named `&space` read THROUGH module `M`'s space,
+         * AT THE POINT OF EXECUTION — the module keeps its own space and nothing is copied, as in
+         * the reference interpreter. Unlike a compile-time merge this respects program order: a
+         * `(match &self …)` before an `(import! &self M)` does not see M's atoms, and after it
+         * does — which is exactly what c2_spaces asserts — because the delegation is what the
+         * import installs.
+         *
+         * Not copying is what makes `(get-atoms &self)` answer the program's own atoms (f1's
+         * opening assertion), keeps a program's space from growing by the library's three hundred,
+         * and stops `remove-atom` deleting a fact the program does not own.
          *
          * The module's space is loaded at [init] (from the manifest's `loadModules`) under
          * `SpaceId.FromModule(M)`; if it is missing there (e.g. it was reached only through a
@@ -413,14 +462,11 @@ open class JettaProgram {
             if (!done.add(moduleName)) return UNIT_ATOM
 
             val source = SpaceRegistry.get(SpaceId.FromModule(moduleName))
-                ?: runCatching { SpaceDirectorySerializer.load(dataDir, moduleName) }.getOrNull()
+                ?: loadModuleSpace(moduleName)
                 ?: return UNIT_ATOM
             SpaceRegistry.register(SpaceId.FromModule(moduleName), source)
 
-            val target = SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName))
-            source.getAtoms().forEach { atom ->
-                target.add(atom as? Expression ?: Expression(listOf(atom)))
-            }
+            SpaceRegistry.getOrCreate(SpaceId.FromModule(spaceName)).addDelegate(source)
             return UNIT_ATOM
         }
 
@@ -474,6 +520,40 @@ open class JettaProgram {
                 JettaCallSite.reduceTemplateBag(here, if (result is BoundAtom) result.atom else result)
             }
         }
+
+        /**
+         * `__force` — evaluate a term a META-typed parameter received unevaluated, at the point the
+         * body needs its VALUE. `FunctionRewriter.holdMetaParams` emits it: a parameter declared
+         * `Expression` (or an `Atom` the body also uses as a term) is handed over as written, the
+         * way hyperon hands it, and each occurrence in a value position is wrapped in this call.
+         * `(: wu1 (-> Number Expression Expression)) (= (wu1 $a $b) (42 $a $b))` over `(+ 4 2)`
+         * answers `(42 6 6)` because the tuple element is forced here, not at the call site.
+         *
+         * Multivalued: every answer of the term's bag, as the reference evaluates the substituted
+         * term — `(inc (superpose (1 2)))` over `(+ $x 1)` is 2 and 3.
+         */
+        @JvmStatic
+        fun __force(atom: Atom): List<Atom> {
+            val term = if (atom is BoundAtom) atom.atom else atom
+            if (term !is Expression) return listOf(term)
+            return JettaCallSite.reduceTemplateBag(currentSpaceName ?: "", term).map { answer ->
+                val value = if (answer is BoundAtom) answer.atom else answer
+                // The eval-time check a compiled data constructor makes on its way out — the
+                // reference answers `(Error <term> (BadArgType …))` for a mistyped application
+                // whether it was evaluated at the call site or, as here, where the body needed it.
+                if (value is Expression) typeCheckInert(value) else value
+            }
+        }
+
+        /**
+         * `__reduce` — the bag of a call whose head has no compiled definition, only rules that
+         * reach the space at run time: `!(add-atom &self (= (g $x $y) (+ $x $y)))` then `(g 3 4)`
+         * answers 7. `FunctionRewriter` emits it around such a call; the arguments arrive
+         * evaluated, and the space answers whatever rules for the head it holds NOW — none left
+         * after a `remove-atom`, and the term is its own normal form.
+         */
+        @JvmStatic
+        fun __reduce(atom: Atom): List<Atom> = JettaCallSite.reduceRuntimeRuleCall(currentSpaceName ?: "", atom)
 
         /**
          * Reduce a fully-substituted grounded-operator expression to its value. Recursively
@@ -582,9 +662,16 @@ open class JettaProgram {
          * facts-then-runs shape, where no filtering is emitted at all (perf-neutral).
          */
         private fun selfAtoms(): List<Atom> {
-            val all = SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: "")).getAtoms()
+            val space = SpaceRegistry.getOrCreate(SpaceId.FromModule(currentSpaceName ?: ""))
+            val all = space.getAtoms()
             val wm = currentWatermark
-            return if (wm < 0 || wm >= all.size) all else all.subList(0, wm)
+            if (wm < 0) return all
+            // Own atoms come first in `getAtoms()`; only they are ordered by the watermark, and a
+            // run-time `add-atom` stays visible (SpaceImpl.isVisible). What is read through an
+            // import follows them, visible as the import made it.
+            if (space !is SpaceImpl) return if (wm >= all.size) all else all.subList(0, wm)
+            val own = space.getOwnAtoms().size
+            return all.filterIndexed { i, _ -> i >= own || space.isVisible(i, wm) }
         }
 
         /** `(@ tag …)` — an annotation Expression whose tag Symbol is [tag]. */
@@ -711,14 +798,70 @@ open class JettaProgram {
          * singleton holding the type when well-typed, EMPTY when ill-typed (the `()` empty-set
          * the reference suite asserts via `assertEqualToResult … ()`). The argument is unreduced
          * (ATOM meta-type) so `(+ 5 "4")` is type-checked as an inert expression rather than
-         * evaluated. Single-valued for now — a symbol carrying several `:` types (non-deterministic
-         * get-type) is a later phase; this takes the first declaration. See [TypeEngine].
+         * evaluated. Non-deterministic, as the reference's is: a symbol carrying several `:`
+         * types answers all of them. See [TypeEngine.inferTypes].
          */
         @JvmStatic
-        fun `get-type`(atom: Atom): List<Atom> {
+        fun `get-type`(atom: Atom): List<Atom> =
             // A `bind!` token denotes the atom it names, so `(get-type &state-token)` asks about
             // the state, not about an undeclared symbol.
-            val t = TypeEngine.inferType(derefDeep(atom), selfAtoms())
+            TypeEngine.inferTypes(derefDeep(atom), selfAtoms())
+
+        /**
+         * `for-each-in-atom <expression> <function>` — apply [func] to every element of
+         * [expr] for its EFFECT, answering the unit atom `()`. `stdlib.metta` defines it in
+         * MeTTa (over `chain`/`decons-atom`/`unify`), so a program importing the compiled
+         * stdlib already has it; grounded here for one that does not.
+         *
+         * Each application is built as a term and handed to the same JIT-eval path a
+         * variable-headed call takes, which is what makes `println!` — a name, not a compiled
+         * callee at this site — reach its method.
+         */
+        @JvmStatic
+        fun `for-each-in-atom`(expr: Atom, func: Atom): Atom {
+            val items = (derefDeep(if (expr is BoundAtom) expr.atom else expr) as? Expression)?.atoms
+                ?: return UNIT_ATOM
+            val head = if (func is BoundAtom) func.atom else func
+            for (item in items) {
+                net.singularity.jetta.runtime.functions.JettaJit.eval(
+                    Expression(atoms = listOf(head, item))
+                )
+            }
+            return UNIT_ATOM
+        }
+
+        /**
+         * `=alpha <a> <b>` — alpha-equivalence: the two terms are structurally equal up to a
+         * consistent RENAMING of their variables, so `(=alpha (Father $X) (Father $Y))` is
+         * True while `(=alpha (Father $X) (Son $X))` is False. Grounded in the reference
+         * (it is not one of `stdlib.metta`'s MeTTa-level definitions).
+         *
+         * The renaming must be a bijection, checked in both directions: without the reverse
+         * map `(f $a $b)` and `(f $c $c)` would pass, since `$a`->`$c` and `$b`->`$c` are both
+         * consistent read one way.
+         */
+        @JvmStatic
+        fun `=alpha`(a: Atom, b: Atom): Atom {
+            val left = Matcher.resolveDeep(if (a is BoundAtom) a.atom else a)
+            val right = Matcher.resolveDeep(if (b is BoundAtom) b.atom else b)
+            return Symbol(if (Assertions.alphaEquivalent(left, right)) "True" else "False")
+        }
+
+        /**
+         * `get-type-space <space> <atom>` — [get-type] against a NAMED space rather than the
+         * running module's own. The space arrives by the usual convention (a baked `&`-name
+         * String, or a Symbol) and is resolved through [resolveSpaceName], the same route
+         * `match`/`add-atom` take.
+         *
+         * Unlike [selfAtoms] this does not apply the run watermark: the watermark models
+         * hyperon's interleaved top-level, where a rule declared BELOW a run is invisible to
+         * it, and that ordering is a property of the running module — an explicitly named
+         * space is read whole.
+         */
+        @JvmStatic
+        fun `get-type-space`(space: Any?, atom: Atom): List<Atom> {
+            val atoms = SpaceRegistry.getOrCreate(SpaceId.FromModule(resolveSpaceName(space))).getAtoms()
+            val t = TypeEngine.inferType(derefDeep(atom), atoms)
             return if (t == null) emptyList() else listOf(t)
         }
 
@@ -740,6 +883,23 @@ open class JettaProgram {
             val err = TypeEngine.checkApp(derefDeep(callExpr), selfAtoms()) ?: return null
             return TypeEngine.errorExpr(callExpr, err)
         }
+
+        /**
+         * Eval-time type check for an INERT application — a term with no `=` rule, so no
+         * compiled function and therefore no [typeCheckError] prologue to run. `Cons` in
+         * `(Cons S (Cons Z Nil))` is data: nothing reduces it, and until this check nothing
+         * held it against its declared `(: Cons (-> $t (List $t) (List $t)))` either.
+         *
+         * Returns the `(Error …)` term when the application is mistyped and [expr] itself
+         * otherwise. Typed `Expression`->`Expression` on purpose: the caller has just built an
+         * `Expression` on the stack and may be about to store it into an `Atom[]` or pass it to
+         * an `Expression` parameter, and an `Atom`-typed result would need a cast the verifier
+         * does not infer. Both outcomes really are Expressions ([TypeEngine.errorExpr] builds
+         * one).
+         */
+        @JvmStatic
+        fun typeCheckInert(expr: Expression): Expression =
+            typeCheckError(expr) as? Expression ?: expr
 
         /**
          * `letMatch <pattern> <value> <body>` — the runtime of MeTTa's Form-2 pattern-`let`
@@ -817,7 +977,13 @@ open class JettaProgram {
                 (n as? Expression)?.atoms?.mapNotNull { (it as? Symbol)?.name } ?: emptyList()
             }
             val args = Array<Any?>(params.size) { i -> TypeEngine.resolve(Variable(params[i]), s) }
-            return branchResult(thenBranch.apply(args))
+            val results = branchResult(thenBranch.apply(args))
+            // A binding of a variable that is NOT a branch parameter — one carried in by a VALUE,
+            // `(let (a b) $x $x)` over `$x = ($a b)` — is applied to the branch's result, as the
+            // reference substitutes it: that answers `(a b)`, not `($a b)`. Nothing to do (and
+            // nothing paid) when the unification bound only the parameters or nothing at all.
+            if (s.keys.all { it in params }) return results
+            return results.map { if (it is Grounded<*>) it else TypeEngine.resolve(if (it is BoundAtom) it.atom else it, s) }
         }
 
         /** Counter for the fresh names [sealed] mints; global, so two seals never collide. */

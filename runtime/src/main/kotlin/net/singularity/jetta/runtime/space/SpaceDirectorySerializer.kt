@@ -77,16 +77,38 @@ object SpaceDirectorySerializer {
      * Load the space + its manifest. The runtime ([JettaProgram.init]) uses this to
      * see which sibling modules need loading alongside the entry program.
      */
-    fun loadWithManifest(directory: Path, programName: String = "space"): Pair<SpaceImpl, ManifestV2> {
-        val manifestFile = directory.resolve("$programName.manifest.json")
-        val spaceFile = directory.resolve("$programName.jtsf")
+    fun loadWithManifest(directory: Path, programName: String = "space"): Pair<SpaceImpl, ManifestV2> =
+        loadWithManifest(ArtifactSource.Directory(directory), programName)
 
-        val manifest = ManifestSerializer.load(manifestFile)
-        val space = loadSpaceStore(spaceFile, manifest.binaryUuid)
+    /**
+     * Load the space stored under [programName] in [source], or null when that source does not
+     * have it. Used to look for a module in the program's own artifact directory and then among
+     * the modules shipped inside the compiler's jar.
+     */
+    fun loadOrNull(source: ArtifactSource, programName: String): SpaceImpl? =
+        if (source.readBytes("$programName.jtsf") == null) null
+        else loadWithManifest(source, programName).first
+
+    /**
+     * Load the space + its manifest out of [source] — a directory beside the program's class, or
+     * the classpath for a module shipped with the compiler.
+     */
+    fun loadWithManifest(source: ArtifactSource, programName: String = "space"): Pair<SpaceImpl, ManifestV2> {
+        val manifestBytes = source.readBytes("$programName.manifest.json")
+            ?: throw java.nio.file.NoSuchFileException("$programName.manifest.json not found in ${source.description}")
+        val spaceBytes = source.readBytes("$programName.jtsf")
+            ?: throw java.nio.file.NoSuchFileException("$programName.jtsf not found in ${source.description}")
+
+        val manifest = ManifestSerializer.parse(
+            manifestBytes.toString(Charsets.UTF_8),
+            "${source.description}/$programName.manifest.json",
+        )
+        val space = loadSpaceStore(spaceBytes, manifest.binaryUuid)
 
         manifest.indices.forEach { indexMeta ->
-            val indexPath = directory.resolve(indexMeta.file)
-            val indexer = IndexSerializer.deserialize(indexPath, manifest.binaryUuid)
+            val indexBytes = source.readBytes(indexMeta.file)
+                ?: throw java.nio.file.NoSuchFileException("${indexMeta.file} not found in ${source.description}")
+            val indexer = IndexSerializer.deserialize(indexBytes, manifest.binaryUuid)
 
             val cachedSpaceField = IndexerImpl::class.java.getDeclaredField("cachedSpace")
             cachedSpaceField.isAccessible = true
@@ -158,8 +180,7 @@ object SpaceDirectorySerializer {
         Files.write(path, writer.toByteArray())
     }
 
-    private fun loadSpaceStore(path: Path, expectedSpaceId: UUID): SpaceImpl {
-        val bytes = Files.readAllBytes(path)
+    private fun loadSpaceStore(bytes: ByteArray, expectedSpaceId: UUID): SpaceImpl {
         val reader = BinaryReader(bytes)
 
         val magic = ByteArray(4) { reader.readByte() }

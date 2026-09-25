@@ -1,0 +1,6 @@
+# Known divergences from the reference (metta-repl 0.2.10). Same format as tests/metta/.xfail:
+#   <relative-path>  <STATUS>:<CATEGORY>:<id>  [notes]
+# A test now passing is reported as UNEXPECTED_PASS — remove its line.
+
+h03_eval_one_step.metta             ASSERT_FAIL:SEMANTIC_DIVERGENCE:eval-one-step      eval reduces fully (42), the reference takes one step ((gg)); function/chain/return are not stepwise
+h13_atom_result_function_body.metta ASSERT_FAIL:SEMANTIC_DIVERGENCE:atom-result-stepped  an (-> … Atom) body in minimal MeTTa is evaluated past its return: (stepped 2) gives 3, not (+ 2 1)

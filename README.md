@@ -13,20 +13,21 @@ between compile time and call time. The behavioural reference is the Rust
 interpreter [`trueagi-io/hyperon-experimental`](https://github.com/trueagi-io/hyperon-experimental);
 JeTTa aims to produce byte-for-byte identical answers on its test suite.
 
-- **Version:** `0.9.0` · **License:** MIT · **Runtime:** Java 17+
+- **Version:** `0.10.0` · **License:** MIT · **Runtime:** Java 17+
 
 > **Status.** JeTTa is under active development. The fundamentals — symbols,
 > pattern match, equality, chaining, non-determinism, spaces, mutable state and
 > module imports — work today, and so does the type system (GADTs, dependent
-> types, propagation, inference). New in `0.9.0`: **higher-order currying** and
-> **PLN truth values**, which complete groups `c` and `d` of the reference suite
-> and bring it to 21 of 22. Since `0.8.0`, hyperon's own `stdlib.metta`
-> **compiles and links** as a library, so stdlib entries written in MeTTa come
-> from the reference file rather than being reimplemented. The frontier is the
-> minimal-MeTTa runner the rest of that file stands on (`metta`,
-> `collapse-bind`, the `assert*`/`collapse` family) and type errors on
-> constructor applications — the one topic test still open.
-> See [correctness](#compatibility--correctness) below.
+> types, propagation, inference). **The reference topic suite passes in full,
+> 22 of 22, and so does every file of the MeTTa-TS parity corpus that hyperon
+> itself passes, 44 of 44.** hyperon's own `stdlib.metta` is compiled once,
+> shipped inside the compiler and **imported by every program by default**, as
+> the reference does (`--no-stdlib` opts out), so stdlib entries written in
+> MeTTa come from the reference file rather than being reimplemented. The
+> remaining gap is minimal MeTTa's *stepwise* evaluation — `eval` as exactly
+> one rewrite, `chain`/`function`/`return` as steps — which a compiler that
+> evaluates everything in one go answers differently; see
+> [known divergences](#known-divergences).
 
 ---
 
@@ -175,6 +176,10 @@ Eight Gradle modules; the compilation pipeline flows one direction
   `<letter><digit>_<topic>.metta` (topic × complexity: `a` symbols/match,
   `b` equality/chaining/non-det, `c` grounded values/spaces/PLN, `d` types,
   `e` mutation/states, `f` modules/imports, `g` doc atoms).
+- **`tests/hyperon/`** — reference-semantics probes, one behaviour per file, every
+  expected answer measured on hyperon's `metta-repl`. Known divergences are listed
+  in `tests/hyperon/.xfail` with their cause, so a fix shows up as one
+  `UNEXPECTED_PASS`.
 - **Unit tests** live per module under `src/test/kotlin` (JUnit 5).
 
 ## How it works (the short version)
@@ -197,13 +202,13 @@ kept under `docs/`).
 ## Compatibility & correctness
 
 Every program is checked against `hyperon-experimental` for the same answer.
-Group-by-group coverage of the reference topic suite (`a`–`g`) — **21 of 22
-topic tests pass** as of `0.9.0`:
+Group-by-group coverage of the reference topic suite (`a`–`g`) — **all 22 topic
+tests pass** as of `0.10.0`:
 
 | Group | Feature | Pass | Status |
 | --- | --- | --- | --- |
 | a | symbols / match | 3 / 3 | ✅ full |
-| b | equality · chaining · non-det | 5 / 6 | core done · type errors on constructor applications left |
+| b | equality · chaining · non-det | 6 / 6 | ✅ full · incl. eval-time `BadArgType` on data |
 | c | grounded values · spaces · PLN | 3 / 3 | ✅ full · grounded ops, spaces, PLN truth values |
 | d | types (GADT · dependent · propagation · auto) | 5 / 5 | ✅ full · currying + higher-order `fmap` |
 | e | mutation / states | 3 / 3 | ✅ full · KB writes + state cells |
@@ -212,6 +217,30 @@ topic tests pass** as of `0.9.0`:
 
 Run the suite yourself with `./gradlew :test-runner:run`; it writes a per-test
 report to `tests/reports/`.
+
+Beyond the topic suite, three more measurements:
+
+| Measurement | Result | What it says |
+| --- | --- | --- |
+| MeTTa-TS corpus, files hyperon itself passes | **44 / 44** | real programs the reference runs correctly |
+| MeTTa-TS corpus, all 124 files | 58 / 124 | most of the rest are MeTTa-TS extensions or fail on hyperon too |
+| `tests/hyperon/` probes | 11 / 13 | selected from where divergences were found, so biased low |
+
+A rough overall estimate: **about 90% of hyperon's behaviour on ordinary
+programs**, 80–85% counting minimal MeTTa's stepwise semantics in full.
+
+### Known divergences
+
+- **`eval` is a full reduction, not one step.** hyperon's `(eval (ff))` over
+  `(= (ff) (gg)) (= (gg) 42)` answers `(gg)`; JeTTa answers `42`. `chain`,
+  `function` and `return` are likewise not stepwise (`tests/hyperon` h03).
+- **A minimal-MeTTa body of an `Atom`-result function** is evaluated past its
+  `return` (h13). An `Atom`-result function written any other way answers its
+  body as a term, as the reference does.
+- **A rule's result is not re-reduced**: `(unquote (quote (+ 1 2)))` answers
+  `(+ 1 2)`, where hyperon goes on to `3`.
+- A parameterised type is erased to `Atom` at the JVM level; the run-time `:`
+  check still catches a mistyped application.
 
 ## License
 
