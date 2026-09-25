@@ -1342,12 +1342,14 @@ class FunctionRewriter(
      * passes `$template` through). Substituting into a template and then evaluating it is the
      * runtime-compilation path, not this one.
      */
-    private fun lowerUnify(expression: Expression, scope: Set<String>): Atom {
+    private fun lowerUnify(expression: Expression, scope: Set<String>, alsoBound: List<String> = emptyList()): Atom {
         val a = expression.atoms[1]
         val b = expression.atoms[2]
         val thenBranch = expression.atoms[3]
         val elseBranch = expression.atoms[4]
-        val bound = (varNamesIn(a) + varNamesIn(b)).distinct().filter { it !in scope }
+        // [alsoBound]: variables the unification binds although neither side NAMES them here —
+        // the free variables of a pattern-`let`'s value, which reaches `unify` as `$__letValue`.
+        val bound = (varNamesIn(a) + varNamesIn(b) + alsoBound).distinct().filter { it !in scope }
         val inner = scope + bound
         val params = Expression(bound.map { Variable(it) }, position = expression.position)
         return Expression(
@@ -1546,21 +1548,29 @@ class FunctionRewriter(
             // `Atom` parameters are not reduced at all.
             val position = atom.position
             val value = Variable(LET_VALUE_VARIABLE, position = position)
-            return lowerUnifyForms(
-                Expression(
-                    listOf(
-                        Symbol(LetRewriter.LET_KEYWORD, position = position), value, atom.atoms[2],
-                        Expression(
-                            listOf(
-                                Symbol(UNIFY_KEYWORD, position = position), value, atom.atoms[1], atom.atoms[3],
-                                Expression(listOf(Symbol("empty", position = position)), position = position),
-                            ),
-                            position = position,
-                        ),
-                    ),
-                    position = position,
+            // A variable FREE in the value is bound by the unification too — to the pattern's
+            // subterm, which may be a computation: `(let ($x (42 (if (== $x 2) 43 44))) (3 (42 $z))
+            // (+ $x $z))` binds `$z` to the `if`, and the reference evaluates it after substitution
+            // (47). Such a variable is a parameter of the branch, and forced where its value is used.
+            val valueFree = varNamesIn(atom.atoms[2]).distinct().filter { it !in scope && it != LET_VALUE_VARIABLE }
+            val body = if (valueFree.isEmpty() || !isReducibleName(Predefined.FORCE)) atom.atoms[3]
+            else walkMetaUses(atom.atoms[3], true, false, emptyMap()) { v, isTerm ->
+                if (!isTerm && v.name in valueFree) Expression(Symbol(Predefined.FORCE), v) else v
+            }
+            val unify = Expression(
+                listOf(
+                    Symbol(UNIFY_KEYWORD, position = position), value, atom.atoms[1], body,
+                    Expression(listOf(Symbol("empty", position = position)), position = position),
                 ),
-                scope,
+                position = position,
+            )
+            return Expression(
+                listOf(
+                    Symbol(LetRewriter.LET_KEYWORD, position = position), value,
+                    lowerUnifyForms(atom.atoms[2], scope),
+                    lowerUnify(unify, scope + LET_VALUE_VARIABLE, valueFree),
+                ),
+                position = position,
             )
         }
         if (name == LetRewriter.LET_KEYWORD && atom.atoms.size == 4) {

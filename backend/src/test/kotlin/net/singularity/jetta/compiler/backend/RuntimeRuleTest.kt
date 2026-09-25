@@ -177,4 +177,17 @@ class RuntimeRuleTest : GeneratorTestBase() {
                                 ($x1 $x2)) (0 1))
         """.trimIndent()
     )
+
+    /**
+     * A variable free in a pattern-`let`'s VALUE is bound by the unification to the pattern's
+     * subterm, and that term is evaluated where the body uses it (letext): `$z` is the `if`.
+     */
+    @Test
+    fun `a pattern-let binds the free variables of its value and evaluates them`() = run(
+        "PatternLetValueVariables",
+        $$"""
+            !(assertEqual (let ($x (42 (if (== $x 2) 43 44))) (3 (42 $z)) (+ $x $z)) 47)
+            !(assertEqual (let ($x (42 (if (== $x 2) 43 44))) (3 (42 $z)) ($x $z)) (3 44))
+        """.trimIndent()
+    )
 }
