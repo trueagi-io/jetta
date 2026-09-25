@@ -40,7 +40,7 @@ class ArityMismatchValuednessTest : GeneratorTestBase() {
         val cls = compiled(
             "ArityExact",
             """
-                (: pick (-> Atom Atom Atom Atom))
+                (: pick (-> Atom Atom Atom %Undefined%))
                 (= (pick ${'$'}a ${'$'}b ${'$'}c) (superpose (${'$'}a ${'$'}b ${'$'}c)))
                 (= (full) (pick 1 2 3))
                 !(assertEqualToResult (full) (1 2 3))

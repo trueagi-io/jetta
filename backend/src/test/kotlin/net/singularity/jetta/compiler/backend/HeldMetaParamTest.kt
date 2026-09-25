@@ -98,7 +98,7 @@ class HeldMetaParamTest : GeneratorTestBase() {
             """
             (: noreduce-eq (-> Atom Atom Bool))
             (= (noreduce-eq _a _b) (== (quote _a) (quote _b)))
-            (: walk (-> Expression Atom))
+            (: walk (-> Expression %Undefined%))
             (= (walk _e) (if (noreduce-eq _e ()) done (let _t (cdr-atom _e) (walk _t))))
             !(assertEqual (walk (1 2 3)) done)
             """.trimIndent().d()
@@ -111,7 +111,7 @@ class HeldMetaParamTest : GeneratorTestBase() {
         run(
             "HeldEquality",
             """
-            (: udft (-> Expression Atom))
+            (: udft (-> Expression %Undefined%))
             (= (udft _params)
               (if (== () _params) (%Undefined%)
                 (let _tail (udft (cdr-atom _params)) (cons-atom %Undefined% _tail))))

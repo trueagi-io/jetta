@@ -75,7 +75,8 @@ class FunctionRewriter(
     // `ordinal` = the rule's source position among facts (== runtime storeIndex), or -1 when no
     // `!`-run precedes it (so no reduction guard is emitted — the hot facts-then-runs shape). See
     // [mkFunctions] / MatchBranch.sourceOrdinal / `docs/specs/ordered_top_level_semantics_plan.md`.
-    private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1)
+    // `raw` = the body as written, before any rewrite — what an `Atom`-result function answers.
+    private data class Pattern(val pattern: Expression, val value: Atom, val ordinal: Int = -1, val raw: Atom? = null)
 
     /**
      * Heads whose `=` rules an `add-atom` stores or a `remove-atom` drops — at top level or inside a
@@ -435,6 +436,40 @@ class FunctionRewriter(
         return held
     }
 
+    /**
+     * A function declaring its result literally `Atom` answers its body SUBSTITUTED, not reduced:
+     * `(: q3 (-> Atom Atom)) (= (q3 $x) (foo (+ 1 1) $x))` gives `(foo (+ 1 1) (+ 1 2))` for
+     * `(q3 (+ 1 2))` at the reference. So the body is the quoted term as written — the parameters
+     * are still values in it, evaluated or held by their own declared types.
+     *
+     * Not for a body written in minimal MeTTa (`function`/`chain`/`eval`/`return`/`metta`): the
+     * reference steps those afterwards, and we have no stepping, so their full evaluation stands in
+     * for it. Every `Atom`-result function of the standard library is of that kind.
+     *
+     * Nor, for now, where the template could not be the answer: a function whose result is a BAG
+     * (annotated multivalued, or clauses that overlap — the branches still return one bag), or one
+     * taking a function-typed parameter, whose value is a compiled lambda and not yet storable
+     * as data (the reference answers `(inc 3)` for `(apply-it inc 3)`). Those still reduce.
+     */
+    private fun templateAtomResultBodies() {
+        for (name in literalAtomResults) {
+            val clauses = patterns[name] ?: continue
+            if (clauses.any { c -> c.raw == null || mentionsAny(c.raw, MINIMAL_METTA_STEPS) }) continue
+            if (annotations[name].orEmpty().contains(PredefinedAtoms.MULTIVALUED)) continue
+            if (!clausesAreMutuallyExclusive(clauses)) continue
+            if ((typeInfo[name] as? ArrowType)?.types?.dropLast(1)?.any { it is ArrowType } == true) continue
+            patterns[name] = clauses.mapTo(mutableListOf()) { c ->
+                if (c.raw is Expression) c.copy(value = quoteAtom(c.raw)) else c
+            }
+        }
+    }
+
+    private fun mentionsAny(atom: Atom, names: Set<String>): Boolean = when (atom) {
+        is Symbol -> atom.name in names
+        is Expression -> atom.atoms.any { mentionsAny(it, names) }
+        else -> false
+    }
+
     /** One round of [holdMetaParams] for [name], given what is [held] so far. */
     private fun heldParamsOf(name: String, held: Map<String, Set<Int>>): Set<Int> {
         val clauses = patterns.getValue(name)
@@ -540,6 +575,7 @@ class FunctionRewriter(
         // business, and a compiled copy would answer the file's rules only. Its rules stay facts,
         // and every call to it is a `__reduce` — see [dynamicHeads].
         dynamicHeads.forEach { patterns.remove(it) }
+        templateAtomResultBodies()
         val held = holdMetaParams()
         val relationalCallees = computeRelationalCallees()
         return patterns.map { (name, list) ->
@@ -1892,7 +1928,7 @@ class FunctionRewriter(
                     // rewrite depends on which variables are already in scope, and the clause head
                     // is what seeds that scope. See [lowerUnify].
                     val body = lowerUnifyForms(expression.atoms[2], varNamesIn(pattern).toSet())
-                    list.add(Pattern(pattern, rewriteAtom(body), ordinal))
+                    list.add(Pattern(pattern, rewriteAtom(body), ordinal, raw = expression.atoms[2]))
                 }
                 // Every `(= lhs rhs)` is ALSO an equality fact in the space, whether or
                 // not its head compiles to a JVM function. This is the reference
@@ -2014,6 +2050,9 @@ class FunctionRewriter(
          * Not the multiset operations: they combine COLLAPSED result tuples, whose elements are
          * values already.
          */
+        /** Minimal-MeTTa forms the reference steps through, which we evaluate in one go. */
+        private val MINIMAL_METTA_STEPS = setOf("function", "chain", "eval", "evalc", "return", "metta")
+
         private val TERM_BUILDERS = setOf("cons-atom", "cdr-atom", "car-atom", "atom-subst", "sealed")
 
         /** Compiler-internal builtin (see [net.singularity.jetta.runtime.JettaProgram] `set-watermark!`)

@@ -45,7 +45,7 @@ class SpaceValueAtomTest : GeneratorTestBase() {
         run(
             "SpaceDeclaredParam",
             """
-            (: my-add-atoms (-> SpaceType Expression Atom))
+            (: my-add-atoms (-> SpaceType Expression %Undefined%))
             (= (my-add-atoms ~space ~tuple)
               (_minimal-foldl-atom ~tuple () ~a ~b (add-atom ~space ~b) &self))
             !(my-add-atoms &self ((likes Sam Ann)))
@@ -77,7 +77,7 @@ class SpaceValueAtomTest : GeneratorTestBase() {
         run(
             "SpaceNamedParam",
             """
-            (: my-add-atoms (-> SpaceType Expression Atom))
+            (: my-add-atoms (-> SpaceType Expression %Undefined%))
             (= (my-add-atoms ~space ~tuple)
               (_minimal-foldl-atom ~tuple () ~a ~b (add-atom ~space ~b) &self))
             !(my-add-atoms &kb ((fact A)))

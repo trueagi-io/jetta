@@ -50,6 +50,8 @@ class LambdaRewriter(private val messageCollector: MessageCollector) : Rewriter 
         if (expression.atoms.isEmpty()) {
             return expression
         }
+        // quoted data is left as written — a `(\ …)` in it is a term, not a function
+        if (expression.atoms.size == 2 && expression.atoms[0] == PredefinedAtoms.QUOTE) return expression
         return when ((expression.atoms.first() as? Special)?.value) {
             Predefined.LAMBDA -> {
                 val (params, body) = expression.atoms.drop(1)

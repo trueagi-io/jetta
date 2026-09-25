@@ -51,6 +51,8 @@ class LetRewriter : Rewriter {
         if (expression.atoms.isEmpty()) return expression
 
         val head = expression.atoms[0]
+        // quoted data is left as written — a `let` in it is a term, not a binding
+        if (expression.atoms.size == 2 && head == PredefinedAtoms.QUOTE) return expression
         // `let*` — sequential bindings. `(let* (($v1 e1) ($v2 e2) …) body)` desugars to
         // right-nested `let`s, `(let $v1 e1 (let $v2 e2 … body))`, so each later binding sees
         // the earlier ones. The nested `let`s are then rewritten to lambdas by the branch below.

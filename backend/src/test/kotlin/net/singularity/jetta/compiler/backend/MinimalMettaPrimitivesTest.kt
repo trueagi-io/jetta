@@ -172,9 +172,9 @@ class MinimalMettaPrimitivesTest : GeneratorTestBase() {
         run(
             "SealedSubst",
             """
-            (: keep (-> Variable Atom Atom))
+            (: keep (-> Variable Atom %Undefined%))
             (= (keep _var _t) (sealed (_var) _t))
-            (: subst (-> Variable Atom Atom))
+            (: subst (-> Variable Atom %Undefined%))
             (= (subst _var _t) (atom-subst 7 _var _t))
             !(assertEqual (keep _v (tpl _v 1)) (tpl _v 1))
             !(assertEqual (subst _v (tpl _v 1)) (tpl 7 1))

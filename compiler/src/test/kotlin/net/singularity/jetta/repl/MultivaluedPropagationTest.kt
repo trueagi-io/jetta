@@ -52,7 +52,7 @@ class MultivaluedPropagationTest {
     fun `a call at another arity does not inherit the callee's valuedness`() {
         val r = repl()
         r.eval("""
-            (: gen (-> Atom Atom Atom))
+            (: gen (-> Atom Atom %Undefined%))
             (= (gen _a _b) (superpose (_a _b)))
             (= (wrap _x) (gen _x))
         """.trimIndent().d()).let { assertTrue(it.isSuccess, it.messages.joinToString("\n")) }

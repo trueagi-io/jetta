@@ -25,7 +25,7 @@ class ExpressionParamCoercionTest : GeneratorTestBase() {
         val code = """
             (: g (-> Atom Expression Atom))
             (= (g _a _cases) _a)
-            (: h (-> Atom Expression Atom))
+            (: h (-> Atom Expression %Undefined%))
             (= (h _a ((_p _t) _tail)) (g _a _tail))
             (= (caller) (h X ((P T) (Q R))))
         """.trimIndent().d()

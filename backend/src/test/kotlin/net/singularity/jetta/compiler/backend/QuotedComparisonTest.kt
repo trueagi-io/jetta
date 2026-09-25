@@ -107,7 +107,7 @@ class QuotedComparisonTest : GeneratorTestBase() {
             """
             (: noreduce-eq (-> Atom Atom Bool))
             (= (noreduce-eq ~a ~b) (== (quote ~a) (quote ~b)))
-            (: for-each (-> Expression Atom Atom))
+            (: for-each (-> Expression Atom %Undefined%))
             (= (for-each ~expr ~func)
               (if (noreduce-eq ~expr ())
                 ()

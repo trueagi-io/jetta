@@ -363,7 +363,7 @@ class BadArgTypeTest : GeneratorTestBase() {
             (= (deriv (Add $a $b) $x) (Add (deriv $a $x) (deriv $b $x)))
         """.trimIndent()
 
-        val metaAtom = compiledClass("NoCheckMetaAtom", "(: deriv (-> Atom Atom Atom))\n$rules")
+        val metaAtom = compiledClass("NoCheckMetaAtom", "(: deriv (-> Atom Atom %Undefined%))\n$rules")
         assertFalse("typeCheckError" in calleesOf(metaAtom, "deriv"))
 
         val concrete = compiledClass("NoCheckConcrete", "(: deriv (-> Nat Nat Nat))\n$rules")
@@ -375,7 +375,7 @@ class BadArgTypeTest : GeneratorTestBase() {
     fun `a meta-Atom-declared function reduces unchanged`() = runLenient(
         "NoCheckAtomRun",
         $$"""
-            (: deriv (-> Atom Atom Atom))
+            (: deriv (-> Atom Atom %Undefined%))
             (= (deriv (Num $c) $x) (Num 0))
             (= (deriv (Var $v) $x) (if (== $v $x) (Num 1) (Num 0)))
             (= (deriv (Add $a $b) $x) (Add (deriv $a $x) (deriv $b $x)))
