@@ -13,7 +13,7 @@ between compile time and call time. The behavioural reference is the Rust
 interpreter [`trueagi-io/hyperon-experimental`](https://github.com/trueagi-io/hyperon-experimental);
 JeTTa aims to produce byte-for-byte identical answers on its test suite.
 
-- **Version:** `0.9.1` · **License:** MIT · **Runtime:** Java 17+
+- **Version:** `0.10.0` · **License:** MIT · **Runtime:** Java 17+
 
 > **Status.** JeTTa is under active development. The fundamentals — symbols,
 > pattern match, equality, chaining, non-determinism, spaces, mutable state and
@@ -203,7 +203,7 @@ kept under `docs/`).
 
 Every program is checked against `hyperon-experimental` for the same answer.
 Group-by-group coverage of the reference topic suite (`a`–`g`) — **all 22 topic
-tests pass** as of `0.9.1`:
+tests pass** as of `0.10.0`:
 
 | Group | Feature | Pass | Status |
 | --- | --- | --- | --- |
